@@ -1,0 +1,40 @@
+# SmartLife Agent - 依赖清单
+# Core Framework
+langchain>=0.2.0
+langchain-core>=0.2.0
+langchain-community>=0.2.0
+langchain-experimental>=0.2.0
+langchain-openai>=0.1.0
+langchain-text-splitters>=0.2.0
+
+# LLM Providers
+openai>=1.30.0
+
+# Vector Database
+chromadb>=0.5.0
+
+# Embeddings & Rerank
+sentence-transformers>=3.0.0
+
+# Database
+sqlalchemy>=2.0.0
+
+# Web Framework
+streamlit>=1.35.0
+
+# State Machine
+langgraph>=0.1.0
+
+# Utilities
+pydantic>=2.7.0
+python-dotenv>=1.0.0
+requests>=2.32.0
+pytz>=2024.1
+numpy>=1.26.0
+pandas>=2.2.0
+PyYAML>=6.0.1
+tiktoken>=0.7.0
+
+# Development & Testing
+pytest>=8.2.0
+pytest-asyncio>=0.23.0
