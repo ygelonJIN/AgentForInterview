@@ -4,7 +4,7 @@ Agent 测试
 import pytest
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-os.environ.setdefault("OPENAI_API_KEY", "sk-test-dummy-key-for-testing")
+os.environ.setdefault("OPENAI_API_KEY", "test-dummy-key-for-testing")
 
 def test_imports():
     from app.router import TaskRouter, TaskRoute
@@ -38,7 +38,7 @@ def test_task_route_model():
 def test_shopping_mcp_tools():
     from app.mcp_servers.shopping_server import ShoppingMCPServer
     tools = ShoppingMCPServer().get_tools()
-    assert len(tools) == 4
+    assert len(tools) == 3
 
 def test_travel_mcp_tools():
     from app.mcp_servers.travel_server import TravelMCPServer
@@ -68,11 +68,6 @@ def test_time_tool():
     r = get_current_time.invoke({"timezone": "Asia/Shanghai"})
     assert "datetime" in r and "weekday" in r
 
-def test_payment_tool():
-    from app.tools.payment import create_payment
-    r = create_payment.invoke({"order_id": "ORD-001", "amount": 499.0, "method": "alipay"})
-    assert r["status"] == "success"
-
 def test_map_tool():
     from app.tools.map import get_route
     r = get_route.invoke({"origin": "西湖", "destination": "灵隐寺", "mode": "driving"})
@@ -80,7 +75,7 @@ def test_map_tool():
 
 def test_all_external_tools():
     from app.tools import get_all_tools
-    assert len(get_all_tools()) >= 5
+    assert len(get_all_tools()) >= 4
 
 def test_preference_model():
     from app.negotiation.preference import UserPreference

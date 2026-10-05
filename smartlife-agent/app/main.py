@@ -14,12 +14,17 @@ import asyncio
 import json
 import sys
 import os
-import time
 import threading
 import queue as thread_queue
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.config import set_main_config, set_small_config, set_embedding_config, get_embedding_status
+from app.observability import log_exception, log_warning
+from app.async_runner import SharedAsyncRunner
+from app.stream_response import StreamResponseBuffer
+from app.streaming import deduplicate_process_events
+from app.process_timeline import build_process_timeline, infer_active_step
 
 st.set_page_config(
     page_title="SmartLife Agent v2",
@@ -37,6 +42,12 @@ st.markdown("""
     .event-classify { background: #e8f5e9; padding: 8px 12px; border-radius: 6px; margin: 4px 0; border-left: 3px solid #4caf50; }
     .event-tool { background: #fff3e0; padding: 8px 12px; border-radius: 6px; margin: 4px 0; border-left: 3px solid #ff9800; }
     .event-step { background: #e3f2fd; padding: 8px 12px; border-radius: 6px; margin: 4px 0; border-left: 3px solid #2196f3; }
+    .event-step.pending { opacity: .62; border-left-color: #90a4ae; }
+    .event-step.active { border-left-color: #1976d2; box-shadow: 0 0 0 1px #bbdefb; }
+    .event-step.completed { border-left-color: #43a047; }
+    .event-step.waiting { border-left-color: #fb8c00; }
+    .event-step.error { border-left-color: #e53935; }
+    .event-tool-result { background: #e8f5e9; padding: 8px 12px; border-radius: 6px; margin: 4px 0; border-left: 3px solid #43a047; }
     .event-error { background: #ffebee; padding: 8px 12px; border-radius: 6px; margin: 4px 0; border-left: 3px solid #f44336; }
     .event-done { background: #f3e5f5; padding: 8px 12px; border-radius: 6px; margin: 4px 0; border-left: 3px solid #9c27b0; }
 </style>
@@ -47,6 +58,8 @@ if "messages" not in st.session_state:
     st.session_state["messages"] = []
 if "user_id" not in st.session_state:
     st.session_state["user_id"] = "user_001"
+if "browser_session_id" not in st.session_state:
+    st.session_state["browser_session_id"] = uuid.uuid4().hex
 if "orchestrator_v2" not in st.session_state:
     st.session_state["orchestrator_v2"] = None
 if "candidate_memories" not in st.session_state:
@@ -55,36 +68,284 @@ if "show_memory_extraction" not in st.session_state:
     st.session_state["show_memory_extraction"] = False
 if "memory_diag" not in st.session_state:
     st.session_state["memory_diag"] = ""
+if "memory_extraction_error" not in st.session_state:
+    st.session_state["memory_extraction_error"] = False
+if "memory_extraction_scene" not in st.session_state:
+    st.session_state["memory_extraction_scene"] = ""
+if "rejected_memories" not in st.session_state:
+    st.session_state["rejected_memories"] = []
+if "pending_compressed_summary" not in st.session_state:
+    st.session_state["pending_compressed_summary"] = ""
+if "sensitive_action_service" not in st.session_state:
+    st.session_state["sensitive_action_service"] = None
+if "pending_sensitive_action" not in st.session_state:
+    st.session_state["pending_sensitive_action"] = None
 
 # ========== Orchestrator 初始化 ==========
 def get_orchestrator_v2():
     if st.session_state["orchestrator_v2"] is None:
         try:
-            from app.config import get_config
-            cfg = get_config()
-            main_cfg = cfg.get("main", {})
-            api_key = main_cfg.get("api_key") or os.environ.get("OPENAI_API_KEY", "")
-            if not api_key:
+            from app.config import has_api_key
+            if not has_api_key("main"):
                 st.error("❌ 请先在左侧输入 API Key")
                 return None
-            from app.agents.orchestrator_v2 import get_orchestrator_v2 as _get
-            st.session_state["orchestrator_v2"] = _get(model_name=None)
+            from app.agents.langgraph_orchestrator import get_langgraph_orchestrator
+            st.session_state["orchestrator_v2"] = get_langgraph_orchestrator(model_name=None)
         except Exception as e:
+            log_exception("ui.orchestrator_init", e)
             st.error(f"初始化失败: {e}")
             return None
     return st.session_state["orchestrator_v2"]
 
+
+def _begin_memory_approval(orch, user_id, candidates, scene):
+    if not orch or not candidates:
+        return None
+    result = orch.start_memory_approval(
+        user_id,
+        st.session_state["browser_session_id"],
+        scene,
+        candidates,
+    )
+    st.session_state["memory_approval_id"] = result["approval_id"]
+    return result
+
+
+def _resume_memory_approval(orch, action, selected_indices=None):
+    approval_id = st.session_state.get("memory_approval_id")
+    if not orch or not approval_id:
+        return {"status": "missing_approval", "state": {"saved_ids": []}}
+    decision = {"action": action}
+    if selected_indices is not None:
+        decision["selected_indices"] = selected_indices
+    result = orch.resume_memory_approval(approval_id, decision)
+    st.session_state.pop("memory_approval_id", None)
+    return result
+
+
+def get_sensitive_action_service():
+    if st.session_state.get("sensitive_action_service") is None:
+        from app.memory.repository import get_memory_repository
+        from app.sensitive_actions import SensitiveActionService
+        st.session_state["sensitive_action_service"] = SensitiveActionService(
+            memory_repository=get_memory_repository()
+        )
+    return st.session_state["sensitive_action_service"]
+
+
+def _queue_sensitive_action(action_type, payload, description):
+    service = get_sensitive_action_service()
+    result = service.start(
+        action_type,
+        st.session_state["user_id"],
+        payload,
+    )
+    st.session_state["pending_sensitive_action"] = {
+        "approval_id": result["approval_id"],
+        "action_type": action_type,
+        "payload": payload,
+        "description": description,
+    }
+    st.rerun()
+
+
+def render_sensitive_action_approval():
+    pending = st.session_state.get("pending_sensitive_action")
+    if not pending:
+        return
+
+    st.warning(f"⚠️ 需要确认敏感操作：{pending['description']}")
+    st.json(pending.get("payload", {}))
+    approve_col, reject_col = st.columns(2)
+    with approve_col:
+        if st.button("✅ 批准执行", key="approve_sensitive_action"):
+            service = get_sensitive_action_service()
+            result = service.resume(pending["approval_id"], {
+                "action": "approve",
+                "idempotency_key": pending.get("payload", {}).get("idempotency_key"),
+            })
+            st.success(f"操作已完成：{result.get('status')}")
+            if pending.get("action_type") == "memory_save_summary":
+                st.session_state.pop("pending_compressed_summary", None)
+                st.session_state.pop("pending_compressed_scene", None)
+            st.session_state["pending_sensitive_action"] = None
+            st.rerun()
+    with reject_col:
+        if st.button("❌ 拒绝执行", key="reject_sensitive_action"):
+            service = get_sensitive_action_service()
+            service.resume(pending["approval_id"], {"action": "reject"})
+            st.info("已拒绝敏感操作")
+            st.session_state["pending_sensitive_action"] = None
+            st.rerun()
+
+
+def _clear_memory_extraction_state():
+    st.session_state["candidate_memories"] = []
+    st.session_state["memory_diag"] = ""
+    st.session_state["memory_extraction_error"] = False
+    st.session_state["show_memory_extraction"] = False
+    st.session_state["memory_extraction_scene"] = ""
+
+
+def _memory_step_event(*, failed=False, no_content=False):
+    if failed:
+        name = "记忆提取失败"
+        description = "提取未能完成，请查看下方失败诊断"
+        status = "error"
+    elif no_content:
+        name = "候选记忆确认"
+        description = "检查完成，本轮没有需要写入长期记忆的内容"
+        status = "completed"
+    else:
+        name = "候选记忆确认"
+        description = "候选项已提取，等待用户确认是否写入长期记忆"
+        status = "waiting"
+    return {
+        "event": "step",
+        "data": {
+            "step": 4,
+            "total": 4,
+            "name": name,
+            "description": description,
+            "status": status,
+            "source": "post_process",
+        },
+    }
+
+
+def _extract_memories_after_stream(
+    orch,
+    user_id,
+    session_id,
+    scene,
+    stream_events=None,
+):
+    """消费图节点的记忆提取结果；兼容旧的图外提取接口。"""
+    if not orch:
+        _clear_memory_extraction_state()
+        return []
+
+    payload = None
+    for event in stream_events or []:
+        if event.get("event") == "memory_extraction":
+            payload = event.get("data", {}) or {}
+            break
+
+    if payload is not None:
+        candidates = list(payload.get("candidates", []))
+        diagnostic = payload.get("diagnostic", "")
+        has_error = bool(payload.get("has_error", payload.get("status") == "error"))
+    else:
+        result = orch.extract_candidate_memories_result(
+            user_id,
+            session_id,
+            scene=scene,
+            excluded_contents=st.session_state.get("rejected_memories", []),
+        )
+        candidates = result.candidates
+        diagnostic = result.diagnostic
+        has_error = result.has_error
+
+    if not candidates and not has_error:
+        # Step 4 仍需展示实际完成状态，但不显示无价值诊断。
+        _clear_memory_extraction_state()
+        return [_memory_step_event(no_content=True)]
+
+    st.session_state["candidate_memories"] = candidates
+    st.session_state["memory_diag"] = diagnostic if has_error else ""
+    st.session_state["memory_extraction_error"] = has_error
+    st.session_state["show_memory_extraction"] = True
+    st.session_state["memory_extraction_scene"] = scene
+
+    if candidates:
+        _begin_memory_approval(orch, user_id, candidates, scene)
+    return [_memory_step_event(failed=has_error)]
+
+
+def render_memory_extraction_panel(scene, key_suffix):
+    """只在有候选记忆或提取失败时渲染结果；无价值诊断默认隐藏。"""
+    if not st.session_state.get("show_memory_extraction"):
+        return
+    if st.session_state.get("memory_extraction_scene") != scene:
+        return
+
+    has_error = bool(st.session_state.get("memory_extraction_error"))
+    candidates = st.session_state.get("candidate_memories", [])
+    if not candidates and not has_error:
+        return
+
+    if has_error:
+        st.subheader("⚠️ 记忆提取失败")
+        st.error("本轮记忆提取未能完成。")
+        diagnostic = st.session_state.get("memory_diag", "")
+        if diagnostic:
+            with st.expander("🔍 失败诊断"):
+                st.code(diagnostic)
+        if st.button("👌 知道了", key=f"dismiss_memory_error_{key_suffix}"):
+            _clear_memory_extraction_state()
+            st.rerun()
+        return
+
+    st.subheader("📝 记忆提取结果")
+    _orch = get_orchestrator_v2()
+    selected_indices = []
+    for i, candidate in enumerate(candidates):
+        emoji = {"shopping": "🛍️", "travel": "✈️", "general": "📝"}.get(
+            candidate.get("category", "general"), "📝"
+        )
+        confidence = {"high": "高", "medium": "中", "low": "低"}.get(
+            candidate.get("confidence", "medium"), "中"
+        )
+        col1, col2 = st.columns([4, 1])
+        with col1:
+            st.write(f"{i + 1}. {emoji} {candidate['content']} (置信度: {confidence})")
+        with col2:
+            if st.checkbox("保存", key=f"memory_{key_suffix}_{i}", value=False):
+                selected_indices.append(i)
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("✅ 确认写入选中", key=f"save_selected_memories_{key_suffix}"):
+            if selected_indices and _orch:
+                result = _resume_memory_approval(_orch, "save_selected", selected_indices)
+                st.success(f"已保存 {len(result['state']['saved_ids'])} 条记忆")
+                _clear_memory_extraction_state()
+                st.rerun()
+            else:
+                st.warning("请先勾选要保存的记忆")
+    with col2:
+        if st.button("❌ 拒绝写入", key=f"skip_memories_{key_suffix}"):
+            if _orch:
+                _resume_memory_approval(_orch, "reject")
+            st.session_state["rejected_memories"].extend(
+                candidate["content"] for candidate in candidates
+            )
+            _clear_memory_extraction_state()
+            st.rerun()
+    with col3:
+        if st.button("💾 全部写入", key=f"save_all_memories_{key_suffix}"):
+            if _orch:
+                result = _resume_memory_approval(_orch, "save_all")
+                st.success(f"已保存 {len(result['state']['saved_ids'])} 条记忆")
+                _clear_memory_extraction_state()
+                st.rerun()
+
 # ========== 实时流式渲染器 ==========
-def run_streaming_realtime(async_gen_factory):
-    """
-    实时渲染 streaming 事件流
+def run_streaming_realtime(async_gen_factory, *, postprocess=None):
+    """实时渲染 streaming 事件流。
+
+    ``postprocess`` 在正文流结束后、同一助手气泡刷新前执行，可返回追加到步骤区的
+    后处理事件。这样 Step 4 会更新到固定的过程区，而不会落到正文下方。
     """
     try:
-        return _run_streaming_impl(async_gen_factory)
+        return _run_streaming_impl(
+            async_gen_factory,
+            postprocess=postprocess,
+        )
     except Exception as e:
+        log_exception("ui.streaming", e)
         st.error(f"流式处理失败: {e}")
         return "", []
-
 
 
 def _esc(s):
@@ -93,16 +354,11 @@ def _esc(s):
 
 
 def _fmt_event_html(evt):
-    """把单个过程事件渲染成带样式的 HTML 卡片（与模型正文明显区分）。
-
-    - 步骤/分类/工具都用带左边框的彩色卡片（复用顶部 .event-* CSS）
-    - 用 <br> 做卡片内换行，渲染时统一 unsafe_allow_html=True，不会被转义成 &lt;br&gt;
-    - nl2sql 显示为「SQL 数据检索」过程卡（内嵌一行 code），不再裸奔大段代码块
-    """
+    """把单个过程事件渲染成带样式的 HTML 卡片（与模型正文明显区分）。"""
     et = evt.get("event", "")
     data = evt.get("data", {}) or {}
     if et == "thinking":
-        return f'<div class="event-thinking">💭 {_esc(data.get("message", ""))}</div>'
+        return ""
     if et == "classify":
         route = data.get("route", "") or "—"
         intent = data.get("intent", "") or "—"
@@ -120,10 +376,23 @@ def _fmt_event_html(evt):
         total = data.get("total", 0)
         name = data.get("name", "")
         desc = data.get("description", "")
-        return (f'<div class="event-step">📋 <b>Step {step_num}/{total}: {_esc(name)}</b><br>'
-                f'{_esc(desc)}</div>')
+        source = data.get("source", "")
+        status = data.get("status", "active")
+        status_text = {
+            "pending": "🕒 等待中",
+            "active": "⏳ 进行中",
+            "completed": "✅ 已完成",
+            "waiting": "✋ 等待确认",
+            "error": "❌ 失败",
+        }.get(status, "⏳ 进行中")
+        source_label = f"<br><small>来源：{_esc(source)}</small>" if source else ""
+        return (f'<div class="event-step {_esc(status)}">📋 <b>Step {step_num}/{total}: {_esc(name)}</b>'
+                f' &nbsp; {_esc(status_text)}<br>'
+                f'{_esc(desc)}{source_label}</div>')
     if et == "tool_call":
         tn = data.get("tool", "")
+        if tn in {"行程执行", "计划自检", "计划审核"}:
+            return ""
         ti = (data.get("input", "") or "").replace("\n", " ").strip()
         if tn == "nl2sql":
             short_sql = ti if len(ti) <= 160 else ti[:160] + "…"
@@ -133,29 +402,58 @@ def _fmt_event_html(evt):
         if tn == "rag":
             return f'<div class="event-tool">📚 <b>RAG 评价检索</b><br>{_esc(ti)}</div>'
         return f'<div class="event-tool">⚙️ <b>{_esc(tn)}</b><br>{_esc(ti)}</div>'
+    if et == "tool_result":
+        tn = data.get("tool", "")
+        if tn in {"行程执行", "计划自检", "计划审核"}:
+            return ""
+        output = (data.get("output", "") or "").replace("\n", " ").strip()
+        return f'<div class="event-tool-result">✅ <b>{_esc(tn)}</b><br>{_esc(output)}</div>'
     if et == "error":
         return f'<div class="event-error">❌ <b>错误</b>: {_esc(data.get("message", ""))}</div>'
     return ""
 
 
-def render_process_events(events):
-    """把一组过程事件按顺序渲染成样式卡片（步骤在前、与正文区分）。"""
+def _persistent_events(events):
+    """running/thinking 是瞬态状态，不进入已生成消息的永久过程记录。"""
+    return deduplicate_process_events([
+        evt for evt in events
+        if evt.get("event") not in {
+            "thinking", "token", "response_reset", "done", "memory_extraction"
+        }
+    ])
+
+
+def _process_events_html(events, include_transient=False, active_step=None):
+    """生成一组过程事件的稳定 HTML，按逻辑节点去重。"""
+    source_events = build_process_timeline(
+        deduplicate_process_events(
+        events if include_transient else _persistent_events(events)
+        ),
+        active_step=active_step or infer_active_step(events),
+    )
     cards = []
-    for evt in events:
+    for evt in source_events:
         h = _fmt_event_html(evt)
         if h:
             cards.append(h)
+    return "".join(cards)
+
+
+def render_process_events(events, include_transient=False):
+    """把一组过程事件按顺序渲染成样式卡片（步骤在前、与正文区分）。"""
+    cards = _process_events_html(
+        events,
+        include_transient=include_transient,
+        active_step=4,
+    )
     if cards:
-        st.markdown("".join(cards), unsafe_allow_html=True)
+        st.markdown(cards, unsafe_allow_html=True)
 
 
 def render_assistant_message(msg):
-    """渲染一条助手消息：先过程步骤卡片，再模型回复正文（正文无卡片、明显不同）。
-
-    兼容新结构 {"process_events": [...], "response": "..."} 与旧结构 {"content": "..."}。
-    """
+    """渲染一条助手消息：过程步骤固定在前，模型回复正文固定在后。"""
     if isinstance(msg.get("process_events"), list) or "response" in msg:
-        render_process_events(msg.get("process_events", []))
+        render_process_events(msg.get("process_events", []), include_transient=False)
         resp = msg.get("response", "")
         if resp:
             st.markdown(resp)
@@ -163,52 +461,79 @@ def render_assistant_message(msg):
         st.markdown(msg.get("content", ""))
 
 
-def _run_streaming_impl(async_gen_factory):
-    """内部实现，被 run_streaming_realtime 包装。
+def _render_process_panel(panel, events, include_transient=False, active_step=None):
+    """整块替换固定过程区，避免旧 DOM 和重复步骤被追加显示。"""
+    html = _process_events_html(
+        events,
+        include_transient=include_transient,
+        active_step=active_step,
+    )
+    if html:
+        panel.markdown(html, unsafe_allow_html=True)
+    else:
+        panel.empty()
 
-    关键设计：
-    - 每个过程事件渲染成一张样式卡片，逐个追加、永久保留、按顺序出现。
-    - 「正在思考」占位立即显示，避免发送后长时间空白。
-    - 回复容器延迟到第一个 token 才创建，保证回复排在所有步骤卡片之后（顺序不再颠倒）。
-    - 卡片间极短停顿，让步骤按顺序“走出来”，不会瞬时挤成一坨。
-    """
+
+def _is_revision_signal(evt):
+    if evt.get("event") == "response_reset":
+        return True
+    data = evt.get("data", {}) or {}
+    text = " ".join(str(data.get(key, "")) for key in ("message", "input", "output"))
+    return any(marker in text for marker in ("优化计划", "修订", "改进版", "审核意见"))
+
+
+def _run_streaming_impl(async_gen_factory, *, postprocess=None):
+    """后台消费 SSE，主 UI 在两个固定容器内分别更新步骤和正文。"""
     event_q = thread_queue.Queue()
     all_events = []
-    token_buffer = []
-    done_response = ""
+    response_buffer = StreamResponseBuffer()
     stop_event = threading.Event()
 
     def _bg_worker():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
         async def _drain():
             try:
                 gen = async_gen_factory()
-                async for sse_line in gen:
-                    if stop_event.is_set():
-                        break
-                    if sse_line.startswith("data: "):
-                        try:
-                            event_q.put(json.loads(sse_line[6:]))
-                        except json.JSONDecodeError:
-                            pass
+                try:
+                    async for sse_line in gen:
+                        if stop_event.is_set():
+                            break
+                        if sse_line.startswith("data: "):
+                            try:
+                                event_q.put(json.loads(sse_line[6:]))
+                            except json.JSONDecodeError:
+                                pass
+                finally:
+                    await gen.aclose()
                 event_q.put(None)
             except Exception as e:
+                log_exception("ui.streaming_worker", e)
                 event_q.put({"event": "error", "data": {"message": str(e)}, "step": ""})
                 event_q.put(None)
-        loop.run_until_complete(_drain())
-        loop.close()
+
+        try:
+            SharedAsyncRunner.submit(_drain()).result()
+        except Exception as e:
+            log_exception("ui.streaming_worker_join", e)
+            event_q.put({"event": "error", "data": {"message": str(e)}, "step": ""})
+            event_q.put(None)
 
     bg = threading.Thread(target=_bg_worker, daemon=True)
     bg.start()
 
-    # 立即显示“正在思考”占位，避免空白
     loading = st.empty()
     loading.markdown("⏳ 正在思考，正在规划处理步骤…")
 
-    # 延迟创建：保证回复出现在步骤卡片之后
-    response_container = None
+    # 单一 empty 占位符每次整块替换，避免流式刷新累积旧 DOM。
+    process_panel = st.empty()
+    response_container = st.empty()
     first_event = True
+    rendered_active_step = 1
+    _render_process_panel(
+        process_panel,
+        [],
+        include_transient=True,
+        active_step=1,
+    )
 
     try:
         while True:
@@ -230,35 +555,68 @@ def _run_streaming_impl(async_gen_factory):
                 loading.empty()
                 first_event = False
 
+            if _is_revision_signal(evt):
+                response_buffer.reset()
+                response_container.empty()
+
+            response_buffer.handle_event(evt)
+
             if event_type == "token":
-                token = data.get("token", "")
-                token_buffer.append(token)
-                if response_container is None:
-                    response_container = st.empty()
-                response_container.markdown("".join(token_buffer))
+                response_container.markdown(response_buffer.text)
+                current_active_step = infer_active_step(all_events)
+                if current_active_step != rendered_active_step:
+                    _render_process_panel(
+                        process_panel,
+                        all_events,
+                        include_transient=True,
+                        active_step=current_active_step,
+                    )
+                    rendered_active_step = current_active_step
+                continue
+
+            if event_type == "response_reset":
+                response_container.empty()
                 continue
 
             if event_type == "done":
-                done_response = data.get("response", "")
-                if not token_buffer and done_response:
-                    if response_container is None:
-                        response_container = st.empty()
-                    response_container.markdown(done_response)
+                if response_buffer.text:
+                    response_container.markdown(response_buffer.text)
                 continue
 
-            card_html = _fmt_event_html(evt)
-            if card_html:
-                st.markdown(card_html, unsafe_allow_html=True)
-                time.sleep(0.02)
+            current_active_step = infer_active_step(all_events)
+            _render_process_panel(
+                process_panel,
+                all_events,
+                include_transient=True,
+                active_step=current_active_step,
+            )
+            rendered_active_step = current_active_step
     finally:
         stop_event.set()
 
     if first_event:
         loading.empty()
 
-    final_response = "".join(token_buffer) if token_buffer else done_response
-    return final_response, all_events
+    final_response = response_buffer.text
+    _render_process_panel(
+        process_panel,
+        all_events,
+        include_transient=False,
+        active_step=4,
+    )
+    if postprocess:
+        postprocess_events = postprocess(final_response, list(all_events)) or []
+        all_events.extend(postprocess_events)
+        all_events = deduplicate_process_events(all_events)
 
+    # 完成后移除“正在生成…”等瞬态状态，只保留有永久价值的过程事件。
+    _render_process_panel(
+        process_panel,
+        all_events,
+        include_transient=False,
+        active_step=4,
+    )
+    return final_response, all_events
 
 
 # ========== 侧边栏配置 ==========
@@ -314,6 +672,7 @@ with st.sidebar:
         else:
             emb_status, emb_msg = "missing", str(_emb_st)
     except Exception as _emb_err:
+        log_warning("ui.embedding_status", str(_emb_err))
         emb_status, emb_msg = "missing", f"Embedding 状态检测异常: {_emb_err}"
     if emb_status == "ok":
         st.success(f"✅ {emb_msg}")
@@ -363,14 +722,14 @@ with st.sidebar:
     st.subheader("🧠 记忆管理")
     
     if st.button("🗑️ 清空所有记忆", key="clear_all_memories"):
-        from app.memory.md_memory import MDMemory
-        md_memory = MDMemory()
-        user_dir = md_memory._get_user_dir(st.session_state["user_id"])
-        if os.path.exists(user_dir):
-            import shutil
-            shutil.rmtree(user_dir)
-            st.success("已清空所有 MD 文档记忆")
-            st.rerun()
+        _queue_sensitive_action(
+            "memory_clear",
+            {
+                "user_id": st.session_state["user_id"],
+                "idempotency_key": f"memory-clear-{uuid.uuid4().hex}",
+            },
+            "清空该用户的全部长期记忆",
+        )
 
     st.markdown("---")
     st.subheader("📖 架构说明")
@@ -389,6 +748,7 @@ with st.sidebar:
 
 # ========== 主界面 ==========
 st.markdown('<div class="main-header">🤖 SmartLife Agent v2</div>', unsafe_allow_html=True)
+render_sensitive_action_approval()
 
 tab1, tab2, tab3, tab4 = st.tabs(["🛒 购物场景", "✈️ 旅游场景", "🤝 社交协商", "👤 个人中心"])
 
@@ -404,54 +764,8 @@ with tab1:
         with st.chat_message(msg["role"]):
             render_assistant_message(msg)
 
-    # 2. 记忆提取面板（在模型输出之后、输入框之前）
-    if st.session_state.get("show_memory_extraction"):
-        st.subheader("📝 记忆提取结果")
-        with st.expander("🔍 提取诊断（验证小模型是否执行）"):
-            st.code(st.session_state.get("memory_diag", "无诊断信息"))
-        _orch = get_orchestrator_v2()
-        candidates = st.session_state.get("candidate_memories", [])
-        if not candidates:
-            st.info("小模型本次未提取到值得保存的记忆。")
-            if st.button("👌 知道了", key="dismiss_empty"):
-                st.session_state["show_memory_extraction"] = False
-                st.rerun()
-        selected_indices = []
-        for i, candidate in enumerate(candidates):
-            emoji = {"shopping": "🛍️", "travel": "✈️", "general": "📝"}.get(candidate["category"], "📝")
-            confidence = {"high": "高", "medium": "中", "low": "低"}.get(candidate["confidence"], "中")
-            col1, col2 = st.columns([4, 1])
-            with col1:
-                st.write(f"{i+1}. {emoji} {candidate['content']} (置信度: {confidence})")
-            with col2:
-                if st.checkbox("保存", key=f"memory_{i}", value=False):
-                    selected_indices.append(i)
-        if candidates:
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                if st.button("✅ 确认写入选中", key="save_selected_memories"):
-                    if selected_indices and _orch:
-                        saved_ids = _orch.save_user_selected_memories(st.session_state["user_id"], candidates, selected_indices)
-                        st.success(f"已保存 {len(saved_ids)} 条记忆")
-                        st.session_state["show_memory_extraction"] = False
-                        st.session_state["candidate_memories"] = []
-                        st.rerun()
-                    else:
-                        st.warning("请先勾选要保存的记忆")
-            with col2:
-                if st.button("❌ 拒绝写入", key="skip_memories"):
-                    st.session_state["show_memory_extraction"] = False
-                    st.session_state["candidate_memories"] = []
-                    st.rerun()
-            with col3:
-                if st.button("💾 全部写入", key="save_all_memories"):
-                    if _orch:
-                        all_indices = list(range(len(candidates)))
-                        saved_ids = _orch.save_user_selected_memories(st.session_state["user_id"], candidates, all_indices)
-                        st.success(f"已保存 {len(saved_ids)} 条记忆")
-                        st.session_state["show_memory_extraction"] = False
-                        st.session_state["candidate_memories"] = []
-                        st.rerun()
+    # 2. 记忆提取面板（仅显示真实候选或失败；无价值诊断不展示）
+    render_memory_extraction_panel("shopping", "shopping")
 
     # 3. 处理待处理的新消息（渲染响应 + 提取记忆）
     if st.session_state.get("pending_shopping"):
@@ -462,32 +776,35 @@ with tab1:
         with st.chat_message("assistant"):
             orch = get_orchestrator_v2()
             _uid = st.session_state["user_id"]
+            browser_session_id = st.session_state["browser_session_id"]
             if orch:
                 async def _gen():
-                    async for line in orch.process_streaming(prompt, _uid):
+                    async for line in orch.process_streaming(
+                        prompt, _uid, browser_session_id, scene="shopping"
+                    ):
                         yield line
-                response, _events = run_streaming_realtime(_gen)
+
+                def _postprocess(_response, stream_events):
+                    return _extract_memories_after_stream(
+                        orch,
+                        _uid,
+                        browser_session_id,
+                        "shopping",
+                        stream_events,
+                    )
+
+                response, _events = run_streaming_realtime(
+                    _gen,
+                    postprocess=_postprocess,
+                )
             else:
                 response = "请先在左侧配置 API Key"
                 _events = []
                 st.warning(response)
-            # Step 4/4 过程卡（在气泡内、归入步骤组）
-            _events.append({"event": "step", "data": {
-                "step": 4, "total": 4,
-                "name": "记忆提取",
-                "description": "小模型分析本次对话，提取值得保存的记忆"
-            }})
-            st.markdown(_fmt_event_html(_events[-1]), unsafe_allow_html=True)
         st.session_state["shopping_msgs"].append({
             "role": "assistant", "process_events": _events, "response": response
         })
-        # 对话结束后提取候选记忆（Step 4/4）
-        if orch:
-            candidates, diag = orch.extract_candidate_memories_with_diag(_uid, "default")
-            st.session_state["candidate_memories"] = candidates
-            st.session_state["memory_diag"] = diag
-            st.session_state["show_memory_extraction"] = True
-            st.rerun()
+        st.rerun()
 
     # 4. 输入框永远在最后
     if user_input := st.chat_input("描述你的购物需求...", key="shopping_input"):
@@ -506,54 +823,8 @@ with tab2:
         with st.chat_message(msg["role"]):
             render_assistant_message(msg)
 
-    # 2. 记忆提取面板（在模型输出之后、输入框之前）
-    if st.session_state.get("show_memory_extraction"):
-        st.subheader("📝 记忆提取结果")
-        with st.expander("🔍 提取诊断（验证小模型是否执行）"):
-            st.code(st.session_state.get("memory_diag", "无诊断信息"))
-        _orch = get_orchestrator_v2()
-        candidates = st.session_state.get("candidate_memories", [])
-        if not candidates:
-            st.info("小模型本次未提取到值得保存的记忆。")
-            if st.button("👌 知道了", key="dismiss_empty_travel"):
-                st.session_state["show_memory_extraction"] = False
-                st.rerun()
-        selected_indices = []
-        for i, candidate in enumerate(candidates):
-            emoji = {"shopping": "🛍️", "travel": "✈️", "general": "📝"}.get(candidate["category"], "📝")
-            confidence = {"high": "高", "medium": "中", "low": "低"}.get(candidate["confidence"], "中")
-            col1, col2 = st.columns([4, 1])
-            with col1:
-                st.write(f"{i+1}. {emoji} {candidate['content']} (置信度: {confidence})")
-            with col2:
-                if st.checkbox("保存", key=f"memory_travel_{i}", value=False):
-                    selected_indices.append(i)
-        if candidates:
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                if st.button("✅ 确认写入选中", key="save_selected_memories_travel"):
-                    if selected_indices and _orch:
-                        saved_ids = _orch.save_user_selected_memories(st.session_state["user_id"], candidates, selected_indices)
-                        st.success(f"已保存 {len(saved_ids)} 条记忆")
-                        st.session_state["show_memory_extraction"] = False
-                        st.session_state["candidate_memories"] = []
-                        st.rerun()
-                    else:
-                        st.warning("请先勾选要保存的记忆")
-            with col2:
-                if st.button("❌ 拒绝写入", key="skip_memories_travel"):
-                    st.session_state["show_memory_extraction"] = False
-                    st.session_state["candidate_memories"] = []
-                    st.rerun()
-            with col3:
-                if st.button("💾 全部写入", key="save_all_memories_travel"):
-                    if _orch:
-                        all_indices = list(range(len(candidates)))
-                        saved_ids = _orch.save_user_selected_memories(st.session_state["user_id"], candidates, all_indices)
-                        st.success(f"已保存 {len(saved_ids)} 条记忆")
-                        st.session_state["show_memory_extraction"] = False
-                        st.session_state["candidate_memories"] = []
-                        st.rerun()
+    # 2. 记忆提取面板（仅显示真实候选或失败；无价值诊断不展示）
+    render_memory_extraction_panel("travel", "travel")
 
     # 3. 处理待处理的新消息（渲染响应 + 提取记忆）
     if st.session_state.get("pending_travel"):
@@ -564,32 +835,35 @@ with tab2:
         with st.chat_message("assistant"):
             orch = get_orchestrator_v2()
             _uid = st.session_state["user_id"]
+            browser_session_id = st.session_state["browser_session_id"]
             if orch:
                 async def _gen():
-                    async for line in orch.process_streaming(prompt, _uid):
+                    async for line in orch.process_streaming(
+                        prompt, _uid, browser_session_id, scene="travel"
+                    ):
                         yield line
-                response, _events = run_streaming_realtime(_gen)
+
+                def _postprocess(_response, stream_events):
+                    return _extract_memories_after_stream(
+                        orch,
+                        _uid,
+                        browser_session_id,
+                        "travel",
+                        stream_events,
+                    )
+
+                response, _events = run_streaming_realtime(
+                    _gen,
+                    postprocess=_postprocess,
+                )
             else:
                 response = "请先在左侧配置 API Key"
                 _events = []
                 st.warning(response)
-            # Step 4/4 过程卡（在气泡内、归入步骤组）
-            _events.append({"event": "step", "data": {
-                "step": 4, "total": 4,
-                "name": "记忆提取",
-                "description": "小模型分析本次对话，提取值得保存的记忆"
-            }})
-            st.markdown(_fmt_event_html(_events[-1]), unsafe_allow_html=True)
         st.session_state["travel_msgs"].append({
             "role": "assistant", "process_events": _events, "response": response
         })
-        # 对话结束后提取候选记忆（Step 4/4）
-        if orch:
-            candidates, diag = orch.extract_candidate_memories_with_diag(_uid, "default")
-            st.session_state["candidate_memories"] = candidates
-            st.session_state["memory_diag"] = diag
-            st.session_state["show_memory_extraction"] = True
-            st.rerun()
+        st.rerun()
 
     # 4. 输入框永远在最后
     if user_input := st.chat_input("描述你的旅行计划...", key="travel_input"):
@@ -602,6 +876,44 @@ with tab3:
 
     if "social_msgs" not in st.session_state:
         st.session_state["social_msgs"] = []
+
+    participant_ids_text = st.text_input(
+        "参与者 ID（逗号分隔）",
+        value=st.session_state["user_id"],
+        key="negotiation_participant_ids",
+    )
+    participant_budgets_text = st.text_input(
+        "每人预算（逗号分隔，可选）",
+        value="",
+        key="negotiation_budgets",
+    )
+    participant_styles_text = st.text_input(
+        "每人偏好风格（逗号分隔；多人用 | 分隔，可选）",
+        value="",
+        key="negotiation_styles",
+    )
+
+    participant_ids = [item.strip() for item in participant_ids_text.split(",") if item.strip()]
+    budget_values = [item.strip() for item in participant_budgets_text.split(",")]
+    style_groups = [item.strip() for item in participant_styles_text.split("|")]
+    negotiation_participants = []
+    for index, participant_id in enumerate(participant_ids):
+        budget = 0.0
+        if index < len(budget_values):
+            try:
+                budget = float(budget_values[index])
+            except ValueError:
+                budget = 0.0
+        styles = [
+            style.strip()
+            for style in (style_groups[index] if index < len(style_groups) else "").split(",")
+            if style.strip()
+        ]
+        negotiation_participants.append({
+            "user_id": participant_id,
+            "budget_constraint": budget,
+            "travel_preferences": {"preferred_styles": styles},
+        })
 
     for msg in st.session_state["social_msgs"][-6:]:
         with st.chat_message(msg["role"]):
@@ -617,7 +929,10 @@ with tab3:
             _uid = st.session_state["user_id"]
             if orch:
                 async def _gen():
-                    async for line in orch.process_streaming(prompt, _uid):
+                    async for line in orch.process_negotiation_streaming(
+                        negotiation_participants,
+                        scenario="travel",
+                    ):
                         yield line
                 response, _ = run_streaming_realtime(_gen)
             else:
@@ -724,20 +1039,52 @@ with tab4:
     
     # ===== 手动压缩 =====
     st.subheader("🗜️ 手动压缩对话")
+    compress_scene = st.selectbox(
+        "压缩范围",
+        options=["shopping", "travel", "social"],
+        format_func=lambda value: {
+            "shopping": "购物/客服",
+            "travel": "旅行",
+            "social": "社交协商",
+        }[value],
+        key="compress_scene",
+    )
     if st.button("压缩当前对话", key="compress_conversation"):
         orch = get_orchestrator_v2()
         if orch:
-            summary = orch.compress_conversation(st.session_state["user_id"], "default")
+            summary = orch.compress_conversation(
+                st.session_state["user_id"],
+                st.session_state["browser_session_id"],
+                scene=compress_scene,
+            )
             if summary:
-                st.write("**压缩结果：**")
-                st.write(summary)
-                
-                if st.button("💾 保存压缩结果", key="save_compressed"):
-                    memory_id = orch.save_compressed_summary(st.session_state["user_id"], summary)
-                    st.success(f"已保存压缩结果，ID: {memory_id}")
-                    st.rerun()
+                st.session_state["pending_compressed_summary"] = summary
+                st.session_state["pending_compressed_scene"] = compress_scene
+                st.rerun()
             else:
                 st.info("没有可压缩的对话")
+
+    pending_summary = st.session_state.get("pending_compressed_summary", "")
+    if pending_summary:
+        st.write("**压缩结果：**")
+        st.write(pending_summary)
+        save_col, discard_col = st.columns(2)
+        with save_col:
+            if st.button("💾 保存压缩结果", key="save_compressed"):
+                _queue_sensitive_action(
+                    "memory_save_summary",
+                    {
+                        "user_id": st.session_state["user_id"],
+                        "summary": pending_summary,
+                        "idempotency_key": f"memory-summary-{uuid.uuid4().hex}",
+                    },
+                    "保存对话压缩摘要到长期记忆",
+                )
+        with discard_col:
+            if st.button("❌ 放弃压缩结果", key="discard_compressed"):
+                st.session_state.pop("pending_compressed_summary", None)
+                st.session_state.pop("pending_compressed_scene", None)
+                st.rerun()
     
     st.markdown("---")
     
@@ -745,7 +1092,9 @@ with tab4:
     st.subheader("📄 MD 文档记忆管理")
     try:
         from app.memory.md_memory import MDMemory
+        from app.memory.repository import get_memory_repository
         md_memory = MDMemory()
+        memory_repository = get_memory_repository()
         
         # 显示所有记忆
         all_memories = md_memory.get_all_memories(st.session_state["user_id"])
@@ -760,9 +1109,15 @@ with tab4:
                     col1, col2 = st.columns(2)
                     with col1:
                         if st.button(f"🗑️ 删除", key=f"delete_{memory['id']}"):
-                            md_memory.delete_memory(st.session_state["user_id"], memory['id'])
-                            st.success("已删除")
-                            st.rerun()
+                            _queue_sensitive_action(
+                                "memory_delete",
+                                {
+                                    "user_id": st.session_state["user_id"],
+                                    "memory_id": memory["id"],
+                                    "idempotency_key": f"memory-delete-{memory['id']}-{uuid.uuid4().hex}",
+                                },
+                                f"删除记忆 {memory['id']}",
+                            )
                     with col2:
                         new_content = st.text_area(
                             "编辑内容",
@@ -771,9 +1126,16 @@ with tab4:
                             height=100
                         )
                         if st.button(f"💾 更新", key=f"update_{memory['id']}"):
-                            md_memory.update_memory(st.session_state["user_id"], memory['id'], new_content)
-                            st.success("已更新")
-                            st.rerun()
+                            _queue_sensitive_action(
+                                "memory_update",
+                                {
+                                    "user_id": st.session_state["user_id"],
+                                    "memory_id": memory["id"],
+                                    "content": new_content,
+                                    "idempotency_key": f"memory-update-{memory['id']}-{uuid.uuid4().hex}",
+                                },
+                                f"更新记忆 {memory['id']}",
+                            )
         else:
             st.info("暂无 MD 文档记忆")
     except Exception as e:

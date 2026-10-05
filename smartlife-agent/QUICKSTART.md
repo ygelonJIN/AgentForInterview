@@ -55,11 +55,15 @@ cd '/Volumes/TUF ESD-T1A Media/xagent/smartlife-agent'
 python3 -m venv venv312
 source venv312/bin/activate
 
-# 安装依赖
-pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+# 安装已锁定依赖（可复现环境）
+pip install -r requirements.lock -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-# 设置 API Key
+# 设置 API Key（可写入本地 data/config.json；该文件已忽略，不要提交 Git）
 export OPENAI_API_KEY="your-api-key-here"
+# 也可以分别设置：
+# export SMARTLIFE_MAIN_API_KEY="..."
+# export SMARTLIFE_SMALL_API_KEY="..."
+# export SMARTLIFE_EMBEDDING_API_KEY="..."
 
 # 初始化数据库
 python data/init_db.py

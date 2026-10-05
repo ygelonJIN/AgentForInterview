@@ -4,7 +4,7 @@ RAG 评测测试
 import pytest
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-os.environ.setdefault("OPENAI_API_KEY", "sk-test-dummy-key-for-testing")
+os.environ.setdefault("OPENAI_API_KEY", "test-dummy-key-for-testing")
 
 def test_reranker_class():
     """测试 Reranker 类定义"""
@@ -37,6 +37,7 @@ def test_nl2sql_model():
 def test_rag_retriever_class():
     """测试 RAG 检索器类定义"""
     from app.retrieval.rag import RAGRetriever
+    assert hasattr(RAGRetriever, 'retrieve')
     assert hasattr(RAGRetriever, 'search')
     assert hasattr(RAGRetriever, 'search_with_score')
 

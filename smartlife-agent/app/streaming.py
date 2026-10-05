@@ -5,9 +5,13 @@ Streaming 事件系统 - 全链路实时推送
 import asyncio
 import json
 import time
-from typing import AsyncGenerator, Dict, Any, Optional, Callable
+from typing import AsyncGenerator, Dict, Any, Callable, List, Optional
 from dataclasses import dataclass, field, asdict
 from enum import Enum
+
+
+def _event_type_value(event_type: Any) -> str:
+    return str(getattr(event_type, "value", event_type))
 
 
 class EventType(str, Enum):
@@ -20,6 +24,7 @@ class EventType(str, Enum):
     TOOL_RESULT = "tool_result"    # 工具返回结果
     RETRIEVAL = "retrieval"        # 检索结果
     TOKEN = "token"                # 流式 token（打字机效果）
+    RESPONSE_RESET = "response_reset"  # 新版本正文替换旧版本正文
     STEP = "step"                  # 步骤进度
     ERROR = "error"                # 错误
     DONE = "done"                  # 完成
@@ -58,7 +63,7 @@ class EventQueue:
     async def emit(self, event_type: str, data: Dict[str, Any], step: str = ""):
         """推送事件"""
         event = StreamEvent(
-            event=event_type,
+            event=_event_type_value(event_type),
             data=data,
             step=step
         )
@@ -74,6 +79,10 @@ class EventQueue:
     async def emit_token(self, token: str, step: str = ""):
         """推送流式 token"""
         await self.emit(EventType.TOKEN, {"token": token}, step)
+
+    async def emit_response_reset(self, step: str = ""):
+        """通知 UI 清空当前流式正文，后续 token 是替换版本。"""
+        await self.emit(EventType.RESPONSE_RESET, {}, step)
 
     async def emit_tool_call(self, tool_name: str, tool_input: Any = None, step: str = ""):
         """推送工具调用"""
@@ -116,6 +125,46 @@ class EventQueue:
         """转换为 SSE 流"""
         async for event in self:
             yield event.to_sse()
+
+
+def deduplicate_process_events(events: Any) -> List[Dict[str, Any]]:
+    """按逻辑执行节点去重，同时保留该节点最后一次状态。
+
+    流式 UI 会随每个事件刷新整块过程区，后端重试或重复事件不应显示成两次执行。
+    Step 按步骤编号去重，分类结果按分类节点去重，工具事件只合并完全相同的调用。
+    """
+    ordered_keys: List[Any] = []
+    by_key: Dict[Any, Dict[str, Any]] = {}
+
+    for index, event in enumerate(events or []):
+        if not isinstance(event, dict):
+            continue
+        event_type = _event_type_value(event.get("event", ""))
+        data = event.get("data") or {}
+        stream_step = event.get("step", "")
+
+        if event_type == EventType.STEP:
+            logical_step = data.get("step") or data.get("name") or stream_step
+            key = ("step", logical_step)
+        elif event_type == EventType.CLASSIFY:
+            key = ("classify", stream_step or "classify")
+        elif event_type in {EventType.TOOL_CALL, EventType.TOOL_RESULT}:
+            payload_key = "input" if event_type == EventType.TOOL_CALL else "output"
+            key = (
+                event_type,
+                stream_step,
+                data.get("tool", ""),
+                payload_key,
+                data.get(payload_key, ""),
+            )
+        else:
+            key = ("unique", index)
+
+        if key not in by_key:
+            ordered_keys.append(key)
+        by_key[key] = event
+
+    return [by_key[key] for key in ordered_keys]
 
 
 class StreamingLLMCallback:

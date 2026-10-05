@@ -4,7 +4,7 @@
 import pytest
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-os.environ.setdefault("OPENAI_API_KEY", "sk-test-dummy-key-for-testing")
+os.environ.setdefault("OPENAI_API_KEY", "test-dummy-key-for-testing")
 
 def test_preference_model():
     from app.negotiation.preference import UserPreference

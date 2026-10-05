@@ -2,13 +2,16 @@
 Travel Agent - Plan & Execute 行程规划
 支持同步 + 异步流式两种调用方式
 """
-import json
 import os
+import re
+from functools import partial
 from typing import Dict, List, Any, Optional, AsyncGenerator
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 from app.config import create_llm
 from app.memory.long_term import LongTermMemory
+from app.agents.travel_graph import TravelPlanGraph
+from app.streaming import EventType
 
 
 class TravelPlan(BaseModel):
@@ -25,6 +28,7 @@ class TravelAgent:
     """旅游 Agent - Plan & Execute 模式"""
 
     def __init__(self, model_name: str = None):
+        self.model_name = model_name
         self.llm = create_llm(model_name)
         self._memory = None
 
@@ -45,24 +49,30 @@ class TravelAgent:
 4. 考虑天气因素
 5. 控制在预算范围内
 
-用中文回复，输出清晰的行程安排。"""),
+用中文回复，输出清晰、完整的最终行程正文。审核宽松，仅在严重硬错误时按需修订。不要输出版本说明、审核附注、改进说明或重复标题。"""),
             ("user", "{input}")
         ])
 
         self.reflect_prompt = ChatPromptTemplate.from_messages([
-            ("system", """你是旅行计划审核专家。检查以下计划是否合理。
+            ("system", """你是旅行计划审核专家。审核要宽松，只标记会实际影响执行的严重硬错误。
 
-检查要点：
-1. 时间安排是否合理（不要一天排8个景点）
-2. 预算是否超支
-3. 地理位置是否方便
-4. 是否有遗漏（用餐、休息时间）
-5. 天气是否适合
+严重硬错误仅包括：
+1. 天数明确不符合用户要求
+2. 总预算明确超支，或分项明显算错
+3. 每日路线明确冲突、无法执行
+4. 明确遗漏目的地、天数、预算等核心约束
 
-如果计划合理，直接说"计划合理，无需修改"。
-如果有问题，指出具体问题和改进建议。
-用中文回复。"""),
+风格、措辞、可选优化、轻微偏好差异和一般改进建议都不算严重问题。
+不确定时优先判 pass；不要为了“更完美”而要求重写。
+严格返回 JSON，不要其他文字：
+{{"severity": "pass", "is_satisfactory": true, "issues": [], "suggestions": []}}
+severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisfactory=false；minor 只能放进 suggestions。"""),
             ("user", "原始请求：{original_request}\n\n生成的计划：{plan}")
+        ])
+
+        self.revise_prompt = ChatPromptTemplate.from_messages([
+            ("system", "你是旅行规划专家。请只修复审核指出的预算、天数或路线硬错误，并输出一份完整、唯一的最终行程。不要输出审核意见、修订说明、版本附注或重复标题。"),
+            ("user", "原始请求：{original_request}\n\n上一版计划：{plan}\n\n审核意见：{feedback}\n\n请输出完整改进后的计划。")
         ])
 
         self.chat_prompt = ChatPromptTemplate.from_messages([
@@ -80,11 +90,11 @@ class TravelAgent:
                 pass
         return self._memory
 
-    def _get_memory_context(self, user_id: str) -> str:
+    def _get_memory_context(self, user_id: str, query: str = "") -> str:
         """获取跨场景记忆上下文"""
         if not self.memory:
             return ""
-        cross_memories = self.memory.get_cross_scene_memories(user_id, "travel")
+        cross_memories = self.memory.get_cross_scene_memories(user_id, "travel", query=query)
         if cross_memories:
             return "\n用户历史偏好（来自购物记忆）：\n" + "\n".join(
                 [m["content"] for m in cross_memories[:3]]
@@ -121,51 +131,144 @@ class TravelAgent:
                     pass
         return "\n\n".join(relevant)
 
+    def _build_plan_context(
+        self,
+        user_input: str,
+        user_id: str,
+        chat_history: Optional[List[Any]] = None,
+    ) -> str:
+        guide_context = self._read_local_guides(user_input)
+        memory_context = self._get_memory_context(user_id, query=user_input)
+        parts = []
+        if chat_history:
+            history_lines = []
+            for message in list(chat_history)[-10:]:
+                role = getattr(message, "type", getattr(message, "role", "message"))
+                content = getattr(message, "content", str(message))
+                history_lines.append(f"{role}: {content}")
+            parts.append("【本轮对话历史】\n" + "\n".join(history_lines))
+        if guide_context:
+            parts.append(f"【参考攻略】\n{guide_context}")
+        if memory_context:
+            parts.append(memory_context)
+        return "\n\n".join(parts)
+
+    async def _planner_streaming(
+        self,
+        request: str,
+        context: str,
+        previous_plan: Optional[str] = None,
+        feedback: Optional[str] = None,
+        on_token=None,
+        llm=None,
+    ) -> str:
+        active_llm = llm or self.llm
+        if previous_plan is None:
+            chain = self.plan_prompt | active_llm
+            values = {"input": f"{request}\n\n{context}".strip()}
+            stage = "plan"
+        else:
+            chain = self.revise_prompt | active_llm
+            values = {
+                "original_request": request,
+                "plan": previous_plan,
+                "feedback": feedback or "请完善计划",
+            }
+            stage = "revise"
+
+        result = ""
+        async for chunk in chain.astream(values):
+            if chunk.content:
+                result += chunk.content
+                if on_token:
+                    await on_token(chunk.content, stage)
+        return result
+
+    async def _reflector_streaming(self, request: str, plan: str, llm=None):
+        chain = self.reflect_prompt | (llm or self.llm)
+        result = await chain.ainvoke({"original_request": request, "plan": plan})
+        return result.content
+
+    async def _planner_sync_adapter(
+        self,
+        request: str,
+        context: str,
+        previous_plan: Optional[str] = None,
+        feedback: Optional[str] = None,
+        on_token=None,
+    ) -> str:
+        if previous_plan is None:
+            messages = self.plan_prompt.format_messages(input=f"{request}\n\n{context}".strip())
+        else:
+            messages = self.revise_prompt.format_messages(
+                original_request=request,
+                plan=previous_plan,
+                feedback=feedback or "请完善计划",
+            )
+        result = self.llm.invoke(messages)
+        return result.content
+
+    async def _reflector_sync_adapter(self, request: str, plan: str):
+        messages = self.reflect_prompt.format_messages(original_request=request, plan=plan)
+        return self.llm.invoke(messages).content
+
+    @staticmethod
+    async def _execute_plan_step(step: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, Any]:
+        description = str(step.get("description", ""))
+        return {
+            "status": "completed",
+            "result": f"已核对本地攻略、预算/时间约束和上下文：{description[:80]}",
+            "source": "local_guides",
+            "limitations": "天气、路线和酒店 provider 可配置；模拟工具结果必须标记，不当作真实数据",
+        }
+
+    @staticmethod
+    def _remove_revision_notes(plan: str) -> str:
+        """不让审核/修订附注进入最终用户正文。"""
+        return re.sub(
+            r"\n+(?:改进说明|审核意见附注|修订说明|版本说明)\s*[:：].*$",
+            "",
+            plan or "",
+            flags=re.DOTALL,
+        ).strip()
+
     # ========== 同步接口（兼容旧代码）==========
 
-    def plan_trip(self, user_input: str, user_id: str = "user_001") -> Dict[str, Any]:
-        """同步规划旅行 - Plan & Execute + Reflection"""
-        memory_context = self._get_memory_context(user_id)
-        full_input = user_input + memory_context
-
-        # Step 1: 生成初始计划
-        plan_messages = self.plan_prompt.format_messages(input=full_input)
-        plan_response = self.llm.invoke(plan_messages)
-        current_plan = plan_response.content
-
-        # Step 2: Reflection 自检（最多3次）
-        iterations = 1
-        for i in range(3):
-            reflect_messages = self.reflect_prompt.format_messages(
-                original_request=user_input,
-                plan=current_plan
-            )
-            reflect_response = self.llm.invoke(reflect_messages)
-
-            try:
-                reflection = json.loads(reflect_response.content)
-                if reflection.get("is_satisfactory", True):
-                    break
-                if reflection.get("suggestions"):
-                    revise_messages = self.plan_prompt.format_messages(
-                        input=f"{full_input}\n\n请根据以下建议改进计划：\n" + "\n".join(reflection["suggestions"])
-                    )
-                    revised = self.llm.invoke(revise_messages)
-                    current_plan = revised.content
-                    iterations = i + 2
-            except (json.JSONDecodeError, KeyError):
-                break
-
+    def plan_trip(
+        self,
+        user_input: str,
+        user_id: str = "user_001",
+        chat_history: Optional[List[Any]] = None,
+    ) -> Dict[str, Any]:
+        """同步规划旅行 - 与流式入口共享 TravelPlanGraph。"""
+        context = self._build_plan_context(user_input, user_id, chat_history)
+        graph = TravelPlanGraph(
+            planner=self._planner_sync_adapter,
+            reflector=self._reflector_sync_adapter,
+            executor=self._execute_plan_step,
+            max_revisions=3,
+        )
+        state = graph.run(
+            user_input,
+            user_id,
+            context,
+            thread_id=f"travel:{user_id}:sync",
+            chat_history=chat_history,
+        )
         return {
-            "plan": current_plan,
+            "plan": self._remove_revision_notes(state["final_plan"]),
             "agent": "travel",
-            "memories_used": 1 if memory_context else 0,
-            "iterations": iterations
+            "memories_used": 1 if context else 0,
+            "iterations": state["revision_count"] + 1,
+            "plan_versions": state["plan_versions"],
+            "steps": state["steps"],
+            "reflection": state["reflection"],
+            "status": state["status"],
         }
 
     def chat(self, user_input: str, user_id: str = "user_001") -> Dict[str, Any]:
         """同步旅游问答（非规划类）"""
-        memory_context = self._get_memory_context(user_id)
+        memory_context = self._get_memory_context(user_id, query=user_input)
         full_input = user_input + memory_context
 
         messages = self.chat_prompt.format_messages(input=full_input)
@@ -183,7 +286,8 @@ class TravelAgent:
         self,
         user_input: str,
         user_id: str = "user_001",
-        queue=None
+        queue=None,
+        chat_history: Optional[List[Any]] = None,
     ) -> str:
         """
         异步流式规划旅行
@@ -196,78 +300,82 @@ class TravelAgent:
         Returns:
             str: 最终计划文本
         """
-        memory_context = self._get_memory_context(user_id)
-        guide_context = self._read_local_guides(user_input)
-        full_input = user_input
-        if guide_context:
-            full_input += f"\n\n【参考攻略】\n{guide_context}"
-        if memory_context:
-            full_input += memory_context
-
-        # Step 1: 流式生成初始计划
         if queue:
-            if guide_context:
-                await queue.emit_tool_call("攻略检索", user_input[:60], step="retrieval")
-                await queue.emit_tool_result("攻略检索", "已加载本地攻略", step="retrieval")
-            await queue.emit_thinking("🧠 正在制定旅行计划...", step="plan")
-
-        plan_chain = self.plan_prompt | self.llm
-        current_plan = ""
-
-        async for chunk in plan_chain.astream({"input": full_input}):
-            if chunk.content:
-                current_plan += chunk.content
-                if queue:
-                    await queue.emit_token(chunk.content, step="plan")
-
-        # Step 2: 流式 Reflection 自检
+            await queue.emit(EventType.STEP, {
+                "step": 2,
+                "total": 4,
+                "name": "资料检索与准备",
+                "description": "正在读取本地攻略、当前需求和长期跨场景 MD 记忆",
+                "status": "active",
+            }, step="retrieval")
+        context = self._build_plan_context(user_input, user_id, chat_history)
+        request_llm = create_llm(self.model_name)
         if queue:
-            await queue.emit_thinking("🧠 正在审核计划合理性...", step="reflect")
+            await queue.emit(EventType.STEP, {
+                "step": 2,
+                "total": 4,
+                "name": "资料检索与准备",
+                "description": "资料和长期 MD 记忆已准备完成",
+                "status": "completed",
+            }, step="retrieval")
 
-        reflect_chain = self.reflect_prompt | self.llm
-        reflect_result = await reflect_chain.ainvoke({
-            "original_request": user_input,
-            "plan": current_plan
-        })
-
-        # 判断是否需要修改
-        needs_revision = False
-        feedback = ""
-        try:
-            reflection = json.loads(reflect_result.content)
-            if not reflection.get("is_satisfactory", True) and reflection.get("suggestions"):
-                needs_revision = True
-                feedback = "\n".join(reflection["suggestions"])
-        except (json.JSONDecodeError, KeyError):
-            # 非JSON格式，检查关键词
-            content = reflect_result.content
-            if "问题" in content or "建议" in content or "改进" in content:
-                needs_revision = True
-                feedback = content
-
-        if needs_revision:
+        async def on_token(token: str, stage: str):
             if queue:
-                await queue.emit_thinking("🧠 根据审核意见优化计划...", step="revise")
+                await queue.emit_token(token, step=stage)
 
-            revise_prompt = ChatPromptTemplate.from_messages([
-                ("system", "你是旅行规划专家。根据审核意见改进旅行计划。用中文回复，输出完整改进后的计划。"),
-                ("user", "原始请求：{original}\n\n审核意见：{feedback}\n\n请改进计划。")
-            ])
-            revise_chain = revise_prompt | self.llm
-            revised_plan = ""
+        async def emit_step3(description: str, status: str):
+            if queue:
+                await queue.emit(EventType.STEP, {
+                    "step": 3,
+                    "total": 4,
+                    "name": "生成并审核回复",
+                    "description": description,
+                    "status": status,
+                }, step="generate")
 
-            async for chunk in revise_chain.astream({
-                "original": user_input,
-                "feedback": feedback
-            }):
-                if chunk.content:
-                    revised_plan += chunk.content
-                    if queue:
-                        await queue.emit_token(chunk.content, step="revise")
+        async def on_event(event: str, data: Dict[str, Any]):
+            if not queue:
+                return
+            if event == "plan_started":
+                revision = int(data.get("revision", 0) or 0)
+                if revision:
+                    await emit_step3(f"发现严重硬错误，正在修订（第 {revision + 1}/3 次）", "active")
+                else:
+                    await emit_step3("正在生成完整行程，并准备宽松硬错误检查", "active")
+            elif event == "steps_built":
+                await emit_step3("只核对预算总额、天数、路线和明显无法执行的硬错误", "active")
+            elif event == "steps_executed":
+                await emit_step3("严重硬错误检查完成", "active")
+            elif event == "reflection":
+                if data.get("is_satisfactory"):
+                    await emit_step3("宽松审核通过，无严重硬错误", "completed")
+                else:
+                    await emit_step3("发现严重硬错误，准备按需修订", "active")
+            elif event == "revision":
+                await queue.emit("response_reset", {}, step="revise")
+                count = int(data.get("revision_count", 1) or 1)
+                await emit_step3(f"正在修订严重硬错误（第 {count}/3 次）", "active")
+            elif event == "finalized":
+                await emit_step3("最终行程已生成并通过宽松审核", "completed")
+            elif event == "clarification":
+                await queue.emit_token(data.get("message", ""), step="clarify")
 
-            return revised_plan
-
-        return current_plan
+        graph = TravelPlanGraph(
+            planner=partial(self._planner_streaming, llm=request_llm),
+            reflector=partial(self._reflector_streaming, llm=request_llm),
+            executor=self._execute_plan_step,
+            on_event=on_event,
+            on_token=on_token,
+            max_revisions=3,
+        )
+        state = await graph.run_streaming(
+            user_input,
+            user_id,
+            context,
+            thread_id=f"travel:{user_id}:stream",
+            chat_history=chat_history,
+        )
+        return self._remove_revision_notes(state["final_plan"])
 
     async def chat_streaming(
         self,
@@ -286,10 +394,22 @@ class TravelAgent:
         Returns:
             str: 回复文本
         """
-        memory_context = self._get_memory_context(user_id)
+        memory_context = self._get_memory_context(user_id, query=user_input)
         full_input = user_input + memory_context
 
         if queue:
+            await queue.emit(EventType.STEP, {
+                "step": 2,
+                "total": 4,
+                "name": "旅游资料检索",
+                "description": "读取本地攻略和跨场景偏好，为旅游问答准备上下文",
+            }, step="retrieval")
+            await queue.emit(EventType.STEP, {
+                "step": 3,
+                "total": 4,
+                "name": "生成回复",
+                "description": "大模型流式生成旅游建议",
+            }, step="generate")
             await queue.emit_thinking("🧠 正在为您查询旅游信息...", step="generate")
 
         chain = self.chat_prompt | self.llm

@@ -44,11 +44,10 @@ def test_shopping_mcp_server():
     server = ShoppingMCPServer()
     tools = server.get_tools()
     
-    assert len(tools) == 4
+    assert len(tools) == 3
     tool_names = [tool.name for tool in tools]
     assert "search_products" in tool_names
     assert "get_product_reviews" in tool_names
-    assert "place_order" in tool_names
     assert "get_order_status" in tool_names
 
 def test_travel_mcp_server():

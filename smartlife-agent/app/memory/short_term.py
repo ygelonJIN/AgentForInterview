@@ -1,6 +1,7 @@
 """
 短期记忆 - 会话级对话历史
 """
+from threading import RLock
 from typing import List, Dict, Any, Optional
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from datetime import datetime
@@ -12,27 +13,30 @@ class ShortTermMemory:
     def __init__(self, max_messages: int = 50):
         self.conversations: Dict[str, List[Dict[str, Any]]] = {}
         self.max_messages = max_messages
+        self._lock = RLock()
 
     def add_message(self, session_id: str, role: str, content: str, metadata: Dict = None):
         """添加消息"""
-        if session_id not in self.conversations:
-            self.conversations[session_id] = []
+        if not session_id:
+            raise ValueError("session_id 不能为空")
+        with self._lock:
+            history = self.conversations.setdefault(session_id, [])
+            message = {
+                "role": role,
+                "content": content,
+                "timestamp": datetime.now().isoformat(),
+                "metadata": metadata or {},
+            }
+            history.append(message)
 
-        message = {
-            "role": role,
-            "content": content,
-            "timestamp": datetime.now().isoformat(),
-            "metadata": metadata or {},
-        }
-        self.conversations[session_id].append(message)
-
-        # 超过最大消息数时裁剪
-        if len(self.conversations[session_id]) > self.max_messages:
-            self.conversations[session_id] = self.conversations[session_id][-self.max_messages :]
+            # 超过最大消息数时裁剪
+            if len(history) > self.max_messages:
+                self.conversations[session_id] = history[-self.max_messages :]
 
     def get_history(self, session_id: str, last_n: int = None) -> List[Dict[str, Any]]:
         """获取对话历史"""
-        history = self.conversations.get(session_id, [])
+        with self._lock:
+            history = list(self.conversations.get(session_id, []))
         if last_n:
             return history[-last_n:]
         return history
@@ -52,8 +56,8 @@ class ShortTermMemory:
 
     def clear(self, session_id: str):
         """清除会话历史"""
-        if session_id in self.conversations:
-            del self.conversations[session_id]
+        with self._lock:
+            self.conversations.pop(session_id, None)
 
     def get_summary(self, session_id: str) -> str:
         """获取会话摘要"""

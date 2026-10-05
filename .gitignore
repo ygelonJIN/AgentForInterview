@@ -4,3 +4,10 @@ memory_db/
 __pycache__/
 *.pyc
 .DS_Store
+
+# Local runtime configuration and credentials
+smartlife-agent/data/config.json
+smartlife-agent/.env
+smartlife-agent/.env.*
+*.pem
+*.key

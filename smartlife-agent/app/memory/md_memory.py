@@ -101,7 +101,8 @@ class MDMemory:
             "type": "preference",
             "category": category,
             "timestamp": timestamp,
-            "content": preference
+            "content": preference,
+            "version": 1,
         })
         self._save_index(user_id, index)
         
@@ -145,7 +146,8 @@ class MDMemory:
             "type": "event",
             "event_type": event_type,
             "timestamp": timestamp,
-            "content": event
+            "content": event,
+            "version": 1,
         })
         self._save_index(user_id, index)
         
@@ -202,6 +204,20 @@ class MDMemory:
         index = self._load_index(user_id)
         return index.get("memories", [])
 
+    def get_raw_documents(self, user_id: str) -> str:
+        """原样返回长期 MD 记忆文档，不做摘要或压缩。"""
+        documents = []
+        for path in (
+            self._get_preferences_path(user_id),
+            self._get_events_path(user_id),
+        ):
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                if content.strip():
+                    documents.append(content)
+        return "\n\n".join(documents)
+
     def search_memories(self, user_id: str, keyword: str) -> List[Dict[str, Any]]:
         """搜索记忆（关键词匹配）"""
         memories = self.get_all_memories(user_id)
@@ -247,6 +263,7 @@ class MDMemory:
         for m in index["memories"]:
             if m["id"] == memory_id:
                 m["content"] = new_content
+                m["version"] = int(m.get("version", 1)) + 1
                 break
         self._save_index(user_id, index)
         

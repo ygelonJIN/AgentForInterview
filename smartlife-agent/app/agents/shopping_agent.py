@@ -1,5 +1,7 @@
 """
-Shopping Agent - ReAct 导购+客服
+[COMPATIBILITY] Shopping Agent 的旧同步实现。
+
+当前流式主链路由 OrchestratorV2 + RetrievalService 处理。
 """
 from typing import Dict, List, Any, Optional
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -84,7 +86,11 @@ class ShoppingAgent:
             chat_history = []
         
         # 获取跨场景记忆
-        cross_memories = self.memory.get_cross_scene_memories(user_id, "shopping") if self.memory else []
+        cross_memories = self.memory.get_cross_scene_memories(
+            user_id,
+            "shopping",
+            query=user_input,
+        ) if self.memory else []
         memory_context = ""
         if cross_memories:
             memory_context = "\n用户历史偏好：\n" + "\n".join([m["content"] for m in cross_memories[:3]])

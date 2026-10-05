@@ -3,11 +3,34 @@ RAG 检索模块 - 语义检索（持久化 + 增量更新 + 删除）
 """
 import os
 import hashlib
+from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
 from langchain_chroma import Chroma
 from app.config import create_embeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
+
+
+@dataclass
+class RetrievalResult:
+    """统一的检索返回结构，明确区分成功、空结果和异常。"""
+
+    documents: List[Dict[str, Any]] = field(default_factory=list)
+    scores: List[float] = field(default_factory=list)
+    diagnostics: List[str] = field(default_factory=list)
+    source: str = "chroma"
+    ok: bool = True
+    error: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "documents": self.documents,
+            "scores": self.scores,
+            "diagnostics": self.diagnostics,
+            "source": self.source,
+            "ok": self.ok,
+            "error": self.error,
+        }
 
 
 class RAGRetriever:
@@ -147,12 +170,51 @@ class RAGRetriever:
             "persist_dir": self.persist_dir,
         }
 
+    def retrieve(self, query: str, k: int = 5) -> RetrievalResult:
+        """统一检索 API，供 V2 主链路和其他调用方使用。"""
+        if not isinstance(query, str) or not query.strip():
+            return RetrievalResult(ok=False, error="query 不能为空", diagnostics=["RAG 查询为空"])
+        if not isinstance(k, int) or k <= 0:
+            return RetrievalResult(ok=False, error="k 必须为正整数", diagnostics=["RAG 参数 k 无效"])
+
+        try:
+            if self.vectorstore is None:
+                raise RuntimeError("向量库未初始化")
+
+            raw_results = self.vectorstore.similarity_search_with_score(query, k=k)
+            documents: List[Dict[str, Any]] = []
+            scores: List[float] = []
+            for doc, score in raw_results:
+                documents.append({
+                    "content": doc.page_content,
+                    "metadata": dict(doc.metadata or {}),
+                    "score": float(score),
+                })
+                scores.append(float(score))
+
+            diagnostics = [] if documents else ["RAG 未返回文档"]
+            return RetrievalResult(
+                documents=documents,
+                scores=scores,
+                diagnostics=diagnostics,
+                source="chroma",
+                ok=True,
+            )
+        except Exception as exc:
+            message = f"{type(exc).__name__}: {str(exc)[:300]}"
+            return RetrievalResult(
+                documents=[],
+                scores=[],
+                diagnostics=[f"RAG 检索失败: {message}"],
+                source="chroma",
+                ok=False,
+                error=message,
+            )
+
     def search(self, query: str, k: int = 20) -> List[Dict[str, Any]]:
-        """粗排检索"""
-        docs = self.retriever.invoke(query)
-        return [{"content": doc.page_content, "metadata": doc.metadata, "score": 0.0} for doc in docs[:k]]
+        """兼容旧接口：返回文档字典列表。"""
+        return self.retrieve(query, k=k).documents
 
     def search_with_score(self, query: str, k: int = 20) -> List[Dict[str, Any]]:
-        """带分数的检索"""
-        results = self.vectorstore.similarity_search_with_score(query, k=k)
-        return [{"content": doc.page_content, "metadata": doc.metadata, "score": score} for doc, score in results]
+        """兼容旧接口：返回带分数的文档字典列表。"""
+        return self.retrieve(query, k=k).documents

@@ -1,5 +1,7 @@
 """
-Reflection Agent - 结果自检与优化
+[COMPATIBILITY] 旧 ReflectionAgent。
+
+当前旅游规划反思闭环位于 `app/agents/travel_graph.py`。
 """
 from typing import Dict, List, Any, Optional
 from langchain_core.prompts import ChatPromptTemplate

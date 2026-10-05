@@ -1,5 +1,8 @@
 """
-Orchestrator Agent - 主协调器，负责意图识别和子Agent路由
+[DEPRECATED] 旧版 OrchestratorAgent。
+
+当前主链路是 `app/main.py -> app.agents.langgraph_orchestrator`。
+本文件仅保留兼容调用，不应新增业务逻辑。
 """
 import sys
 import os
@@ -57,7 +60,7 @@ class OrchestratorAgent:
             ("system", """你是一个意图识别专家。分析用户消息，识别意图类别。
 
 意图类别：
-- shopping: 购物相关（商品搜索、导购、下单）
+- shopping: 购物相关（商品搜索、导购、评价）
 - customer_service: 客服相关（订单查询、退换货、投诉）
 - travel: 旅游相关（行程规划、目的地推荐、酒店查询）
 - negotiation: 社交协商（多人出行、偏好协调）

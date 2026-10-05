@@ -15,10 +15,11 @@
 import json
 from app.streaming import EventType
 import re
-from typing import Dict, Any, Literal, Optional
+from typing import Dict, Any, List, Literal, Optional
 from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
 from app.config import create_small_llm
+from app.observability import log_exception
 
 
 class ClassificationResult(BaseModel):
@@ -61,12 +62,11 @@ _ROUTE_KEYWORDS = {
 
 _INTENT_KEYWORDS = {
     "shopping": [
-        "买", "找", "搜", "推荐", "商品", "价格", "便宜", "贵", "打折", "优惠",
+        "买", "找", "搜", "推荐", "商品",
         # 产品名词 - 用户提到这些词就是在找商品
         "鞋", "衣服", "手机", "电脑", "平板", "耳机", "背包", "帐篷",
         "冲锋衣", "睡袋", "泳衣", "T恤", "衬衫", "裤子", "外套",
         "连衣裙", "裙子", "跑步鞋", "登山鞋", "运动鞋",
-        "多少钱", "元的", "块钱", "预算",
         "哪个好", "哪个更好", "对比", "比较", "区别",
         # 品牌名
         "小米", "iPhone", "苹果", "华为", "Nike", "Adidas", "阿迪",
@@ -83,22 +83,64 @@ _INTENT_KEYWORDS = {
     "customer_service": ["退", "换", "订单", "物流", "投诉", "退款", "售后", "查订单", "订单状态"],
 }
 
+_SHOPPING_WEAK_KEYWORDS = [
+    "价格", "便宜", "贵", "打折", "优惠", "多少钱", "元的", "块钱", "预算",
+]
+_GENERIC_SHOPPING_SIGNALS = {
+    "找", "搜", "推荐", "哪个好", "哪个更好", "对比", "比较", "区别",
+}
+_TRAVEL_DURATION_RE = re.compile(
+    r"(?:玩|游|待|停留)\s*\d+\s*(?:天|日)|\d+\s*(?:天|日)\s*(?:游|行程|攻略)"
+)
+
+
+def _has_strong_shopping_signal(message: str) -> bool:
+    return any(
+        keyword in message
+        for keyword in _INTENT_KEYWORDS["shopping"]
+        if keyword not in _GENERIC_SHOPPING_SIGNALS
+    )
+
+
+def _has_travel_signal(message: str) -> bool:
+    return (
+        any(keyword in message for keyword in _INTENT_KEYWORDS["travel"])
+        or bool(_TRAVEL_DURATION_RE.search(message))
+    )
+
 
 def _keyword_classify(message: str) -> Optional[Dict[str, Any]]:
     """关键词快速分类（零延迟）"""
     route = "react"
-    for kw in _ROUTE_KEYWORDS.get("plan_and_execute", []):
-        if kw in message:
-            route = "plan_and_execute"
-            break
+    if (
+        any(kw in message for kw in _ROUTE_KEYWORDS.get("plan_and_execute", []))
+        or _TRAVEL_DURATION_RE.search(message)
+    ):
+        route = "plan_and_execute"
 
     intent = "general"
     max_match = 0
-    for intent_type, keywords in _INTENT_KEYWORDS.items():
-        match_count = sum(1 for kw in keywords if kw in message)
-        if match_count > max_match:
-            max_match = match_count
-            intent = intent_type
+    match_counts = {
+        intent_type: sum(1 for kw in keywords if kw in message)
+        for intent_type, keywords in _INTENT_KEYWORDS.items()
+    }
+    travel_match_count = match_counts["travel"] + bool(_TRAVEL_DURATION_RE.search(message))
+
+    # 金额/预算词既可能属于购物，也可能属于旅行。没有商品动作或商品名词时，
+    # 不能让这些弱购物信号覆盖目的地、游玩天数等明确旅游信号。
+    if travel_match_count and not _has_strong_shopping_signal(message):
+        intent = "travel"
+        max_match = travel_match_count
+    else:
+        for intent_type, keywords in _INTENT_KEYWORDS.items():
+            match_count = match_counts[intent_type]
+            if intent_type == "travel":
+                match_count = travel_match_count
+            elif intent_type == "shopping":
+                match_count += sum(1 for kw in _SHOPPING_WEAK_KEYWORDS if kw in message)
+            if match_count > max_match:
+                max_match = match_count
+                intent = intent_type
 
     if max_match >= 2:
         # 购物意图必须有检索策略
@@ -110,6 +152,15 @@ def _keyword_classify(message: str) -> Optional[Dict[str, Any]]:
         return {
             "route": route,
             "intent": intent,
+            "sub_intent": (
+                "plan_trip"
+                if intent == "travel" and route == "plan_and_execute"
+                else "qa"
+                if intent == "travel"
+                else "search"
+                if intent in {"shopping", "customer_service"}
+                else "chat"
+            ),
             "retrieval": retrieval,
             "confidence": 0.85,
             "reason": f"关键词匹配 ({max_match} 个关键词命中)",
@@ -127,7 +178,7 @@ _CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
 - "plan_and_execute": 多步规划（行程、采购清单、预算分配）、跨场景任务、需要用户确认计划、复杂决策
 
 意图规则（intent）：
-- "shopping": 购物相关（商品搜索、导购、下单）
+- "shopping": 购物相关（商品搜索、导购、评价）
 - "customer_service": 客服相关（订单查询、退换货、投诉）
 - "travel": 旅游相关（行程规划、目的地推荐、酒店查询）
 - "negotiation": 社交协商（多人出行、偏好协调）
@@ -143,7 +194,7 @@ _CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
 
 严格返回JSON，不要其他文字：
 {{"route": "...", "intent": "...", "sub_intent": "...", "retrieval": "...", "confidence": 0.X, "reason": "..."}}"""),
-    ("user", "{message}")
+            ("user", "对话上下文：{context}\n\n当前消息：{message}")
 ])
 
 
@@ -185,7 +236,89 @@ class UnifiedClassifier:
             self._chain = _CLASSIFY_PROMPT | self.llm
         return self._chain
 
-    def classify(self, message: str) -> ClassificationResult:
+    @staticmethod
+    def _format_context(history: Optional[List[Dict[str, Any]]]) -> str:
+        if not history:
+            return "无"
+        lines = []
+        for item in list(history)[-6:]:
+            role = item.get("role", "message") if isinstance(item, dict) else getattr(item, "type", "message")
+            content = item.get("content", "") if isinstance(item, dict) else getattr(item, "content", str(item))
+            lines.append(f"{role}: {content}")
+        return "\n".join(lines) or "无"
+
+    @staticmethod
+    def _uses_reference(message: str) -> bool:
+        reference_terms = (
+            "这个", "那个", "它", "他们", "第二个", "刚才", "之前", "上面",
+            "继续", "还是", "改成", "按刚才", "就按", "同上", "那个方案",
+        )
+        return any(term in message for term in reference_terms)
+
+    def _context_fallback(
+        self,
+        message: str,
+        previous: Optional[ClassificationResult],
+    ) -> Optional[ClassificationResult]:
+        if not previous or not self._uses_reference(message):
+            return None
+        return previous.model_copy(update={
+            "confidence": max(0.55, min(previous.confidence, 0.8)),
+            "reason": f"多轮指代，沿用上一轮分类：{previous.intent}/{previous.route}",
+        })
+
+    @staticmethod
+    def _from_data(data: Dict[str, Any], reason_default: str = "小模型分类") -> ClassificationResult:
+        return ClassificationResult(
+            route=data.get("route", "react"),
+            intent=data.get("intent", "general"),
+            sub_intent=data.get("sub_intent", "chat"),
+            retrieval=data.get("retrieval", "none"),
+            confidence=data.get("confidence", 0.5),
+            reason=data.get("reason", reason_default),
+        )
+
+    @staticmethod
+    def apply_scene_constraint(
+        classification: ClassificationResult,
+        scene: str,
+        message: str,
+    ) -> ClassificationResult:
+        """让 UI 场景成为路由约束，防止通用金额词跨场景误判。"""
+        if scene != "travel":
+            return classification
+
+        explicit_shopping = _has_strong_shopping_signal(message)
+        travel_request = _has_travel_signal(message)
+        if explicit_shopping and classification.intent in {"shopping", "customer_service"}:
+            return classification
+        if not travel_request:
+            return classification
+
+        if classification.intent == "travel":
+            return classification
+
+        needs_plan = (
+            classification.route == "plan_and_execute"
+            or bool(_TRAVEL_DURATION_RE.search(message))
+        )
+        return classification.model_copy(update={
+            "route": "plan_and_execute" if needs_plan else classification.route,
+            "intent": "travel",
+            "sub_intent": "plan_trip" if needs_plan else "qa",
+            "retrieval": "rag_only",
+            "reason": (
+                f"旅游场景约束：从 {classification.intent}/{classification.retrieval} "
+                "纠正为 travel/rag_only"
+            ),
+        })
+
+    def classify(
+        self,
+        message: str,
+        history: Optional[List[Dict[str, Any]]] = None,
+        previous: Optional[ClassificationResult] = None,
+    ) -> ClassificationResult:
         """
         同步分类（兼容旧代码）
 
@@ -196,26 +329,27 @@ class UnifiedClassifier:
             ClassificationResult: 分类结果
         """
         # 第一层：关键词快速判断
-        keyword_result = _keyword_classify(message)
+        keyword_result = _keyword_classify(f"{self._format_context(history)}\n{message}")
         if keyword_result:
             return ClassificationResult(**{
                 k: v for k, v in keyword_result.items()
                 if k in ClassificationResult.model_fields
             })
 
+        context_fallback = self._context_fallback(message, previous)
+        if context_fallback:
+            return context_fallback
+
         # 第二层：小模型判断
         try:
-            result = self.chain.invoke({"message": message})
+            result = self.chain.invoke({
+                "message": message,
+                "context": self._format_context(history),
+            })
             data = _parse_json_response(result.content)
-            return ClassificationResult(
-                route=data.get("route", "react"),
-                intent=data.get("intent", "general"),
-                sub_intent=data.get("sub_intent", "chat"),
-                retrieval=data.get("retrieval", "none"),
-                confidence=data.get("confidence", 0.5),
-                reason=data.get("reason", "小模型分类")
-            )
+            return self._from_data(data)
         except Exception as e:
+            log_exception("classifier.sync", e, {"message": message})
             # 默认降级
             return ClassificationResult(
                 route="react",
@@ -226,7 +360,12 @@ class UnifiedClassifier:
                 reason=f"分类失败，使用默认值: {str(e)[:50]}"
             )
 
-    async def aclassify(self, message: str) -> ClassificationResult:
+    async def aclassify(
+        self,
+        message: str,
+        history: Optional[List[Dict[str, Any]]] = None,
+        previous: Optional[ClassificationResult] = None,
+    ) -> ClassificationResult:
         """
         异步分类（用于 streaming 流程）
 
@@ -237,26 +376,27 @@ class UnifiedClassifier:
             ClassificationResult: 分类结果
         """
         # 第一层：关键词快速判断
-        keyword_result = _keyword_classify(message)
+        keyword_result = _keyword_classify(f"{self._format_context(history)}\n{message}")
         if keyword_result:
             return ClassificationResult(**{
                 k: v for k, v in keyword_result.items()
                 if k in ClassificationResult.model_fields
             })
 
+        context_fallback = self._context_fallback(message, previous)
+        if context_fallback:
+            return context_fallback
+
         # 第二层：小模型异步调用
         try:
-            result = await self.chain.ainvoke({"message": message})
+            result = await self.chain.ainvoke({
+                "message": message,
+                "context": self._format_context(history),
+            })
             data = _parse_json_response(result.content)
-            return ClassificationResult(
-                route=data.get("route", "react"),
-                intent=data.get("intent", "general"),
-                sub_intent=data.get("sub_intent", "chat"),
-                retrieval=data.get("retrieval", "none"),
-                confidence=data.get("confidence", 0.5),
-                reason=data.get("reason", "小模型分类")
-            )
+            return self._from_data(data)
         except Exception as e:
+            log_exception("classifier.async", e, {"message": message})
             return ClassificationResult(
                 route="react",
                 intent="general",
@@ -266,7 +406,13 @@ class UnifiedClassifier:
                 reason=f"分类失败，使用默认值: {str(e)[:50]}"
             )
 
-    async def aclassify_streaming(self, message: str, queue: 'EventQueue') -> ClassificationResult:
+    async def aclassify_streaming(
+        self,
+        message: str,
+        queue: 'EventQueue',
+        history: Optional[List[Dict[str, Any]]] = None,
+        previous: Optional[ClassificationResult] = None,
+    ) -> ClassificationResult:
         """
         流式分类 - 推送思考过程事件
 
@@ -278,10 +424,10 @@ class UnifiedClassifier:
             ClassificationResult: 分类结果
         """
         # 第一层：关键词快速判断
-        keyword_result = _keyword_classify(message)
+        keyword_result = _keyword_classify(f"{self._format_context(history)}\n{message}")
         if keyword_result:
             await queue.emit(EventType.CLASSIFY, {
-                "result": keyword_result,
+                **keyword_result,
                 "method": "keyword"
             }, step="classify")
             return ClassificationResult(**{
@@ -289,23 +435,32 @@ class UnifiedClassifier:
                 if k in ClassificationResult.model_fields
             })
 
+        context_fallback = self._context_fallback(message, previous)
+        if context_fallback:
+            await queue.emit(EventType.CLASSIFY, {
+                "route": context_fallback.route,
+                "intent": context_fallback.intent,
+                "sub_intent": context_fallback.sub_intent,
+                "retrieval": context_fallback.retrieval,
+                "confidence": context_fallback.confidence,
+                "reason": context_fallback.reason,
+                "method": "context",
+            }, step="classify")
+            return context_fallback
+
         # 第二层：小模型流式判断
         await queue.emit_thinking("🧠 小模型正在分析您的需求...", step="classify")
 
         try:
             full_content = ""
-            async for chunk in self.chain.astream({"message": message}):
+            async for chunk in self.chain.astream({
+                "message": message,
+                "context": self._format_context(history),
+            }):
                 full_content += chunk.content
 
             data = _parse_json_response(full_content)
-            result = ClassificationResult(
-                route=data.get("route", "react"),
-                intent=data.get("intent", "general"),
-                sub_intent=data.get("sub_intent", "chat"),
-                retrieval=data.get("retrieval", "none"),
-                confidence=data.get("confidence", 0.5),
-                reason=data.get("reason", "小模型分类")
-            )
+            result = self._from_data(data)
 
             await queue.emit(EventType.CLASSIFY, {
                 "route": result.route,
@@ -319,6 +474,7 @@ class UnifiedClassifier:
 
             return result
         except Exception as e:
+            log_exception("classifier.streaming", e, {"message": message})
             fallback = ClassificationResult(
                 route="react",
                 intent="general",

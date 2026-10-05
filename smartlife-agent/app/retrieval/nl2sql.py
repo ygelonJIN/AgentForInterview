@@ -13,6 +13,7 @@ import re
 from typing import Dict, List, Any, Optional
 from langchain_core.prompts import ChatPromptTemplate
 from app.config import create_small_llm
+from app.retrieval.sql_safety import SafeSQLExecutor, SQLSafetyError
 from pydantic import BaseModel, Field
 
 class SQLQuery(BaseModel):
@@ -95,6 +96,7 @@ class NL2SQLChain:
             db_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "products.db")
         self.db_path = db_path
         self.llm = create_small_llm()
+        self.sql_executor = SafeSQLExecutor(self.db_path)
         
         self.prompt = ChatPromptTemplate.from_messages([
             ("system", f"""你是一个 SQL 生成器。根据用户的自然语言描述，生成对应的 SQL 查询。
@@ -134,8 +136,8 @@ SQL: SELECT * FROM products WHERE name LIKE '%背包%' AND price <= 300"""),
                 expanded.extend(db_terms)
         return list(set(expanded))
     
-    def _build_fuzzy_sql(self, user_query: str) -> str:
-        """构建模糊匹配 SQL"""
+    def _build_fuzzy_query(self, user_query: str) -> tuple[str, List[Any]]:
+        """构建参数化模糊匹配 SQL。"""
         # 提取可能的商品关键词
         keywords = []
         
@@ -149,12 +151,14 @@ SQL: SELECT * FROM products WHERE name LIKE '%背包%' AND price <= 300"""),
         
         # 构建 SQL
         conditions = []
+        params: List[Any] = []
         
         if keywords:
             # 对每个关键词进行模糊匹配
             keyword_conditions = []
             for kw in keywords:
-                keyword_conditions.append(f"name LIKE '%{kw}%'")
+                keyword_conditions.append("name LIKE ?")
+                params.append(f"%{kw}%")
             conditions.append(f"({' OR '.join(keyword_conditions)})")
         
         # 如果有数字，可能是价格范围
@@ -162,14 +166,19 @@ SQL: SELECT * FROM products WHERE name LIKE '%背包%' AND price <= 300"""),
             for num in numbers:
                 num_val = int(num)
                 if num_val > 10 and num_val < 10000:  # 合理的价格范围
-                    conditions.append(f"price <= {num_val}")
+                    conditions.append("price <= ?")
+                    params.append(num_val)
                     break
         
         if not conditions:
             # 如果没有提取到条件，返回所有商品
-            return "SELECT * FROM products LIMIT 20"
+            return "SELECT * FROM products LIMIT 20", []
         
-        return f"SELECT * FROM products WHERE {' AND '.join(conditions)} LIMIT 20"
+        return f"SELECT * FROM products WHERE {' AND '.join(conditions)} LIMIT 20", params
+
+    def _build_fuzzy_sql(self, user_query: str) -> str:
+        """兼容旧接口：返回参数化 SQL 文本。"""
+        return self._build_fuzzy_query(user_query)[0]
     
     def query(self, user_query: str, max_retries: int = 2) -> Dict[str, Any]:
         """
@@ -187,30 +196,14 @@ SQL: SELECT * FROM products WHERE name LIKE '%背包%' AND price <= 300"""),
                 # 使用 LLM 生成 SQL
                 sql_result = self.chain.invoke({"user_query": user_query})
                 
-                # 安全检查
-                sql_upper = sql_result.sql.upper().strip()
-                if not sql_upper.startswith("SELECT"):
-                    return {"error": "只允许 SELECT 查询", "sql_result": sql_result}
-                
-                # 执行查询
-                conn = sqlite3.connect(self.db_path)
-                conn.row_factory = sqlite3.Row
-                cursor = conn.cursor()
-                cursor.execute(sql_result.sql)
-                rows = cursor.fetchall()
-                results = [dict(row) for row in rows]
-                conn.close()
+                execution = self.sql_executor.execute(sql_result.sql)
+                results = execution["rows"]
                 
                 # 如果结果为空，尝试模糊匹配
                 if not results and attempt < max_retries:
-                    fuzzy_sql = self._build_fuzzy_sql(user_query)
-                    conn = sqlite3.connect(self.db_path)
-                    conn.row_factory = sqlite3.Row
-                    cursor = conn.cursor()
-                    cursor.execute(fuzzy_sql)
-                    rows = cursor.fetchall()
-                    results = [dict(row) for row in rows]
-                    conn.close()
+                    fuzzy_sql, fuzzy_params = self._build_fuzzy_query(user_query)
+                    execution = self.sql_executor.execute(fuzzy_sql, fuzzy_params)
+                    results = execution["rows"]
                     
                     if results:
                         return {
@@ -234,14 +227,9 @@ SQL: SELECT * FROM products WHERE name LIKE '%背包%' AND price <= 300"""),
                 if attempt < max_retries:
                     # 尝试模糊匹配
                     try:
-                        fuzzy_sql = self._build_fuzzy_sql(user_query)
-                        conn = sqlite3.connect(self.db_path)
-                        conn.row_factory = sqlite3.Row
-                        cursor = conn.cursor()
-                        cursor.execute(fuzzy_sql)
-                        rows = cursor.fetchall()
-                        results = [dict(row) for row in rows]
-                        conn.close()
+                        fuzzy_sql, fuzzy_params = self._build_fuzzy_query(user_query)
+                        execution = self.sql_executor.execute(fuzzy_sql, fuzzy_params)
+                        results = execution["rows"]
                         
                         return {
                             "sql": fuzzy_sql,

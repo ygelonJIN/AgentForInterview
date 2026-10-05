@@ -6,6 +6,8 @@ from pydantic import BaseModel, Field
 from typing import Optional
 import random
 from datetime import datetime
+from app.observability import log_warning
+from app.tools.providers import get_weather_provider
 
 class WeatherInput(BaseModel):
     city: str = Field(description="城市名称")
@@ -25,6 +27,21 @@ WEATHER_DATA = {
 @tool("get_weather", args_schema=WeatherInput)
 def get_weather(city: str, date: str) -> dict:
     """获取指定城市和日期的天气信息，包括温度、天气状况、湿度"""
+    provider = get_weather_provider()
+    if provider.configured:
+        try:
+            external = provider.fetch({"city": city, "date": date})
+            return {
+                **external,
+                "city": external.get("city", city),
+                "date": external.get("date", date),
+                "simulated": False,
+                "source": provider.url,
+            }
+        except Exception as exc:
+            log_warning("tools.weather_provider", str(exc), {"city": city, "date": date})
+    else:
+        log_warning("tools.weather_provider", "未配置外部天气 provider，使用本地模拟", {"city": city})
     if city in WEATHER_DATA:
         data = WEATHER_DATA[city]
         temp = random.randint(*data["temp_range"])
@@ -36,9 +53,20 @@ def get_weather(city: str, date: str) -> dict:
             "temperature": f"{temp}°C",
             "condition": condition,
             "humidity": f"{humidity}%",
-            "suggestion": "适合出行" if condition in ["晴", "多云"] else "建议室内活动"
+            "suggestion": "适合出行" if condition in ["晴", "多云"] else "建议室内活动",
+            "simulated": True,
+            "source": "local_mock_weather",
         }
-    return {"city": city, "date": date, "temperature": "20°C", "condition": "晴", "humidity": "50%", "suggestion": "适合出行"}
+    return {
+        "city": city,
+        "date": date,
+        "temperature": "20°C",
+        "condition": "晴",
+        "humidity": "50%",
+        "suggestion": "适合出行",
+        "simulated": True,
+        "source": "local_mock_weather",
+    }
 
 def get_weather_tools():
     return [get_weather]

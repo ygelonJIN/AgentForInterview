@@ -1,5 +1,11 @@
 # SmartLife Agent — 全栈智能体电商旅游平台 v5
 
+> **文档状态（2026-10-05）**
+> - Current：`smartlife-agent/app/main.py -> LangGraphOrchestrator -> OrchestratorV2` 是当前入口。
+> - Target：MCP 动态发现、外部天气/酒店/路线服务、完整跨场景采购联动仍是目标能力。
+> - Deprecated：`app/agents/orchestrator.py` 是旧兼容实现，不属于当前主链路。
+> - Removed/Unwired：旧的 MCP 动态发现和未接线组件不得被视为已完成功能。
+
 ## 项目定位
 
 > 基于 LangChain 构建的 Multi-Agent 智能体系统，统一覆盖**电商购物**和**旅游出行**两大场景。

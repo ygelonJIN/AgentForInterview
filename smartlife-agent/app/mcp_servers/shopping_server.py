@@ -20,12 +20,6 @@ class GetProductReviewsInput(BaseModel):
     product_id: str = Field(description="商品ID")
     aspect: Optional[str] = Field(default=None, description="评价方面，如：质量、外观、性价比")
 
-class PlaceOrderInput(BaseModel):
-    """下单参数"""
-    user_id: str = Field(description="用户ID")
-    product_id: str = Field(description="商品ID")
-    quantity: int = Field(default=1, description="购买数量", ge=1)
-
 class GetOrderStatusInput(BaseModel):
     """查询订单状态参数"""
     user_id: str = Field(description="用户ID")
@@ -35,13 +29,13 @@ class ShoppingMCPServer(BaseMCPServer):
     """
     购物MCP Server
     
-    提供商品搜索、评价查询、下单等服务
+    提供商品搜索、评价查询和只读订单查询服务
     """
     
     def __init__(self):
         super().__init__(
             name="shopping-agent",
-            description="购物服务：商品搜索、评价查询、订单管理"
+            description="购物服务：商品搜索、评价查询、只读订单查询"
         )
     
     def _initialize_tools(self):
@@ -118,34 +112,6 @@ class ShoppingMCPServer(BaseMCPServer):
                 }
             ]
         
-        @tool("place_order", args_schema=PlaceOrderInput)
-        def place_order(
-            user_id: str,
-            product_id: str,
-            quantity: int = 1
-        ) -> Dict[str, Any]:
-            """
-            下单购买商品
-            
-            Args:
-                user_id: 用户ID
-                product_id: 商品ID
-                quantity: 购买数量
-                
-            Returns:
-                Dict: 订单信息
-            """
-            # TODO: 实现订单创建
-            return {
-                "order_id": "order_001",
-                "user_id": user_id,
-                "product_id": product_id,
-                "quantity": quantity,
-                "total_price": 499.0 * quantity,
-                "status": "pending",
-                "created_at": "2024-01-20"
-            }
-        
         @tool("get_order_status", args_schema=GetOrderStatusInput)
         def get_order_status(
             user_id: str,
@@ -176,7 +142,6 @@ class ShoppingMCPServer(BaseMCPServer):
         self.tools = [
             search_products,
             get_product_reviews,
-            place_order,
             get_order_status
         ]
     

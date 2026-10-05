@@ -8,16 +8,62 @@
 """
 import json
 import re
+from difflib import SequenceMatcher
+from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
 from langchain_core.prompts import ChatPromptTemplate
 from app.config import create_small_llm
+from app.observability import log_exception
+
+
+@dataclass
+class MemoryExtractionResult:
+    """记忆提取的结构化结果。
+
+    ``status`` 取值：
+    - ``ok``：提取到可供用户确认的候选记忆；
+    - ``no_content``：执行成功，但没有值得展示或保存的内容；
+    - ``error``：提取器、模型调用、空响应或响应格式失败。
+    """
+
+    candidates: List[Dict[str, Any]] = field(default_factory=list)
+    diagnostic: str = ""
+    status: str = "no_content"
+
+    @property
+    def has_error(self) -> bool:
+        return self.status == "error"
+
+    @property
+    def should_display(self) -> bool:
+        """只有真实候选或失败诊断才值得在 UI 中出现。"""
+        return bool(self.candidates) or self.has_error
+
+    def as_dict(self) -> Dict[str, Any]:
+        """转换为可进入 LangGraph State/SSE 的纯数据结构。"""
+        return {
+            "candidates": list(self.candidates),
+            "diagnostic": self.diagnostic,
+            "status": self.status,
+            "has_error": self.has_error,
+            "should_display": self.should_display,
+        }
 
 
 class MemoryExtractor:
     """记忆提取器"""
 
+    _VALID_CATEGORIES = {"shopping", "travel", "general"}
+    _VALID_CONFIDENCE = {"high", "medium", "low"}
+    _LOW_VALUE_PREFIXES = ("我觉得", "我认为", "可能", "也许", "好像", "听说", "据说")
+    _DESTINATIONS = (
+        "上海", "杭州", "北京", "成都", "西安", "云南", "大理", "丽江",
+        "三亚", "厦门", "桂林", "张家界", "西藏", "新疆",
+    )
+
     def __init__(self):
-        self.llm = create_small_llm(max_tokens=1500)
+        # reasoning token 也计入 completion 上限，过小会导致可见 JSON 为空。
+        self.llm = create_small_llm(max_tokens=2048)
         
         # 简化提示词，避免 JSON 格式问题
         self.extract_prompt = ChatPromptTemplate.from_messages([
@@ -27,6 +73,7 @@ class MemoryExtractor:
 1. 只提取明确提到的事实，不推断隐含信息
 2. 不判断用户的偏好
 3. 提取的信息应该是客观的、可验证的
+4. 只根据本轮用户消息提取，不要根据助手回答或旧记忆补写事实
 
 请提取以下类别的信息：
 - 购物相关：商品名称、价格、数量、规格
@@ -39,56 +86,172 @@ class MemoryExtractor:
 - confidence: high/medium/low
 
 重要：必须只返回一个 JSON 数组，不要有任何其他文字。如果没有值得提取的信息，返回空数组 []"""),
-            ("user", "{conversation}")
+            ("user", "本轮用户信息：\n{conversation}")
         ])
         
         self.chain = self.extract_prompt | self.llm
 
-    def extract_candidates(self, messages: List[Dict[str, str]]) -> List[Dict[str, Any]]:
-        """
-        从对话中提取候选记忆
-        
-        Args:
-            messages: 消息列表，格式 [{"role": "user/assistant", "content": "..."}]
-            
-        Returns:
-            候选记忆列表
-        """
+    @staticmethod
+    def _normalize_content(content: Any) -> str:
+        return re.sub(r"\s+", " ", str(content or "")).strip()
+
+    def _clean_candidates(
+        self,
+        candidates: Any,
+        existing_contents: Optional[List[str]] = None,
+        excluded_contents: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        if not isinstance(candidates, list):
+            return []
+        accepted: List[Dict[str, Any]] = []
+        seen = [
+            re.sub(r"\s+", "", self._normalize_content(content)).casefold()
+            for content in list(existing_contents or []) + list(excluded_contents or [])
+            if self._normalize_content(content)
+        ]
+        for candidate in candidates:
+            if not isinstance(candidate, dict) or "content" not in candidate:
+                continue
+            content = self._normalize_content(candidate.get("content"))
+            if len(content) < 3 or len(content) > 500:
+                continue
+            if content.casefold().startswith(self._LOW_VALUE_PREFIXES):
+                continue
+            category = str(candidate.get("category", "general")).lower()
+            confidence = str(candidate.get("confidence", "medium")).lower()
+            normalized_key = re.sub(r"\s+", "", content).casefold()
+            if any(
+                SequenceMatcher(None, normalized_key, previous).ratio() >= 0.92
+                for previous in seen
+            ):
+                continue
+            accepted.append({
+                "content": content,
+                "category": category if category in self._VALID_CATEGORIES else "general",
+                "confidence": confidence if confidence in self._VALID_CONFIDENCE else "medium",
+            })
+            seen.append(normalized_key)
+            if len(accepted) >= 10:
+                break
+        return accepted
+
+    @classmethod
+    def _explicit_fact_fallback(cls, text: str) -> List[Dict[str, Any]]:
+        """推理模型没有可见输出时，只兜底提取明确的旅行事实。"""
+        facts = []
+        destination = next((item for item in cls._DESTINATIONS if item in text), None)
+        if destination:
+            facts.append({
+                "content": f"目的地为{destination}",
+                "category": "travel",
+                "confidence": "high",
+            })
+        days_match = re.search(r"(\d+)\s*(?:天|日)", text)
+        if days_match:
+            facts.append({
+                "content": f"旅行天数为{days_match.group(1)}天",
+                "category": "travel",
+                "confidence": "high",
+            })
+        budget_match = re.search(r"(?:预算|花费|总预算)\s*(?:为|是|:|：)?\s*(\d+)\s*(?:元|块)", text)
+        if budget_match:
+            facts.append({
+                "content": f"预算为{budget_match.group(1)}元",
+                "category": "travel",
+                "confidence": "high",
+            })
+        return facts
+
+    def extract_candidates(
+        self,
+        messages: List[Dict[str, str]],
+        existing_contents: Optional[List[str]] = None,
+        excluded_contents: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """从对话中提取候选记忆。兼容旧接口，只返回候选列表。"""
+        return self.extract_candidates_result(
+            messages,
+            existing_contents=existing_contents,
+            excluded_contents=excluded_contents,
+        ).candidates
+
+    def extract_candidates_result(
+        self,
+        messages: List[Dict[str, str]],
+        existing_contents: Optional[List[str]] = None,
+        excluded_contents: Optional[List[str]] = None,
+    ) -> MemoryExtractionResult:
+        """提取候选记忆，并明确区分“没有内容”和“执行失败”。"""
         if not messages:
-            return []
-        
-        # 格式化对话
-        conversation = "\n".join([
-            f"{msg['role']}: {msg['content']}" 
+            return MemoryExtractionResult(diagnostic="无对话历史", status="no_content")
+
+        user_messages = [
+            self._normalize_content(msg.get("content", ""))
             for msg in messages
-        ])
-        
+            if msg.get("role") == "user" and self._normalize_content(msg.get("content", ""))
+        ][-1:]
+        if not user_messages:
+            return MemoryExtractionResult(status="no_content")
+        conversation = "\n".join(user_messages)
+
         try:
-            result = self.chain.invoke({"conversation": conversation})
-            content = result.content.strip()
-            
-            # 尝试解析 JSON
-            candidates = self._parse_json(content)
-            
-            # 验证格式
-            if not isinstance(candidates, list):
-                return []
-            
-            # 过滤无效条目
-            valid_candidates = []
-            for c in candidates:
-                if isinstance(c, dict) and "content" in c:
-                    valid_candidates.append({
-                        "content": c["content"],
-                        "category": c.get("category", "general"),
-                        "confidence": c.get("confidence", "medium")
-                    })
-            
-            return valid_candidates
-            
+            result = self.chain.invoke({
+                "conversation": conversation,
+            })
+            raw = (getattr(result, "content", "") or "").strip()
+            if not raw:
+                raw = (
+                    getattr(result, "reasoning_content", "")
+                    or getattr(result, "additional_kwargs", {}).get("reasoning_content", "")
+                    or getattr(result, "text", "")
+                    or ""
+                ).strip()
+            if not raw:
+                fallback = self._clean_candidates(
+                    self._explicit_fact_fallback(conversation),
+                    existing_contents,
+                    excluded_contents,
+                )
+                if fallback:
+                    return MemoryExtractionResult(
+                        candidates=fallback,
+                        diagnostic="小模型无可见输出，已使用明确事实兜底提取。",
+                        status="ok",
+                    )
+                return MemoryExtractionResult(
+                    diagnostic="小模型无可见输出，本轮没有可提取的明确事实。",
+                    status="no_content",
+                )
+
+            parsed = self._parse_json(raw)
+            if not isinstance(parsed, list):
+                return MemoryExtractionResult(
+                    diagnostic=f"记忆提取失败：小模型返回非列表。原始输出:\n{raw[:300]}",
+                    status="error",
+                )
+            if not parsed and not re.search(r"\[\s*\]", raw):
+                return MemoryExtractionResult(
+                    diagnostic=f"记忆提取失败：无法解析小模型返回的 JSON。原始输出:\n{raw[:300]}",
+                    status="error",
+                )
+
+            candidates = self._clean_candidates(parsed, existing_contents, excluded_contents)
+            diagnostic = (
+                f"小模型已执行。输入 {len(messages)} 条消息。"
+                f"候选 {len(parsed)} 条，去重过滤后 {len(candidates)} 条。"
+                f"原始输出:\n{raw[:500]}"
+            )
+            return MemoryExtractionResult(
+                candidates=candidates,
+                diagnostic=diagnostic,
+                status="ok" if candidates else "no_content",
+            )
         except Exception as e:
-            print(f"Warning: 记忆提取失败: {e}")
-            return []
+            log_exception("memory.extractor_result", e)
+            return MemoryExtractionResult(
+                diagnostic=f"记忆提取失败：{e}",
+                status="error",
+            )
 
     def _parse_json(self, content: str) -> List[Dict[str, Any]]:
         """
@@ -180,47 +343,16 @@ class MemoryExtractor:
         except (ValueError, IndexError):
             return []
 
-    def extract_candidates_with_diag(self, messages: List[Dict[str, str]]):
-        """
-        提取候选记忆，并返回诊断信息（用于验证小模型是否真的执行了）
-        
-        Returns:
-            (candidates, diag): 候选列表 + 诊断字符串
-        """
-        if not messages:
-            return [], "无对话历史"
-        
-        conversation = "\n".join([f"{m['role']}: {m['content']}" for m in messages])
-        
-        try:
-            result = self.chain.invoke({"conversation": conversation})
-            # 兼容不同模型：content 可能为空，reasoning_content 可能有内容
-            raw = (getattr(result, "content", "") or "").strip()
-            if not raw:
-                rc = getattr(result, "reasoning_content", "") or getattr(result, "additional_kwargs", {}).get("reasoning_content", "")
-                raw = (rc or "").strip()
-            if not raw:
-                # 有些模型把文本放在 text 属性
-                raw = (getattr(result, "text", "") or "").strip()
-            candidates = self._parse_json(raw)
-            
-            if not isinstance(candidates, list):
-                return [], f"小模型已执行，但返回非列表。原始输出:\n{raw[:300]}"
-            
-            valid = []
-            for c in candidates:
-                if isinstance(c, dict) and "content" in c:
-                    valid.append({
-                        "content": c["content"],
-                        "category": c.get("category", "general"),
-                        "confidence": c.get("confidence", "medium")
-                    })
-            
-            if raw:
-                diag = f"小模型已执行。输入 {len(messages)} 条消息。原始输出:\n{raw[:500]}"
-            else:
-                diag = f"小模型已执行但返回空。输入 {len(messages)} 条消息。模型对象: {repr(result)[:500]}"
-            return valid, diag
-            
-        except Exception as e:
-            return [], f"小模型执行失败: {e}"
+    def extract_candidates_with_diag(
+        self,
+        messages: List[Dict[str, str]],
+        existing_contents: Optional[List[str]] = None,
+        excluded_contents: Optional[List[str]] = None,
+    ):
+        """兼容旧接口，返回 ``(candidates, diagnostic)``。"""
+        result = self.extract_candidates_result(
+            messages,
+            existing_contents=existing_contents,
+            excluded_contents=excluded_contents,
+        )
+        return result.candidates, result.diagnostic

@@ -1,0 +1,14 @@
+{
+  "main": {
+    "base_url": "",
+    "model": ""
+  },
+  "small": {
+    "base_url": "",
+    "model": ""
+  },
+  "embedding": {
+    "base_url": "",
+    "model": ""
+  }
+}

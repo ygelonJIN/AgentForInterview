@@ -3,8 +3,10 @@
 """
 import os
 import json
+import uuid
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+from app.observability import log_warning
 
 
 class LongTermMemory:
@@ -34,25 +36,89 @@ class LongTermMemory:
                 persist_directory=self.persist_dir,
             )
         except Exception as e:
-            print(f"Warning: 长期记忆初始化失败: {e}")
+            log_warning("memory.long_term_init", str(e))
             # 降级为内存字典
             self._memory_store: Dict[str, List[Dict]] = {}
 
-    def save_summary(self, user_id: str, summary: str, metadata: Dict = None):
+    def save_summary(
+        self,
+        user_id: str,
+        summary: str,
+        metadata: Dict = None,
+        memory_id: str = None,
+    ):
         """保存对话摘要"""
+        memory_id = memory_id or str(uuid.uuid4())
         meta = {
             "type": "summary",
+            "memory_id": memory_id,
             "user_id": user_id,
             "timestamp": datetime.now().isoformat(),
             **(metadata or {}),
         }
 
         if self.vectorstore:
-            self.vectorstore.add_texts(texts=[summary], metadatas=[meta])
+            self.vectorstore.add_texts(
+                texts=[summary],
+                metadatas=[meta],
+                ids=[memory_id],
+            )
         else:
             if user_id not in self._memory_store:
                 self._memory_store[user_id] = []
-            self._memory_store[user_id].append({"text": summary, "metadata": meta})
+            self._memory_store[user_id].append({
+                "id": memory_id,
+                "text": summary,
+                "metadata": meta,
+            })
+
+    def upsert_memory(
+        self,
+        user_id: str,
+        memory_id: str,
+        content: str,
+        metadata: Dict = None,
+    ):
+        """按稳定 memory_id 更新向量记忆。"""
+        self.delete_memory(memory_id, user_id=user_id)
+        self.save_summary(user_id, content, metadata=metadata, memory_id=memory_id)
+
+    def delete_memory(self, memory_id: str, user_id: str = None) -> bool:
+        """按稳定 memory_id 删除向量记忆。"""
+        if self.vectorstore:
+            try:
+                collection = self.vectorstore._collection
+                result = collection.get(where={"memory_id": memory_id}, include=["metadatas"])
+                ids = []
+                for item_id, metadata in zip(result.get("ids", []), result.get("metadatas", [])):
+                    if user_id is None or metadata.get("user_id") == user_id:
+                        ids.append(item_id)
+                if ids:
+                    collection.delete(ids=ids)
+                    return True
+            except Exception:
+                return False
+            return False
+
+        if user_id is not None:
+            memories = self._memory_store.get(user_id, [])
+            remaining = [
+                item for item in memories
+                if item.get("id") != memory_id and item.get("metadata", {}).get("memory_id") != memory_id
+            ]
+            self._memory_store[user_id] = remaining
+            return len(remaining) != len(memories)
+
+        deleted = False
+        for key in list(self._memory_store):
+            memories = self._memory_store[key]
+            remaining = [
+                item for item in memories
+                if item.get("id") != memory_id and item.get("metadata", {}).get("memory_id") != memory_id
+            ]
+            deleted = deleted or len(remaining) != len(memories)
+            self._memory_store[key] = remaining
+        return deleted
 
     def save_event(self, user_id: str, event_type: str, event_data: Dict[str, Any]):
         """保存重要事件"""
@@ -84,6 +150,8 @@ class LongTermMemory:
             return [{"content": doc.page_content, "metadata": doc.metadata} for doc in results]
         else:
             memories = self._memory_store.get(user_id, [])
+            if not query:
+                return [{"content": mem["text"], "metadata": mem["metadata"]} for mem in memories[:k]]
             # 简单关键词匹配降级
             results = []
             for mem in memories:
@@ -91,13 +159,21 @@ class LongTermMemory:
                     results.append({"content": mem["text"], "metadata": mem["metadata"]})
             return results[:k]
 
-    def get_cross_scene_memories(self, user_id: str, current_scene: str) -> List[Dict[str, Any]]:
-        """获取跨场景记忆"""
+    def get_cross_scene_memories(
+        self,
+        user_id: str,
+        current_scene: str,
+        query: str = "",
+    ) -> List[Dict[str, Any]]:
+        """按当前问题检索跨场景记忆，避免固定查询召回无关内容。"""
         if current_scene == "travel":
-            return self.recall(user_id, "购物 装备 商品 购买 户外", k=5)
+            context_terms = "购物 装备 商品 购买 户外"
         elif current_scene == "shopping":
-            return self.recall(user_id, "旅行 目的地 景点 活动 户外", k=5)
-        return self.recall(user_id, "", k=5)
+            context_terms = "旅行 目的地 景点 活动 户外"
+        else:
+            context_terms = ""
+        retrieval_query = f"{query} {context_terms}".strip()
+        return self.recall(user_id, retrieval_query, k=5)
 
     def get_user_profile(self, user_id: str) -> Dict[str, Any]:
         """获取用户画像（从记忆中汇总）"""
