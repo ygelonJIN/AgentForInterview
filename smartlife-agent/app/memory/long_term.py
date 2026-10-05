@@ -175,6 +175,19 @@ class LongTermMemory:
         retrieval_query = f"{query} {context_terms}".strip()
         return self.recall(user_id, retrieval_query, k=5)
 
+    def get_memory_count(self, user_id: str) -> int:
+        """返回用户向量记忆数量，不触发远程 Embedding 请求。"""
+        if self.vectorstore:
+            try:
+                result = self.vectorstore._collection.get(
+                    where={"user_id": user_id},
+                    include=["metadatas"],
+                )
+                return len(result.get("ids", []))
+            except Exception:
+                return 0
+        return len(self._memory_store.get(user_id, []))
+
     def get_user_profile(self, user_id: str) -> Dict[str, Any]:
         """获取用户画像（从记忆中汇总）"""
         memories = self.recall(user_id, "偏好 喜欢 爱好", k=10)
