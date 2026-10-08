@@ -3,21 +3,25 @@ import re
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 
 class SQLSafetyError(ValueError):
     """SQL 未通过安全校验。"""
 
 
-_ALLOWED_TABLES = {
+_PUBLIC_TABLES = {
     "products": {
-        "id", "name", "category", "subcategory", "price", "waterproof",
-        "brand", "stock", "description", "rating", "created_at",
+        "id", "name", "category", "subcategory", "price", "waterproof", "brand",
+        "stock", "description", "rating", "created_at",
     },
     "reviews": {
         "id", "product_id", "user_id", "content", "rating", "created_at",
     },
+}
+
+_TABLE_COLUMNS = {
+    **_PUBLIC_TABLES,
     "orders": {
         "id", "user_id", "product_id", "quantity", "status", "total_price", "created_at",
     },
@@ -25,6 +29,7 @@ _ALLOWED_TABLES = {
         "id", "name", "age", "preferences", "budget", "created_at",
     },
 }
+
 _DENIED_KEYWORDS = {
     "INSERT", "UPDATE", "DELETE", "REPLACE", "CREATE", "DROP", "ALTER",
     "PRAGMA", "ATTACH", "DETACH", "VACUUM", "REINDEX", "ANALYZE",
@@ -77,6 +82,7 @@ class SafeSQLExecutor:
         db_path: str,
         max_rows: int = 200,
         timeout_seconds: float = 2.0,
+        allowed_tables: Optional[Mapping[str, Set[str]]] = None,
     ):
         if max_rows <= 0:
             raise ValueError("max_rows 必须大于 0")
@@ -85,17 +91,23 @@ class SafeSQLExecutor:
         self.db_path = str(Path(db_path))
         self.max_rows = max_rows
         self.timeout_seconds = timeout_seconds
+        self.allowed_tables = {
+            table.lower(): set(columns)
+            for table, columns in (allowed_tables or _PUBLIC_TABLES).items()
+        }
+        unknown = sorted(set(self.allowed_tables) - set(_TABLE_COLUMNS))
+        if unknown:
+            raise ValueError(f"未知允许表: {unknown}")
 
-    @staticmethod
-    def _authorizer(action: int, arg1: str, arg2: str, _db_name: str, _source: str) -> int:
+    def _authorizer(self, action: int, arg1: str, arg2: str, _db_name: str, _source: str) -> int:
         if action not in _ALLOWED_AUTHORIZER_ACTIONS:
             return sqlite3.SQLITE_DENY
         if action == sqlite3.SQLITE_READ:
             table = (arg1 or "").lower()
             column = (arg2 or "").lower()
-            if table not in _ALLOWED_TABLES:
+            if table not in self.allowed_tables:
                 return sqlite3.SQLITE_DENY
-            if column != "*" and column not in _ALLOWED_TABLES[table]:
+            if column != "*" and column not in self.allowed_tables[table]:
                 return sqlite3.SQLITE_DENY
         if action == sqlite3.SQLITE_FUNCTION:
             function_name = (arg2 or arg1 or "").lower()

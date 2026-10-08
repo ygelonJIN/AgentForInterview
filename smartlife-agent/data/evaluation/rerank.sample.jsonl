@@ -1,0 +1,2 @@
+{"query":"防水 跑步鞋","documents":[{"id":"shoe-a","content":"防水跑步鞋，雨天抓地稳定","score":0.22},{"id":"phone-b","content":"拍照手机，夜景清晰","score":0.10}],"relevant_ids":["shoe-a"]}
+{"query":"轻量 登山鞋","documents":[{"id":"hike-a","content":"轻量登山鞋，适合长距离徒步","score":0.18},{"id":"hike-b","content":"重型登山靴，适合雪山","score":0.12}],"relevant_ids":["hike-a"]}

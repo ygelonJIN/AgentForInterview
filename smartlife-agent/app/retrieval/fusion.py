@@ -32,6 +32,14 @@ class HybridRetriever:
             documents.sort(key=lambda x: x.get('rerank_score', 0), reverse=True)
             return documents[:top_n]
 
-    def search(self, user_query: str, top_k: int = 5) -> Dict[str, Any]:
+    def search(
+        self,
+        user_query: str,
+        top_k: int = 5,
+        owner: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """兼容旧接口，统一委托 RetrievalService。"""
-        return self.service.search(user_query, top_k=top_k)
+        kwargs = {"top_k": top_k}
+        if owner is not None:
+            kwargs["owner"] = owner
+        return self.service.search(user_query, **kwargs)

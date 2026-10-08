@@ -2,8 +2,10 @@
 Travel Agent - Plan & Execute 行程规划
 支持同步 + 异步流式两种调用方式
 """
+import asyncio
 import os
 import re
+from datetime import date
 from functools import partial
 from typing import Dict, List, Any, Optional, AsyncGenerator
 from langchain_core.prompts import ChatPromptTemplate
@@ -11,7 +13,9 @@ from pydantic import BaseModel, Field
 from app.config import create_llm
 from app.memory.long_term import LongTermMemory
 from app.agents.travel_graph import TravelPlanGraph
+from app.observability import extract_model_usage, timed_span
 from app.streaming import EventType
+from app.tools.travel_executor import TravelToolExecutor
 
 
 class TravelPlan(BaseModel):
@@ -31,6 +35,7 @@ class TravelAgent:
         self.model_name = model_name
         self.llm = create_llm(model_name)
         self._memory = None
+        self.travel_tool_executor = TravelToolExecutor()
 
         self.plan_prompt = ChatPromptTemplate.from_messages([
             ("system", """你是一个旅行规划专家。根据用户需求制定详细的旅行计划。
@@ -38,9 +43,8 @@ class TravelAgent:
 能力：
 1. 查询目的地天气
 2. 推荐景点和活动
-3. 搜索酒店信息
-4. 规划行程路线
-5. 计算预算
+3. 规划行程路线
+4. 计算预算
 
 规划原则：
 1. 每天不超过3-4个景点，不要太赶
@@ -48,6 +52,15 @@ class TravelAgent:
 3. 预留用餐和休息时间
 4. 考虑天气因素
 5. 控制在预算范围内
+
+实时事实规则：
+1. 只有上下文中标记为【真实工具证据】的天气、路线数据可以当作事实引用；
+2. 没有真实天气证据时，明确说明“未获取到可验证的实时天气”，不得使用模拟值、季节典型值或猜测温度冒充当前天气；
+3. 过期或来源不明的数据不得写成“当前”“实时”或确定价格。
+
+用户 Memory 规则：
+- 上下文中的用户偏好来自已保存的长期 Memory，可用于个性化；
+- 与本轮需求冲突时，以用户本轮明确要求为准。
 
 用中文回复，输出清晰、完整的最终行程正文。审核宽松，仅在严重硬错误时按需修订。不要输出版本说明、审核附注、改进说明或重复标题。"""),
             ("user", "{input}")
@@ -61,6 +74,7 @@ class TravelAgent:
 2. 总预算明确超支，或分项明显算错
 3. 每日路线明确冲突、无法执行
 4. 明确遗漏目的地、天数、预算等核心约束
+5. 把猜测或未经验证的天气/路线数据写成当前真实信息
 
 风格、措辞、可选优化、轻微偏好差异和一般改进建议都不算严重问题。
 不确定时优先判 pass；不要为了“更完美”而要求重写。
@@ -96,10 +110,40 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
             return ""
         cross_memories = self.memory.get_cross_scene_memories(user_id, "travel", query=query)
         if cross_memories:
-            return "\n用户历史偏好（来自购物记忆）：\n" + "\n".join(
+            return "\n用户长期 Memory（跨场景偏好）：\n" + "\n".join(
                 [m["content"] for m in cross_memories[:3]]
             )
         return ""
+
+    async def get_weather_context(self, user_input: str) -> str:
+        """获取真实天气证据；没有真实数据时返回禁止猜测的明确状态。"""
+        from app.agents.travel_graph import TravelPlanGraph
+
+        requirements = TravelPlanGraph._extract_requirements(user_input)
+        destination = str(requirements.get("destination") or "").strip()
+        if not destination:
+            return ""
+        raw_date = str(requirements.get("start_date") or "").strip()
+        travel_date = date.fromisoformat(raw_date) if raw_date else date.today()
+        weather = await self.travel_tool_executor.get_weather_evidence(
+            destination,
+            travel_date,
+        )
+        if weather.get("accepted"):
+            fetched_at = weather.get("fetched_at")
+            source = weather.get("source", "外部天气 provider")
+            return (
+                "【真实工具证据】\n"
+                f"- {travel_date.isoformat()} {destination}天气："
+                f"{weather.get('temperature', '')} {weather.get('condition', '')}，"
+                f"湿度 {weather.get('humidity', '')}\n"
+                f"- 来源：{source}"
+                + (f"，获取时间戳：{fetched_at}" if fetched_at else "")
+            )
+        return (
+            "【天气工具状态】未获取到可验证的真实天气数据；"
+            "模拟结果已拒绝。请明确披露天气不可用，禁止给出猜测温度或把季节典型值写成当前天气。"
+        )
 
     def _read_local_guides(self, query: str) -> str:
         """读取本地攻略文件"""
@@ -161,6 +205,7 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
         feedback: Optional[str] = None,
         on_token=None,
         llm=None,
+        trace_id: str = "",
     ) -> str:
         active_llm = llm or self.llm
         if previous_plan is None:
@@ -177,16 +222,33 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
             stage = "revise"
 
         result = ""
-        async for chunk in chain.astream(values):
-            if chunk.content:
-                result += chunk.content
-                if on_token:
-                    await on_token(chunk.content, stage)
+        with timed_span(
+            "model.travel_generate_usage",
+            trace_id=trace_id,
+            attributes={"stage": stage},
+        ) as measurement:
+            async for chunk in chain.astream(values):
+                measurement.add_attributes(extract_model_usage(chunk))
+                if chunk.content:
+                    result += chunk.content
+                    if on_token:
+                        await on_token(chunk.content, stage)
         return result
 
-    async def _reflector_streaming(self, request: str, plan: str, llm=None):
+    async def _reflector_streaming(
+        self,
+        request: str,
+        plan: str,
+        llm=None,
+        trace_id: str = "",
+    ):
         chain = self.reflect_prompt | (llm or self.llm)
-        result = await chain.ainvoke({"original_request": request, "plan": plan})
+        with timed_span(
+            "model.travel_reflect_usage",
+            trace_id=trace_id,
+        ) as measurement:
+            result = await chain.ainvoke({"original_request": request, "plan": plan})
+            measurement.add_attributes(extract_model_usage(result))
         return result.content
 
     async def _planner_sync_adapter(
@@ -212,15 +274,9 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
         messages = self.reflect_prompt.format_messages(original_request=request, plan=plan)
         return self.llm.invoke(messages).content
 
-    @staticmethod
-    async def _execute_plan_step(step: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, Any]:
-        description = str(step.get("description", ""))
-        return {
-            "status": "completed",
-            "result": f"已核对本地攻略、预算/时间约束和上下文：{description[:80]}",
-            "source": "local_guides",
-            "limitations": "天气、路线和酒店 provider 可配置；模拟工具结果必须标记，不当作真实数据",
-        }
+    async def _execute_plan_step(self, step: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, Any]:
+        """执行真实天气和路线工具。"""
+        return await self.travel_tool_executor.execute(step, state)
 
     @staticmethod
     def _remove_revision_notes(plan: str) -> str:
@@ -241,7 +297,14 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
         chat_history: Optional[List[Any]] = None,
     ) -> Dict[str, Any]:
         """同步规划旅行 - 与流式入口共享 TravelPlanGraph。"""
-        context = self._build_plan_context(user_input, user_id, chat_history)
+        context_parts = [self._build_plan_context(user_input, user_id, chat_history)]
+        try:
+            weather_context = asyncio.run(self.get_weather_context(user_input))
+        except RuntimeError:
+            weather_context = ""
+        if weather_context:
+            context_parts.append(weather_context)
+        context = "\n\n".join(part for part in context_parts if part.strip())
         graph = TravelPlanGraph(
             planner=self._planner_sync_adapter,
             reflector=self._reflector_sync_adapter,
@@ -308,23 +371,24 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
                 "description": "正在读取本地攻略、当前需求和长期跨场景 MD 记忆",
                 "status": "active",
             }, step="retrieval")
-        context = self._build_plan_context(user_input, user_id, chat_history)
-        request_llm = create_llm(self.model_name)
-        if queue:
-            await queue.emit(EventType.STEP, {
-                "step": 2,
-                "total": 4,
-                "name": "资料检索与准备",
-                "description": "资料和长期 MD 记忆已准备完成",
-                "status": "completed",
-            }, step="retrieval")
+        context_parts = [self._build_plan_context(user_input, user_id, chat_history)]
+        weather_context = await self.get_weather_context(user_input)
+        if weather_context:
+            context_parts.append(weather_context)
+        context = "\n\n".join(part for part in context_parts if part.strip())
+        request_llm = create_llm(getattr(self, "model_name", None))
 
         async def on_token(token: str, stage: str):
             if queue:
                 await queue.emit_token(token, step=stage)
 
+        emitted_steps = {2} if queue else set()
+
         async def emit_step3(description: str, status: str):
-            if queue:
+            # 一个步骤只广播一次 STEP，内部阶段变化由 token/reset 事件表达，
+            # 避免时间线重复插入同一个步骤。
+            if queue and 3 not in emitted_steps:
+                emitted_steps.add(3)
                 await queue.emit(EventType.STEP, {
                     "step": 3,
                     "total": 4,
@@ -336,7 +400,13 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
         async def on_event(event: str, data: Dict[str, Any]):
             if not queue:
                 return
-            if event == "plan_started":
+            if event == "execution_log":
+                await queue.emit_execution_log({
+                    "event": event,
+                    "data": data,
+                    "step": data.get("step", ""),
+                })
+            elif event == "plan_started":
                 revision = int(data.get("revision", 0) or 0)
                 if revision:
                     await emit_step3(f"发现严重硬错误，正在修订（第 {revision + 1}/3 次）", "active")
@@ -361,8 +431,16 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
                 await queue.emit_token(data.get("message", ""), step="clarify")
 
         graph = TravelPlanGraph(
-            planner=partial(self._planner_streaming, llm=request_llm),
-            reflector=partial(self._reflector_streaming, llm=request_llm),
+            planner=partial(
+                self._planner_streaming,
+                llm=request_llm,
+                trace_id=f"travel:{user_id}:stream",
+            ),
+            reflector=partial(
+                self._reflector_streaming,
+                llm=request_llm,
+                trace_id=f"travel:{user_id}:stream",
+            ),
             executor=self._execute_plan_step,
             on_event=on_event,
             on_token=on_token,
@@ -415,10 +493,16 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
         chain = self.chat_prompt | self.llm
         full_response = ""
 
-        async for chunk in chain.astream({"input": full_input}):
-            if chunk.content:
-                full_response += chunk.content
-                if queue:
-                    await queue.emit_token(chunk.content, step="generate")
+        with timed_span(
+            "model.travel_chat",
+            trace_id=getattr(queue, "trace_id", ""),
+            attributes={"user_id": user_id},
+        ) as measurement:
+            async for chunk in chain.astream({"input": full_input}):
+                measurement.add_attributes(extract_model_usage(chunk))
+                if chunk.content:
+                    full_response += chunk.content
+                    if queue:
+                        await queue.emit_token(chunk.content, step="generate")
 
         return full_response

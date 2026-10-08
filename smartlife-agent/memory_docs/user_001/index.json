@@ -1,0 +1,23 @@
+{
+  "memories": [
+    {
+      "id": "30adf6eb",
+      "type": "preference",
+      "category": "general",
+      "timestamp": "2026-10-06 17:10",
+      "content": "我是女生",
+      "version": 2,
+      "vector_version": 2
+    },
+    {
+      "id": "d6978f7d",
+      "type": "preference",
+      "category": "general",
+      "timestamp": "2026-10-06 17:10",
+      "content": "我喜欢弹吉他",
+      "version": 2,
+      "vector_version": 2
+    }
+  ],
+  "last_updated": "2026-10-06T17:10:40.944326"
+}

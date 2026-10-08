@@ -8,10 +8,10 @@ os.environ.setdefault("OPENAI_API_KEY", "test-dummy-key-for-testing")
 
 def test_imports():
     from app.router import TaskRouter, TaskRoute
-    from app.mcp_servers.base import BaseMCPServer
-    from app.mcp_servers.shopping_server import ShoppingMCPServer
-    from app.mcp_servers.travel_server import TravelMCPServer
-    from app.mcp_servers.memory_server import MemoryMCPServer
+    from app.tools.tool_bundle import ToolBundle
+    from app.tools.shopping_tools import ShoppingToolProvider
+    from app.tools.travel_tools import TravelToolProvider
+    from app.tools.memory_tools import MemoryToolProvider
     from app.agents.reflection import ReflectionAgent, ReflectionResult
     from app.agents.shopping_agent import ShoppingAgent
     from app.agents.travel_agent import TravelAgent
@@ -35,19 +35,19 @@ def test_task_route_model():
     route = TaskRoute(route="react", reason="简单", complexity="simple", estimated_steps=1)
     assert route.route == "react"
 
-def test_shopping_mcp_tools():
-    from app.mcp_servers.shopping_server import ShoppingMCPServer
-    tools = ShoppingMCPServer().get_tools()
+def test_shopping_tools():
+    from app.tools.shopping_tools import ShoppingToolProvider
+    tools = ShoppingToolProvider().get_tools()
     assert len(tools) == 3
 
-def test_travel_mcp_tools():
-    from app.mcp_servers.travel_server import TravelMCPServer
-    tools = TravelMCPServer().get_tools()
-    assert len(tools) == 4
+def test_travel_tools():
+    from app.tools.travel_tools import TravelToolProvider
+    tools = TravelToolProvider().get_tools()
+    assert len(tools) == 3
 
-def test_memory_mcp_tools():
-    from app.mcp_servers.memory_server import MemoryMCPServer
-    tools = MemoryMCPServer().get_tools()
+def test_memory_tools():
+    from app.tools.memory_tools import MemoryToolProvider
+    tools = MemoryToolProvider().get_tools()
     assert len(tools) == 5
 
 def test_short_term_memory():
@@ -58,9 +58,20 @@ def test_short_term_memory():
     assert len(mem.get_history("s1")) == 2
     assert len(mem.get_langchain_messages("s1")) == 2
 
-def test_weather_tool():
+def test_weather_tool(monkeypatch):
+    from datetime import date
+
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"temperature": "21°C", "condition": "晴", "humidity": "50%"}
+
+    monkeypatch.setenv("SMARTLIFE_WEATHER_API_URL", "https://weather.test/query")
+    monkeypatch.setattr("app.tools.providers.requests.get", lambda *args, **kwargs: _Response())
     from app.tools.weather import get_weather
-    r = get_weather.invoke({"city": "杭州", "date": "2024-10-01"})
+    r = get_weather.invoke({"city": "杭州", "date": date.today().isoformat()})
     assert "city" in r and "temperature" in r
 
 def test_time_tool():
@@ -68,7 +79,16 @@ def test_time_tool():
     r = get_current_time.invoke({"timezone": "Asia/Shanghai"})
     assert "datetime" in r and "weekday" in r
 
-def test_map_tool():
+def test_map_tool(monkeypatch):
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"distance": "3.0公里", "duration": "10分钟", "route": "真实路线"}
+
+    monkeypatch.setenv("SMARTLIFE_ROUTE_API_URL", "https://route.test/query")
+    monkeypatch.setattr("app.tools.providers.requests.get", lambda *args, **kwargs: _Response())
     from app.tools.map import get_route
     r = get_route.invoke({"origin": "西湖", "destination": "灵隐寺", "mode": "driving"})
     assert "distance" in r and "duration" in r

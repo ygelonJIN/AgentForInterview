@@ -287,6 +287,206 @@ class MDMemory:
         
         return True
 
+    def _document_paths(self, user_id: str) -> Dict[str, str]:
+        return {
+            "preferences": self._get_preferences_path(user_id),
+            "events": self._get_events_path(user_id),
+        }
+
+    def get_raw_document(self, user_id: str, document_type: str) -> str:
+        """返回单个 MD 原文，供人工查看和编辑。"""
+        paths = self._document_paths(user_id)
+        if document_type not in paths:
+            raise ValueError("document_type 必须是 preferences 或 events")
+        path = paths[document_type]
+        if not os.path.exists(path):
+            return ""
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.read()
+
+    def write_raw_document(self, user_id: str, document_type: str, content: str) -> str:
+        """写入 MD 原文；调用方随后应执行 repository.sync_from_markdown。"""
+        paths = self._document_paths(user_id)
+        if document_type not in paths:
+            raise ValueError("document_type 必须是 preferences 或 events")
+        path = paths[document_type]
+        self._get_user_dir(user_id)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(content)
+        return path
+
+    def parse_markdown_memories(self, user_id: str) -> List[Dict[str, Any]]:
+        """从 MD 原文解析记忆；无 ID 的新段落会获得稳定 ID 并回写标题。"""
+        parsed: List[Dict[str, Any]] = []
+        seen_ids = set()
+        exact_heading = re.compile(r"^##\s+\[([^\]]+)\]\s+(.+?)\s+-\s+(.+?)\s*$")
+        manual_heading = re.compile(r"^##\s+(?!\[)(.+?)\s+-\s+(.+?)\s*$")
+
+        for memory_type, file_path in (
+            ("preference", self._get_preferences_path(user_id)),
+            ("event", self._get_events_path(user_id)),
+        ):
+            if not os.path.exists(file_path):
+                continue
+            with open(file_path, "r", encoding="utf-8") as handle:
+                original = handle.read()
+
+            sections: List[Dict[str, Any]] = []
+            current: Optional[Dict[str, Any]] = None
+            preamble_lines: List[str] = []
+            changed = False
+            for line in original.splitlines():
+                exact = exact_heading.match(line)
+                manual = None if exact else manual_heading.match(line)
+                if exact or manual:
+                    if current is not None:
+                        current["lines"].append("")
+                        sections.append(current)
+                    if exact:
+                        memory_id, label, timestamp = exact.groups()
+                    else:
+                        label, timestamp = manual.groups()
+                        memory_id = self._generate_id()
+                        line = f"## [{memory_id}] {label} - {timestamp}"
+                        changed = True
+                    if memory_id in seen_ids:
+                        raise ValueError(f"MD 中存在重复 memory_id: {memory_id}")
+                    seen_ids.add(memory_id)
+                    current = {
+                        "id": memory_id,
+                        "type": memory_type,
+                        "label": label.strip(),
+                        "timestamp": timestamp.strip(),
+                        "lines": [],
+                        "heading": line,
+                    }
+                elif current is not None:
+                    current["lines"].append(line)
+                elif not line.startswith("#"):
+                    preamble_lines.append(line)
+
+            if current is not None:
+                current["lines"].append("")
+                sections.append(current)
+
+            preamble = "\n".join(preamble_lines).strip()
+            if preamble:
+                for block in re.split(r"\n\s*\n+", preamble):
+                    content = block.strip()
+                    if not content:
+                        continue
+                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+                    memory_id = self._generate_id()
+                    changed = True
+                    sections.append({
+                        "id": memory_id,
+                        "type": memory_type,
+                        "label": "general",
+                        "timestamp": timestamp,
+                        "lines": [content],
+                        "heading": f"## [{memory_id}] general - {timestamp}",
+                    })
+
+            for section in sections:
+                category_key = "category" if memory_type == "preference" else "event_type"
+                parsed.append({
+                    "id": section["id"],
+                    "type": memory_type,
+                    category_key: section["label"],
+                    "timestamp": section["timestamp"],
+                    "content": "\n".join(section["lines"]).strip(),
+                    "version": 1,
+                })
+
+            if changed:
+                normalized_lines = ["# 用户偏好\n" if memory_type == "preference" else "# 事件记录\n"]
+                for section in sections:
+                    normalized_lines.extend([section["heading"], "", "\n".join(section["lines"]).strip(), ""])
+                with open(file_path, "w", encoding="utf-8") as handle:
+                    handle.write("\n".join(normalized_lines).rstrip() + "\n")
+        return parsed
+
+    def reconcile_index_from_markdown(self, user_id: str) -> Dict[str, Any]:
+        """以 MD 原文为准重建 index.json，并保留/递增版本号。"""
+        old_index = self._load_index(user_id)
+        old_by_id = {item.get("id"): item for item in old_index.get("memories", [])}
+        parsed = self.parse_markdown_memories(user_id)
+        for item in parsed:
+            previous = old_by_id.get(item["id"], {})
+            item["version"] = int(previous.get("version", 1))
+            if previous.get("content") != item.get("content"):
+                item["version"] += 1
+                item["vector_version"] = 0
+            else:
+                item["vector_version"] = int(previous.get("vector_version", 0))
+        self._save_index(user_id, {"memories": parsed})
+        return {
+            "indexed": len(parsed),
+            "added": len([item for item in parsed if item["id"] not in old_by_id]),
+            "updated": len([
+                item for item in parsed
+                if item["id"] in old_by_id and old_by_id[item["id"]].get("content") != item.get("content")
+            ]),
+            "removed": len([memory_id for memory_id in old_by_id if memory_id not in {item["id"] for item in parsed}]),
+        }
+
+    def autofmt_document(
+        self,
+        document_type: str,
+        edited_content: str,
+        original_content: str = "",
+    ) -> str:
+        """把新增的自由文本或简单 Markdown 标题自动补成稳定记忆格式。"""
+        if document_type not in {"preferences", "events"}:
+            raise ValueError("document_type 必须是 preferences 或 events")
+        base = (original_content or "").rstrip()
+        if base and edited_content.rstrip().startswith(base):
+            tail = edited_content.rstrip()[len(base):].strip("\n")
+        elif not base:
+            tail = edited_content.strip()
+        else:
+            return edited_content
+
+        if not tail:
+            return edited_content
+        blocks = [block.strip() for block in re.split(r"\n\s*\n+", tail) if block.strip()]
+        formatted = []
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        for block in blocks:
+            if re.match(r"^##\s+\[[^\]]+\]", block):
+                formatted.append(block)
+                continue
+            lines = block.splitlines()
+            if lines and lines[0].startswith("## "):
+                title = lines[0][3:].strip()
+                body = "\n".join(lines[1:]).strip()
+                content = "\n\n".join(part for part in (title, body) if part)
+            else:
+                content = block
+            memory_id = self._generate_id()
+            category = "general" if document_type == "preferences" else "general"
+            formatted.append(
+                f"## [{memory_id}] {category} - {timestamp}\n\n{content}\n"
+            )
+
+        normalized_base = base or (
+            "# 用户偏好\n" if document_type == "preferences" else "# 事件记录\n"
+        )
+        return normalized_base.rstrip() + "\n\n" + "\n\n".join(formatted) + "\n"
+
+    def mark_vector_synced(self, user_id: str, memory_id: str, version: int) -> bool:
+        """记录某一版本已经成功写入持久化向量库。"""
+        index = self._load_index(user_id)
+        changed = False
+        for item in index.get("memories", []):
+            if item.get("id") == memory_id:
+                item["vector_version"] = int(version)
+                changed = True
+                break
+        if changed:
+            self._save_index(user_id, index)
+        return changed
+
     def get_user_profile(self, user_id: str) -> Dict[str, Any]:
         """获取用户画像"""
         memories = self.get_all_memories(user_id)

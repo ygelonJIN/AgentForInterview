@@ -96,7 +96,7 @@ class ShoppingAgent:
             memory_context = "\n用户历史偏好：\n" + "\n".join([m["content"] for m in cross_memories[:3]])
         
         # 混合检索
-        retrieval_result = self.hybrid_retriever.search(user_input) if self.hybrid_retriever else {"products": [], "rag_results": []}
+        retrieval_result = self.hybrid_retriever.search(user_input, owner=user_id) if self.hybrid_retriever else {"products": [], "rag_results": []}
         
         # 构建上下文
         context = ""

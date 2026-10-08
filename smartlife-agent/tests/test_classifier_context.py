@@ -36,14 +36,15 @@ def _classifier():
     return classifier
 
 
-def test_keyword_path_uses_recent_history_for_follow_up():
-    result = _classifier().classify(
+def test_history_supplies_model_context_but_does_not_count_as_keyword_evidence():
+    classifier = _classifier()
+    result = classifier.classify(
         "第二个呢",
         history=[{"role": "user", "content": "推荐一款手机"}],
     )
 
-    assert result.intent == "shopping"
-    assert "关键词" in result.reason
+    assert result.intent == "general"
+    assert classifier._chain.calls[0]["context"] == "user: 推荐一款手机"
 
 
 def test_reference_follow_up_reuses_previous_classification():
@@ -112,7 +113,7 @@ def test_budget_bounded_multi_day_trip_is_travel_plan_not_product_search():
         "sub_intent": "plan_trip",
         "retrieval": "rag_only",
         "confidence": 0.85,
-        "reason": "关键词匹配 (2 个关键词命中)",
+        "reason": "关键词匹配 (2 个关键词命中, 含弱购物词 2)",
         "from": "keyword",
         "method": "keyword",
     }

@@ -1,0 +1,2322 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SmartLife Agent 当前完整分支流程图</title>
+  <style>
+    :root {
+      --bg: #eef2f7;
+      --paper: #ffffff;
+      --ink: #152033;
+      --muted: #647086;
+      --line: #8795aa;
+      --line-soft: #d5dde8;
+      --blue: #2368e8;
+      --blue-soft: #eaf1ff;
+      --green: #168252;
+      --green-soft: #e8f7ef;
+      --purple: #7252c6;
+      --purple-soft: #f0ecff;
+      --cyan: #0b8794;
+      --cyan-soft: #e6f7f9;
+      --orange: #b45a00;
+      --orange-soft: #fff1df;
+      --red: #c23b4b;
+      --red-soft: #ffedf0;
+      --gray-soft: #edf1f5;
+      --shadow: 0 14px 35px rgba(25, 42, 71, .10);
+    }
+
+    * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 7% -8%, rgba(35,104,232,.12), transparent 31rem),
+        radial-gradient(circle at 100% 14%, rgba(22,130,82,.08), transparent 30rem),
+        var(--bg);
+      font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+      line-height: 1.55;
+    }
+
+    code {
+      overflow-wrap: anywhere;
+      padding: .12em .38em;
+      border: 1px solid #dce3ed;
+      border-radius: 6px;
+      background: #f1f4f8;
+      color: #273650;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: .90em;
+    }
+
+    .page {
+      width: min(1500px, calc(100% - 28px));
+      margin: 0 auto;
+      padding: 28px 0 72px;
+    }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      padding: 30px 32px;
+      border: 1px solid rgba(35,104,232,.18);
+      border-radius: 24px;
+      background: linear-gradient(135deg, #fff 0%, #f0f6ff 58%, #ebf8f4 100%);
+      box-shadow: var(--shadow);
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      right: -115px;
+      top: -180px;
+      width: 350px;
+      height: 350px;
+      border: 55px solid rgba(35,104,232,.08);
+      border-radius: 50%;
+    }
+
+    .eyebrow {
+      margin: 0 0 7px;
+      color: var(--blue);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: .13em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(31px, 4vw, 49px);
+      line-height: 1.12;
+      letter-spacing: -.035em;
+    }
+
+    .hero p {
+      max-width: 980px;
+      margin: 13px 0 0;
+      color: #4f5d73;
+      font-size: 16px;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 9px;
+      margin-top: 19px;
+    }
+
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 10px;
+      border: 1px solid #d8e0eb;
+      border-radius: 999px;
+      background: rgba(255,255,255,.82);
+      color: #48566d;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .legend-line {
+      width: 22px;
+      height: 3px;
+      border-radius: 99px;
+      background: var(--line);
+    }
+
+    .legend-line.dashed {
+      height: 0;
+      border-top: 3px dashed var(--orange);
+      background: none;
+    }
+
+
+    .keyword-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .keyword-group {
+      min-width: 0;
+      padding: 17px;
+      border: 1px solid #d8e1eb;
+      border-radius: 15px;
+      background: #fff;
+    }
+
+    .keyword-group-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 7px;
+    }
+
+    .keyword-group-head h3 {
+      margin: 0;
+      font-size: 16px;
+    }
+
+    .keyword-group-head span {
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: var(--blue-soft);
+      color: var(--blue);
+      font-size: 10px;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    .keyword-group > code {
+      display: inline-block;
+      margin-bottom: 8px;
+      font-size: 10px;
+    }
+
+    .keyword-group p {
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .keyword-map-table .keywords {
+      margin: 0;
+    }
+
+    @media (max-width: 760px) {
+      .keyword-grid { grid-template-columns: 1fr; }
+    }
+
+    .section {
+      margin: 25px 0;
+      padding: 24px;
+      border: 1px solid #dce3ed;
+      border-radius: 22px;
+      background: rgba(255,255,255,.96);
+      box-shadow: 0 12px 30px rgba(30, 48, 78, .07);
+    }
+
+    .section-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 20px;
+      margin-bottom: 18px;
+    }
+
+    .section-head h2 {
+      margin: 0;
+      font-size: 25px;
+      line-height: 1.2;
+      letter-spacing: -.025em;
+    }
+
+    .section-head p {
+      max-width: 920px;
+      margin: 7px 0 0;
+      color: var(--muted);
+    }
+
+    .chapter {
+      flex: 0 0 auto;
+      min-width: 72px;
+      padding: 9px 12px;
+      border-radius: 11px;
+      background: var(--blue-soft);
+      color: var(--blue);
+      text-align: center;
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: .08em;
+    }
+
+    .key-points {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 13px;
+      margin: 18px 0 0;
+    }
+
+    .key-point {
+      padding: 16px;
+      border: 1px solid #dce3ed;
+      border-radius: 14px;
+      background: #fff;
+    }
+
+    .key-point strong {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--blue);
+    }
+
+    .key-point span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .term-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 15px;
+    }
+
+    .term-card {
+      padding: 18px;
+      border: 1px solid #d8e1eb;
+      border-radius: 15px;
+      background: #fff;
+    }
+
+    .term-card h3 {
+      margin: 0 0 4px;
+      font-size: 17px;
+    }
+
+    .term-name {
+      display: block;
+      overflow-wrap: anywhere;
+      margin-bottom: 9px;
+      color: var(--blue);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      font-weight: 850;
+    }
+
+    .term-card p,
+    .term-card li {
+      overflow-wrap: anywhere;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .term-card ul {
+      margin: 9px 0 0;
+      padding-left: 20px;
+    }
+
+    .protocol-no,
+    .protocol-part {
+      display: inline-flex;
+      margin-left: 6px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 900;
+    }
+
+    .protocol-no { background: var(--red-soft); color: var(--red); }
+    .protocol-part { background: var(--orange-soft); color: var(--orange); }
+
+    .status-current,
+    .status-target {
+      display: inline-flex;
+      margin-left: 7px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 900;
+    }
+
+    .status-current { background: var(--green-soft); color: var(--green); }
+    .status-target { background: var(--purple-soft); color: var(--purple); }
+
+    .score-line {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      margin: 9px 0 0;
+    }
+
+    .score-chip {
+      padding: 5px 8px;
+      border: 1px solid #d3dce8;
+      border-radius: 8px;
+      background: #f7f9fc;
+      color: #405069;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .formula {
+      overflow-x: auto;
+      margin: 11px 0;
+      padding: 13px 15px;
+      border: 1px solid #cfd9e6;
+      border-left: 5px solid var(--blue);
+      border-radius: 11px;
+      background: #f7f9fc;
+      color: #293950;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+    }
+
+    .name-table td:first-child {
+      width: 24%;
+      font-weight: 850;
+      color: #34445c;
+    }
+
+    .answer-yes {
+      color: var(--green);
+      font-weight: 900;
+    }
+
+    .answer-no {
+      color: var(--red);
+      font-weight: 900;
+    }
+
+    .diagram {
+      position: relative;
+      overflow: hidden;
+      padding: 24px 20px 27px;
+      border: 1px solid #d9e1eb;
+      border-radius: 18px;
+      background:
+        linear-gradient(rgba(92,110,138,.055) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(92,110,138,.055) 1px, transparent 1px),
+        #fbfcfe;
+      background-size: 28px 28px;
+    }
+
+    .diagram + .diagram { margin-top: 18px; }
+
+    .diagram-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 15px;
+      margin-bottom: 18px;
+    }
+
+    .diagram-title h3 {
+      margin: 0;
+      font-size: 18px;
+    }
+
+    .diagram-title span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .chain {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      width: min(780px, 100%);
+      margin: 0 auto;
+    }
+
+    .flow-node {
+      position: relative;
+      z-index: 2;
+      width: min(650px, 100%);
+      padding: 15px 17px;
+      border: 1px solid #cbd5e2;
+      border-top: 5px solid var(--blue);
+      border-radius: 14px;
+      background: #fff;
+      box-shadow: 0 8px 20px rgba(35, 53, 83, .08);
+    }
+
+    .flow-node h3,
+    .branch-node h3,
+    .root-node h3 {
+      margin: 0 0 5px;
+      font-size: 16px;
+      line-height: 1.3;
+    }
+
+    .flow-node p,
+    .branch-node p,
+    .root-node p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12.5px;
+    }
+
+    .flow-node .meta,
+    .branch-node .meta,
+    .root-node .meta {
+      margin-top: 8px;
+    }
+
+    .node-blue { border-top-color: var(--blue); }
+    .node-green { border-top-color: var(--green); }
+    .node-purple { border-top-color: var(--purple); }
+    .node-cyan { border-top-color: var(--cyan); }
+    .node-orange { border-top-color: var(--orange); }
+    .node-red { border-top-color: var(--red); }
+    .node-gray { border-top-color: var(--line); }
+
+    .chain-link {
+      position: relative;
+      width: 3px;
+      height: 47px;
+      background: var(--line);
+    }
+
+    .chain-link::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      bottom: 1px;
+      width: 10px;
+      height: 10px;
+      border-right: 3px solid var(--line);
+      border-bottom: 3px solid var(--line);
+      transform: translateX(-50%) rotate(45deg);
+    }
+
+    .chain-link .link-label {
+      position: absolute;
+      left: 14px;
+      top: 50%;
+      transform: translateY(-50%);
+      padding: 3px 7px;
+      border: 1px solid #d7dfe9;
+      border-radius: 999px;
+      background: #fff;
+      color: #5a687d;
+      font-size: 10px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .tree-block {
+      position: relative;
+      min-width: 0;
+    }
+
+    .root-node {
+      position: relative;
+      z-index: 3;
+      width: min(660px, 100%);
+      margin: 0 auto;
+      padding: 17px 19px;
+      border: 2px solid #9aabc0;
+      border-top: 7px solid var(--blue);
+      border-radius: 15px;
+      background: #fff;
+      box-shadow: 0 12px 26px rgba(30, 50, 83, .12);
+    }
+
+    .tree-children {
+      position: relative;
+      z-index: 3;
+      display: grid;
+      grid-template-columns: repeat(var(--cols, 2), minmax(0, 1fr));
+      gap: 24px 18px;
+      margin-top: 78px;
+    }
+
+    .tree-children.rows-2 {
+      margin-top: 74px;
+    }
+
+    .branch-node {
+      position: relative;
+      min-width: 0;
+      padding: 37px 15px 15px;
+      border: 1px solid #cbd5e2;
+      border-top: 5px solid var(--green);
+      border-radius: 14px;
+      background: #fff;
+      box-shadow: 0 8px 20px rgba(35, 53, 83, .08);
+    }
+
+    .edge-label {
+      position: absolute;
+      top: -35px;
+      left: 50%;
+      z-index: 4;
+      max-width: calc(100% - 8px);
+      transform: translateX(-50%);
+      padding: 4px 8px;
+      border: 1px solid #cbd5e2;
+      border-radius: 999px;
+      background: #fff;
+      color: #4f5e73;
+      text-align: center;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 10px;
+      font-weight: 800;
+      line-height: 1.25;
+      white-space: normal;
+    }
+
+    svg.tree-lines {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      overflow: visible;
+      pointer-events: none;
+    }
+
+    svg.tree-lines path {
+      fill: none;
+      stroke: var(--line);
+      stroke-width: 2.4;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    svg.tree-lines path.loop {
+      stroke: var(--orange);
+      stroke-dasharray: 7 5;
+    }
+
+    .tag {
+      display: inline-flex;
+      margin: 0 5px 5px 0;
+      padding: 3px 7px;
+      border-radius: 7px;
+      background: var(--gray-soft);
+      color: #526077;
+      font-size: 10px;
+      font-weight: 850;
+    }
+
+    .tag.blue { background: var(--blue-soft); color: var(--blue); }
+    .tag.green { background: var(--green-soft); color: var(--green); }
+    .tag.purple { background: var(--purple-soft); color: var(--purple); }
+    .tag.orange { background: var(--orange-soft); color: var(--orange); }
+    .tag.red { background: var(--red-soft); color: var(--red); }
+
+    .decision-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 11px;
+      margin: 17px 0;
+    }
+
+    .decision {
+      padding: 13px;
+      border: 1px solid #d9e1eb;
+      border-radius: 12px;
+      background: #fff;
+    }
+
+    .decision b {
+      display: block;
+      margin-bottom: 3px;
+      font-size: 13px;
+    }
+
+    .decision span {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .callout {
+      margin: 15px 0;
+      padding: 14px 16px;
+      border-left: 5px solid var(--blue);
+      border-radius: 0 12px 12px 0;
+      background: var(--blue-soft);
+      color: #29476c;
+    }
+
+    .callout.warning {
+      border-left-color: var(--orange);
+      background: var(--orange-soft);
+      color: #704210;
+    }
+
+    .callout.danger {
+      border-left-color: var(--red);
+      background: var(--red-soft);
+      color: #752e37;
+    }
+
+    .callout strong {
+      display: block;
+      margin-bottom: 3px;
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .panel {
+      padding: 18px;
+      border: 1px solid #dbe3ed;
+      border-radius: 15px;
+      background: #fff;
+    }
+
+    .panel h3 {
+      margin: 0 0 7px;
+      font-size: 17px;
+    }
+
+    .panel p,
+    .panel li {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .panel ul {
+      margin: 9px 0 0;
+      padding-left: 20px;
+    }
+
+    .panel li + li { margin-top: 5px; }
+
+    .aux-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 13px;
+    }
+
+    .aux-card {
+      padding: 17px;
+      border: 1px solid #d9e1eb;
+      border-radius: 14px;
+      background: #fff;
+    }
+
+    .aux-card h3 {
+      margin: 0 0 6px;
+      font-size: 15px;
+    }
+
+    .aux-card p,
+    .aux-card li {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .aux-card ul {
+      margin: 8px 0 0;
+      padding-left: 18px;
+    }
+
+    details {
+      border: 1px solid #dce3ed;
+      border-radius: 12px;
+      background: #fff;
+    }
+
+    details + details { margin-top: 9px; }
+
+    summary {
+      padding: 13px 15px;
+      cursor: pointer;
+      font-weight: 850;
+    }
+
+    .details-body {
+      padding: 0 15px 15px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .keywords {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: 8px 0;
+    }
+
+    .keyword {
+      padding: 4px 7px;
+      border: 1px solid #d7dfe9;
+      border-radius: 7px;
+      background: #f4f7fa;
+      color: #46546c;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 10.5px;
+    }
+
+    .code-block {
+      overflow-x: auto;
+      margin: 10px 0 0;
+      padding: 13px;
+      border-radius: 11px;
+      background: #172033;
+      color: #dce7f8;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 11.5px;
+      white-space: pre-wrap;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid #dce3ed;
+      border-radius: 13px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #fff;
+      font-size: 12.5px;
+    }
+
+    th, td {
+      padding: 11px 12px;
+      border-bottom: 1px solid #e4e9f0;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #f1f4f8;
+      color: #3d4a60;
+      font-size: 11px;
+    }
+
+    tr:last-child td { border-bottom: 0; }
+
+    .priority-high,
+    .priority-medium,
+    .priority-low {
+      display: inline-block;
+      min-width: 45px;
+      padding: 3px 7px;
+      border-radius: 7px;
+      text-align: center;
+      font-size: 10px;
+      font-weight: 900;
+    }
+
+    .priority-high { background: var(--red-soft); color: var(--red); }
+    .priority-medium { background: var(--orange-soft); color: var(--orange); }
+    .priority-low { background: var(--gray-soft); color: #5b687c; }
+
+    .footer {
+      padding: 22px;
+      color: var(--muted);
+      text-align: center;
+      font-size: 11px;
+    }
+
+    @media (max-width: 1050px) {
+      .key-points,
+      .decision-strip,
+      .aux-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .split { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 760px) {
+      .page { width: min(100% - 16px, 1500px); }
+      .hero { padding: 23px 19px; }
+      .section { padding: 17px 12px; }
+      .section-head { flex-direction: column; }
+      .key-points,
+      .decision-strip,
+      .term-grid,
+      .aux-grid { grid-template-columns: 1fr; }
+      .diagram {
+        overflow-x: auto;
+        padding-left: 10px;
+        padding-right: 10px;
+      }
+      .diagram > .tree-block {
+        min-width: 920px;
+      }
+      .tree-children {
+        gap: 22px 14px;
+        margin-top: 70px !important;
+      }
+      .branch-node {
+        padding: 39px 11px 13px;
+      }
+      .edge-label {
+        top: -37px;
+        max-width: calc(100% - 2px);
+      }
+    }
+
+    @media print {
+      body { background: #fff; }
+      .section, .hero { box-shadow: none; }
+      .section, .diagram { break-inside: avoid; }
+      details > .details-body { display: block; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <p class="eyebrow">SmartLife Agent · code-truth branch map</p>
+      <h1>当前完整流程：主干、分支与条件出口</h1>
+      <p>
+        重新按树形关系绘制。每个分支块都有一个明确父节点；子节点等宽排列；
+        SVG 连线根据节点真实位置绘制到每个子节点的条件标签和顶部，不再使用无法对齐的装饰箭头。
+      </p>
+      <div class="legend">
+        <span class="legend-item"><span class="legend-line"></span>真实执行边</span>
+        <span class="legend-item"><span class="legend-line dashed"></span>循环 / 重试返回边</span>
+        <span class="legend-item">标签 = 进入该子节点的条件</span>
+        <span class="legend-item">实线箭头 = 当前代码调用</span>
+        <span class="legend-item">灰色节点 = 兜底 / 跳过</span>
+        <a class="legend-item" href="#keyword-inventory">直接查看全部关键词</a>
+      </div>
+    </header>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2>先看结论：真正的分支点在哪里</h2>
+          <p>分类是第一组决策点，SQL/RAG 是购物链内部的第二组决策点；两者不在同一层。</p>
+        </div>
+        <div class="chapter">KEY</div>
+      </div>
+      <div class="key-points">
+        <article class="key-point"><strong>分支 1：统一分类</strong><span>关键词、指代沿用、小模型、主模型仲裁按顺序尝试，最后产出 intent/route/retrieval。</span></article>
+        <article class="key-point"><strong>分支 2：顶层场景</strong><span>主要按 intent 分成购物客服、旅行、协商、通用 ReAct、通用生成。</span></article>
+        <article class="key-point"><strong>分支 3：SQL / RAG</strong><span>在 ShoppingGraph 的 plan_retrieval 中按事实需求派生 none/sql_only/rag_only/mixed。</span></article>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2>00 · 英文名、中文名与协议边界</h2>
+          <p>先把流程图中的术语说清楚。这里的“SSE”“Prepare”“Classifier”“Route”分别属于 UI 事件序列化、LangGraph 节点、分类服务和条件边函数，不是四个同层级模型。</p>
+        </div>
+        <div class="chapter">TERMS</div>
+      </div>
+
+      <div class="term-grid">
+        <article class="term-card">
+          <h3>Streamlit UI + SSE 消费 <span class="protocol-no">不是 Streamable HTTP</span></h3>
+          <span class="term-name">Streamlit Web UI + local SSE-style event consumer</span>
+          <p><strong>中文：</strong>Streamlit 网页界面 + 本地 SSE 格式事件消费器。</p>
+          <ul>
+            <li><code>EventQueue.to_sse()</code> 只把 <code>StreamEvent</code> 序列化成 <code>data: {json}\n\n</code> 字符串。</li>
+            <li><code>process_streaming()</code> 是 Python 异步生成器，直接把字符串 yield 给 UI，没有 HTTP Response、POST/GET endpoint 或网络 SSE 连接。</li>
+            <li><code>_run_streaming_impl()</code> 在后台线程逐行解析 <code>data: </code> 后面的 JSON，然后更新 Streamlit 的正文和过程面板。</li>
+            <li>因此它“使用 SSE 文本格式”，但不是协议意义上的 Streamable HTTP。</li>
+          </ul>
+          <div class="formula">LLM/Graph → EventQueue → "data: {...}\n\n"
+                         ↓
+Python async generator → Streamlit background thread → st.empty()</div>
+          <p>真正使用 Streamable HTTP 的是独立 MCP Server：<code>run_mcp_server.py --transport streamable-http</code>；它不在智能对话 UI 的请求链里。</p>
+        </article>
+
+        <article class="term-card">
+          <h3>LangGraph Prepare</h3>
+          <span class="term-name">node: prepare · implementation: LangGraphOrchestrator._prepare()</span>
+          <p><strong>中文：</strong>本轮会话准备节点，也可以叫“会话上下文初始化”。</p>
+          <ul>
+            <li>由 <code>graph.add_node("prepare", ...)</code> 注册。</li>
+            <li>由 <code>build_thread_id(user_id, scene, session_id)</code> 创建线程标识。</li>
+            <li>调用 <code>begin_turn()</code>，把用户消息写入 ShortTermMemory。</li>
+            <li>不调用大模型、不做 Intent 判断、不做 SQL/RAG。</li>
+          </ul>
+          <div class="formula">START → prepare → classify</div>
+        </article>
+
+        <article class="term-card">
+          <h3>Unified Classifier</h3>
+          <span class="term-name">class: UnifiedClassifier · node: classify</span>
+          <p><strong>中文：</strong>统一分类器，也叫“统一任务分诊器”。</p>
+          <p>它不只判断 Intent。它把过去分离的任务路由和意图识别合并为一次输出：</p>
+          <div class="formula">ClassificationResult {
+  route,       // react / plan_and_execute
+  intent,      // shopping / travel / negotiation / customer_service / general
+  sub_intent,  // search / recommend / order_status / plan_trip / qa / chat ...
+  retrieval,   // sql_only / rag_only / mixed / none
+  confidence,  // 0.0 - 1.0
+  reason
+}</div>
+          <p>判断顺序是：关键词规则 → 上下文指代沿用 → 小模型 → 低置信主模型仲裁/格式修复 → 默认兜底。</p>
+        </article>
+
+        <article class="term-card">
+          <h3>LangGraph Route</h3>
+          <span class="term-name">conditional edge function: LangGraphOrchestrator._route(state)</span>
+          <p><strong>中文：</strong>LangGraph 条件路由函数，或“顶层场景路由”。</p>
+          <p>它不是再次调用分类模型，而是读取 <code>ClassificationResult</code>，按固定优先级返回一个字符串边名：</p>
+          <div class="formula">shopping/customer_service → "shopping"
+travel                   → "travel"
+negotiation              → "negotiation"
+general + react          → "react"
+其他                     → "general"</div>
+          <p>LangGraph 的条件边映射再把这些字符串连接到 Shopping、Travel、Negotiation、ReAct、General 节点。</p>
+        </article>
+      </div>
+
+      <div class="callout">
+        <strong>Intent 是怎么判断出来的？</strong>
+        Intent 不是 Route 之后再独立判断。它是 UnifiedClassifier 输出的字段；关键词层、上下文层或小模型层先决定 Intent，最后 <code>_route()</code> 只消费这个结果。分类后还有一层产品关键词安全网：如果 Intent=general，但消息含商品/价格/推荐词，会被强制改成 shopping/search/mixed。
+      </div>
+    </section>
+
+
+    <section class="section" id="keyword-inventory">
+      <div class="section-head">
+        <div>
+          <h2>00B · 全部关键词总表（默认展开）</h2>
+          <p>这里直接展开所有会影响分类、SQL/RAG 证据选择和旅行规则的关键词。词表由当前代码自动提取，不依赖下方折叠说明。</p>
+        </div>
+        <div class="chapter">WORDS</div>
+      </div>
+
+      <div class="callout">
+        <strong>先看三类强度</strong>
+        Shopping 强词用于确认购物意图；价格词是弱购物信号，只加分但不能单独确立 Shopping；SQL/RAG 的 attribute/action/review 是另一套“证据需求”词表。
+      </div>
+
+      <div class="keyword-grid">
+        <article class="keyword-group">
+  <div class="keyword-group-head"><h3>Route · plan_and_execute</h3><span>14 个</span></div>
+  <code>classifier._ROUTE_KEYWORDS</code>
+  <div class="keywords"><span class="keyword">规划</span><span class="keyword">计划</span><span class="keyword">清单</span><span class="keyword">安排</span><span class="keyword">预算分配</span><span class="keyword">帮我列</span><span class="keyword">行程</span><span class="keyword">装修</span><span class="keyword">准备</span><span class="keyword">策划</span><span class="keyword">方案</span><span class="keyword">统筹</span><span class="keyword">编排</span><span class="keyword">设计路线</span></div>
+  
+</article>
+        <article class="keyword-group">
+  <div class="keyword-group-head"><h3>Shopping 强信号</h3><span>36 个</span></div>
+  <code>shopping_words - generic_shopping_signals</code>
+  <div class="keywords"><span class="keyword">买</span><span class="keyword">商品</span><span class="keyword">鞋</span><span class="keyword">衣服</span><span class="keyword">手机</span><span class="keyword">电脑</span><span class="keyword">平板</span><span class="keyword">耳机</span><span class="keyword">背包</span><span class="keyword">帐篷</span><span class="keyword">冲锋衣</span><span class="keyword">睡袋</span><span class="keyword">泳衣</span><span class="keyword">T恤</span><span class="keyword">衬衫</span><span class="keyword">裤子</span><span class="keyword">外套</span><span class="keyword">连衣裙</span><span class="keyword">裙子</span><span class="keyword">跑步鞋</span><span class="keyword">登山鞋</span><span class="keyword">运动鞋</span><span class="keyword">小米</span><span class="keyword">iPhone</span><span class="keyword">苹果</span><span class="keyword">华为</span><span class="keyword">Nike</span><span class="keyword">Adidas</span><span class="keyword">阿迪</span><span class="keyword">优衣库</span><span class="keyword">ZARA</span><span class="keyword">波司登</span><span class="keyword">Salomon</span><span class="keyword">迪卡侬</span><span class="keyword">安踏</span><span class="keyword">李宁</span></div>
+  <p>这些词可以独立形成强购物证据。</p>
+</article>
+        <article class="keyword-group">
+  <div class="keyword-group-head"><h3>Shopping 通用动作（不算强信号）</h3><span>8 个</span></div>
+  <code>classifier._GENERIC_SHOPPING_SIGNALS</code>
+  <div class="keywords"><span class="keyword">找</span><span class="keyword">哪个更好</span><span class="keyword">对比</span><span class="keyword">区别</span><span class="keyword">推荐</span><span class="keyword">比较</span><span class="keyword">搜</span><span class="keyword">哪个好</span></div>
+  <p>它们仍计入 Shopping 总分，但不满足“至少一个强购物词”的要求。</p>
+</article>
+        <article class="keyword-group">
+  <div class="keyword-group-head"><h3>Shopping 弱价格/预算信号</h3><span>9 个</span></div>
+  <code>classifier._SHOPPING_WEAK_KEYWORDS</code>
+  <div class="keywords"><span class="keyword">价格</span><span class="keyword">便宜</span><span class="keyword">贵</span><span class="keyword">打折</span><span class="keyword">优惠</span><span class="keyword">多少钱</span><span class="keyword">元的</span><span class="keyword">块钱</span><span class="keyword">预算</span></div>
+  <p>每个命中 +1；单独不能把请求判为 Shopping。</p>
+</article>
+        <article class="keyword-group">
+  <div class="keyword-group-head"><h3>Travel</h3><span>38 个</span></div>
+  <code>classifier._INTENT_KEYWORDS[travel]</code>
+  <div class="keywords"><span class="keyword">旅行</span><span class="keyword">旅游</span><span class="keyword">酒店</span><span class="keyword">景点</span><span class="keyword">机票</span><span class="keyword">出行</span><span class="keyword">度假</span><span class="keyword">目的地</span><span class="keyword">行程</span><span class="keyword">攻略</span><span class="keyword">好玩</span><span class="keyword">风景</span><span class="keyword">景区</span><span class="keyword">民宿</span><span class="keyword">住宿</span><span class="keyword">路线</span><span class="keyword">几天</span><span class="keyword">天游</span><span class="keyword">杭州</span><span class="keyword">北京</span><span class="keyword">上海</span><span class="keyword">成都</span><span class="keyword">西安</span><span class="keyword">云南</span><span class="keyword">大理</span><span class="keyword">丽江</span><span class="keyword">三亚</span><span class="keyword">厦门</span><span class="keyword">桂林</span><span class="keyword">张家界</span><span class="keyword">西藏</span><span class="keyword">新疆</span><span class="keyword">规划</span><span class="keyword">两天</span><span class="keyword">三天</span><span class="keyword">一日游</span><span class="keyword">自驾游</span><span class="keyword">周边游</span></div>
+  
+</article>
+        <article class="keyword-group">
+  <div class="keyword-group-head"><h3>Negotiation</h3><span>6 个</span></div>
+  <code>classifier._INTENT_KEYWORDS[negotiation]</code>
+  <div class="keywords"><span class="keyword">一起</span><span class="keyword">朋友</span><span class="keyword">大家</span><span class="keyword">协商</span><span class="keyword">都同意</span><span class="keyword">投票</span></div>
+  
+</article>
+        <article class="keyword-group">
+  <div class="keyword-group-head"><h3>Customer Service</h3><span>9 个</span></div>
+  <code>classifier._INTENT_KEYWORDS[customer_service]</code>
+  <div class="keywords"><span class="keyword">退</span><span class="keyword">换</span><span class="keyword">订单</span><span class="keyword">物流</span><span class="keyword">投诉</span><span class="keyword">退款</span><span class="keyword">售后</span><span class="keyword">查订单</span><span class="keyword">订单状态</span></div>
+  
+</article>
+        <article class="keyword-group">
+  <div class="keyword-group-head"><h3>多轮指代词</h3><span>15 个</span></div>
+  <code>UnifiedClassifier._uses_reference()</code>
+  <div class="keywords"><span class="keyword">这个</span><span class="keyword">那个</span><span class="keyword">它</span><span class="keyword">他们</span><span class="keyword">第二个</span><span class="keyword">刚才</span><span class="keyword">之前</span><span class="keyword">上面</span><span class="keyword">继续</span><span class="keyword">还是</span><span class="keyword">改成</span><span class="keyword">按刚才</span><span class="keyword">就按</span><span class="keyword">同上</span><span class="keyword">那个方案</span></div>
+  <p>用于判断是否沿用上一轮分类。</p>
+</article>
+        <article class="keyword-group">
+  <div class="keyword-group-head"><h3>产品关键词安全网</h3><span>20 个</span></div>
+  <code>OrchestratorV2.classify_turn()</code>
+  <div class="keywords"><span class="keyword">鞋</span><span class="keyword">衣服</span><span class="keyword">手机</span><span class="keyword">电脑</span><span class="keyword">背包</span><span class="keyword">帐篷</span><span class="keyword">冲锋衣</span><span class="keyword">睡袋</span><span class="keyword">泳衣</span><span class="keyword">T恤</span><span class="keyword">衬衫</span><span class="keyword">裤子</span><span class="keyword">外套</span><span class="keyword">连衣裙</span><span class="keyword">元</span><span class="keyword">块</span><span class="keyword">预算</span><span class="keyword">价格</span><span class="keyword">多少钱</span><span class="keyword">推荐</span></div>
+  <p>分类结果为 general 时命中任一词，强制改为 shopping/search/mixed。</p>
+</article>
+      </div>
+
+      <div class="diagram">
+        <div class="diagram-title"><h3>SQL / RAG 证据需求关键词</h3><span>这些词不判断 Intent，而决定回答需要 Product 还是 Review 证据</span></div>
+        <div class="keyword-grid">
+          <article class="keyword-group">
+  <div class="keyword-group-head"><h3>Review signals</h3><span>14 个</span></div>
+  <code>_classify_data_needs() review_signals</code>
+  <div class="keywords"><span class="keyword">评价</span><span class="keyword">口碑</span><span class="keyword">好不好</span><span class="keyword">差评</span><span class="keyword">好评</span><span class="keyword">吐槽</span><span class="keyword">怎么样</span><span class="keyword">耐用</span><span class="keyword">质量</span><span class="keyword">体验</span><span class="keyword">舒适</span><span class="keyword">缓震</span><span class="keyword">真实用户</span><span class="keyword">推荐理由</span></div>
+  
+</article>
+          <article class="keyword-group">
+  <div class="keyword-group-head"><h3>Attribute signals</h3><span>18 个</span></div>
+  <code>_classify_data_needs() attribute_signals</code>
+  <div class="keywords"><span class="keyword">价格</span><span class="keyword">多少钱</span><span class="keyword">元</span><span class="keyword">预算</span><span class="keyword">库存</span><span class="keyword">有货</span><span class="keyword">品牌</span><span class="keyword">类别</span><span class="keyword">分类</span><span class="keyword">排序</span><span class="keyword">防水</span><span class="keyword">尺寸</span><span class="keyword">颜色</span><span class="keyword">规格</span><span class="keyword">低于</span><span class="keyword">高于</span><span class="keyword">以内</span><span class="keyword">以上</span></div>
+  
+</article>
+          <article class="keyword-group">
+  <div class="keyword-group-head"><h3>Product action signals</h3><span>13 个</span></div>
+  <code>_classify_data_needs() product_action_signals</code>
+  <div class="keywords"><span class="keyword">推荐</span><span class="keyword">找</span><span class="keyword">买</span><span class="keyword">搜</span><span class="keyword">搜索</span><span class="keyword">商品</span><span class="keyword">哪款</span><span class="keyword">哪双</span><span class="keyword">哪个</span><span class="keyword">对比</span><span class="keyword">比较</span><span class="keyword">选购</span><span class="keyword">筛选</span></div>
+  
+</article>
+        </div>
+      </div>
+
+      <div class="diagram">
+        <div class="diagram-title"><h3>旅行规则中的其他关键词和正则</h3><span>需求抽取、攻略匹配和硬错误审核</span></div>
+        <div class="keyword-grid">
+          <article class="keyword-group">
+  <div class="keyword-group-head"><h3>旅行目的地字面量</h3><span>8 个</span></div>
+  <code>TravelPlanGraph._extract_requirements()</code>
+  <div class="keywords"><span class="keyword">杭州</span><span class="keyword">北京</span><span class="keyword">上海</span><span class="keyword">成都</span><span class="keyword">三亚</span><span class="keyword">西安</span><span class="keyword">丽江</span><span class="keyword">大理</span></div>
+  
+</article>
+          <article class="keyword-group">
+  <div class="keyword-group-head"><h3>本地攻略匹配词</h3><span>9 个</span></div>
+  <code>TravelAgent._read_local_guides()</code>
+  <div class="keywords"><span class="keyword">杭州</span><span class="keyword">露营</span><span class="keyword">camping</span><span class="keyword">情侣</span><span class="keyword">budget</span><span class="keyword">预算</span><span class="keyword">西湖</span><span class="keyword">户外</span><span class="keyword">登山</span></div>
+  
+</article>
+        </div>
+        <div class="code-block">旅游天数正则：
+(?:玩|游|待|停留)\s*\d+\s*(?:天|日)|\d+\s*(?:天|日)\s*(?:游|行程|攻略)
+
+需求抽取正则：
+天数   = (\d+)\s*(?:天|日)
+日期   = (\d{4}-\d{2}-\d{2})
+预算   = (\d+(?:\.\d+)?)\s*(?:元|块|¥)
+人数   = (\d+)\s*人
+
+审核 critical 触发短语：
+预算超支、天数不符、天数不一致、路线冲突、路线不合理、
+无法执行、必须修改、需要修订</div>
+      </div>
+
+      <div class="diagram">
+        <div class="diagram-title"><h3>NL2SQL 商品术语映射</h3><span>用户词 → 数据库商品词，共 28 组</span></div>
+        <div class="table-wrap">
+          <table class="keyword-map-table">
+            <thead><tr><th>用户术语</th><th>展开后的数据库术语</th></tr></thead>
+            <tbody><tr><td><code>鞋子</code></td><td><div class="keywords"><span class="keyword">跑步鞋</span><span class="keyword">登山鞋</span><span class="keyword">运动鞋</span><span class="keyword">凉鞋</span><span class="keyword">拖鞋</span></div></td></tr><tr><td><code>鞋</code></td><td><div class="keywords"><span class="keyword">跑步鞋</span><span class="keyword">登山鞋</span><span class="keyword">运动鞋</span><span class="keyword">凉鞋</span><span class="keyword">拖鞋</span></div></td></tr><tr><td><code>跑步鞋</code></td><td><div class="keywords"><span class="keyword">跑步鞋</span></div></td></tr><tr><td><code>登山鞋</code></td><td><div class="keywords"><span class="keyword">登山鞋</span></div></td></tr><tr><td><code>运动鞋</code></td><td><div class="keywords"><span class="keyword">运动鞋</span></div></td></tr><tr><td><code>凉鞋</code></td><td><div class="keywords"><span class="keyword">凉鞋</span></div></td></tr><tr><td><code>拖鞋</code></td><td><div class="keywords"><span class="keyword">拖鞋</span></div></td></tr><tr><td><code>衣服</code></td><td><div class="keywords"><span class="keyword">T恤</span><span class="keyword">衬衫</span><span class="keyword">裤子</span><span class="keyword">外套</span><span class="keyword">连衣裙</span><span class="keyword">上衣</span><span class="keyword">裙子</span></div></td></tr><tr><td><code>T恤</code></td><td><div class="keywords"><span class="keyword">T恤</span></div></td></tr><tr><td><code>衬衫</code></td><td><div class="keywords"><span class="keyword">衬衫</span></div></td></tr><tr><td><code>裤子</code></td><td><div class="keywords"><span class="keyword">裤子</span></div></td></tr><tr><td><code>外套</code></td><td><div class="keywords"><span class="keyword">外套</span></div></td></tr><tr><td><code>连衣裙</code></td><td><div class="keywords"><span class="keyword">连衣裙</span></div></td></tr><tr><td><code>上衣</code></td><td><div class="keywords"><span class="keyword">上衣</span></div></td></tr><tr><td><code>裙子</code></td><td><div class="keywords"><span class="keyword">裙子</span></div></td></tr><tr><td><code>帐篷</code></td><td><div class="keywords"><span class="keyword">帐篷</span></div></td></tr><tr><td><code>睡袋</code></td><td><div class="keywords"><span class="keyword">睡袋</span></div></td></tr><tr><td><code>登山杖</code></td><td><div class="keywords"><span class="keyword">登山杖</span></div></td></tr><tr><td><code>背包</code></td><td><div class="keywords"><span class="keyword">背包</span></div></td></tr><tr><td><code>炉具</code></td><td><div class="keywords"><span class="keyword">炉具</span></div></td></tr><tr><td><code>泳衣</code></td><td><div class="keywords"><span class="keyword">泳衣</span></div></td></tr><tr><td><code>浮潜装备</code></td><td><div class="keywords"><span class="keyword">浮潜装备</span></div></td></tr><tr><td><code>手机</code></td><td><div class="keywords"><span class="keyword">手机</span><span class="keyword">iPhone</span><span class="keyword">小米</span><span class="keyword">华为</span></div></td></tr><tr><td><code>电脑</code></td><td><div class="keywords"><span class="keyword">笔记本</span><span class="keyword">台式机</span><span class="keyword">平板</span></div></td></tr><tr><td><code>笔记本</code></td><td><div class="keywords"><span class="keyword">笔记本</span></div></td></tr><tr><td><code>平板</code></td><td><div class="keywords"><span class="keyword">平板</span></div></td></tr><tr><td><code>耳机</code></td><td><div class="keywords"><span class="keyword">耳机</span></div></td></tr><tr><td><code>充电宝</code></td><td><div class="keywords"><span class="keyword">充电宝</span></div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2>01 · 全景主干：共同入口 → 统一分类 → 五个场景出口</h2>
+          <p>先走共同前置，再从 ClassificationResult 一次性展开场景分支。</p>
+        </div>
+        <div class="chapter">OVERVIEW</div>
+      </div>
+
+      <div class="diagram">
+        <div class="diagram-title"><h3>共同前置</h3><span>所有智能对话消息都依次经过这四层</span></div>
+        <div class="chain">
+          <article class="flow-node node-green">
+            <h3>用户输入</h3>
+            <p>智能对话或快捷提示词。多人协商是独立入口，不经过这里。</p>
+            <div class="meta"><span class="tag">scene=general</span><span class="tag">pending_assistant</span></div>
+          </article>
+          <div class="chain-link"><span class="link-label">st.rerun()</span></div>
+          <article class="flow-node node-gray">
+            <h3>Streamlit UI + 本地 SSE 格式事件消费</h3>
+            <p>英文：Streamlit Web UI + local SSE-style event consumer。后台 Python 线程读取异步生成器输出的 <code>data: {...}</code> 行并刷新页面。</p>
+            <div class="meta"><span class="tag red">不是 Streamable HTTP</span><span class="tag">EventQueue</span><span class="tag">StreamResponseBuffer</span></div>
+          </article>
+          <div class="chain-link"><span class="link-label">process_streaming()</span></div>
+          <article class="flow-node node-blue">
+            <h3>LangGraph Prepare / 本轮会话准备节点</h3>
+            <p>英文代码名：<code>prepare</code> / <code>_prepare()</code>。创建 user + scene + browser session 隔离的 thread_id，并把用户消息写入短期记忆。它不是模型。</p>
+          </article>
+          <div class="chain-link"><span class="link-label">begin_turn()</span></div>
+          <article class="flow-node node-purple">
+            <h3>Unified Classifier / 统一分类器</h3>
+            <p>英文类名：<code>UnifiedClassifier</code>。一次分类同时产出 <code>intent</code>、<code>route</code>、<code>sub_intent</code>、<code>retrieval</code>、<code>confidence</code>、<code>reason</code>。</p>
+          </article>
+        </div>
+      </div>
+
+      <div class="diagram">
+        <div class="diagram-title"><h3>顶层条件路由</h3><span>箭头标签就是 LangGraph 的实际条件</span></div>
+        <div class="tree-block">
+          <svg class="tree-lines"></svg>
+          <div class="root-node node-blue">
+            <h3>ClassificationResult → LangGraph Route / 顶层条件路由</h3>
+            <p>英文代码名：<code>LangGraphOrchestrator._route(state)</code>，由 <code>graph.add_conditional_edges("classify", self._route, ...)</code> 注册。它读取分类结果并返回一个边名，LangGraph 再把边名映射到场景节点。</p>
+            <div class="meta"><span class="tag blue">确定性函数，不是模型</span><span class="tag">第一业务分支点</span></div>
+          </div>
+          <div class="tree-children" style="--cols:5">
+            <article class="branch-node node-green">
+              <div class="edge-label">intent ∈<br>shopping / customer_service</div>
+              <h3>Shopping 分支</h3>
+              <p>ShoppingGraph：规划检索 → 检索 → 生成 → 校验。</p>
+              <div class="meta"><span class="tag green">route 不再分流</span></div>
+            </article>
+            <article class="branch-node node-green">
+              <div class="edge-label">intent == travel</div>
+              <h3>Travel 分支</h3>
+              <p>内部再按 route 选择普通旅游问答或 Plan &amp; Execute。</p>
+            </article>
+            <article class="branch-node node-orange">
+              <div class="edge-label">intent == negotiation</div>
+              <h3>协商提示分支</h3>
+              <p>主聊天只提示进入社交协商标签页。</p>
+            </article>
+            <article class="branch-node node-purple">
+              <div class="edge-label">general + route=react</div>
+              <h3>通用 ReAct</h3>
+              <p>进入 Agent ↔ Tools 受控循环。</p>
+            </article>
+            <article class="branch-node node-gray">
+              <div class="edge-label">其他 general</div>
+              <h3>普通流式生成</h3>
+              <p>general + plan_and_execute 也落到这里。</p>
+            </article>
+          </div>
+        </div>
+      </div>
+
+      <div class="callout warning">
+        <strong>route 的实际作用范围</strong>
+        shopping/customer_service/travel/negotiation 在顶层不使用 route 再分流；route 真正决定执行方式的只有 travel 内部的 Chat/Plan，以及 general 的 ReAct/普通生成。
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2>02 · 统一分类器：它判断的不只是 Intent</h2>
+          <p>UnifiedClassifier 同时判断任务复杂度（route）、任务领域（intent）、子任务（sub_intent）和模型自报检索偏好（retrieval）。本节是 Intent 的真正判定过程；A/B/C 是互斥的分层出口。</p>
+        </div>
+        <div class="chapter">CLASSIFY</div>
+      </div>
+
+      <div class="diagram">
+        <div class="tree-block">
+          <svg class="tree-lines"></svg>
+          <div class="root-node node-purple">
+            <h3>开始统一分类</h3>
+            <p>历史只取最近 11 条且去掉当前消息；关键词证据只看当前消息。</p>
+          </div>
+          <div class="tree-children" style="--cols:3">
+            <article class="branch-node node-purple">
+              <div class="edge-label">关键词条件命中</div>
+              <h3>A. 关键词快速分类</h3>
+              <p>判断 route 和 intent。统计 shopping、travel、negotiation、customer_service 的“命中关键词条目数”；Travel 天数正则算 1 个 travel 信号，Shopping 弱价格词加到 shopping 分数。</p>
+              <ul>
+                <li>Travel 分数 ≥ 2 且没有强购物词 → travel。</li>
+                <li>否则四类取最大分数；Shopping 还必须至少有一个强购物词。</li>
+                <li>只有 <code>max_match ≥ 2</code> 才返回；confidence 固定 0.85。</li>
+              </ul>
+              <div class="meta"><span class="tag purple">零延迟</span><span class="tag">分类 route + intent</span><span class="tag">命中即结束</span></div>
+            </article>
+            <article class="branch-node node-purple">
+              <div class="edge-label">有上一轮分类 + 指代词 + 无新任务词</div>
+              <h3>B. 上一轮分类沿用</h3>
+              <p>处理“第二个”“继续”“改成”等连续指代，confidence 夹在 0.55–0.80。</p>
+              <div class="meta"><span class="tag purple">零模型</span><span class="tag">命中即结束</span></div>
+            </article>
+            <article class="branch-node node-blue">
+              <div class="edge-label">A/B 都未命中</div>
+              <h3>C. 小模型分类</h3>
+              <p>严格解析 route、intent、sub_intent、retrieval、confidence、reason JSON。</p>
+              <div class="meta"><span class="tag blue">small LLM</span></div>
+            </article>
+          </div>
+        </div>
+      </div>
+
+      <div class="callout">
+        <strong>A. 关键词快速分类到底分类什么？</strong>
+        它不是只判 Intent，而是同时给出 route、intent、sub_intent、retrieval、confidence、reason。
+        <div class="formula">route:
+  命中规划类关键词 或 旅游天数正则 → plan_and_execute
+  否则 → react
+
+intent:
+  shopping/travel/negotiation/customer_service 的关键词条目数比较最大值
+  travel_score >= 2 且无强购物词时优先 travel
+  shopping 只靠价格弱词不能成立，至少需要一个强购物词
+
+sub_intent:
+  travel + plan_and_execute → plan_trip
+  travel + react           → qa
+  shopping/customer_service → search
+  其他                     → chat
+
+retrieval:
+  shopping → mixed
+  travel   → rag_only
+  其他     → none
+
+confidence = 0.85；只有 max_match >= 2 才返回，否则进入 B/C 层</div>
+      </div>
+
+      <div class="callout success">
+        <strong>“购物词强不强、价格词强不强、Travel 怎么算”</strong>
+        <div class="formula">强购物信号 = Shopping 关键词中排除 8 个通用动作词后的词
+             = 买、商品、鞋、衣服、手机、跑步鞋、品牌名……
+弱购物信号 = 价格、便宜、贵、打折、优惠、多少钱、元的、块钱、预算
+             每个命中 +1，但单独不能确立 Shopping
+
+travel_score =
+    Travel 关键词列表中命中的不同词条数
+  + (旅游天数正则命中 ? 1 : 0)
+
+所有关键词等权，每个不同关键词最多计 1 次；没有 2 倍权重或模型评分。</div>
+        <p>
+          例如“推荐一双 800 元的跑鞋”：推荐/鞋/跑步鞋形成强购物证据；“800 元”本身不在这套 A 层弱购物列表里。
+          “杭州玩两天”中“杭州”“两天”分别计 Travel 1 分；天数正则只识别阿拉伯数字天数，因此“玩两天”靠关键词“两天”计分。
+        </p>
+      </div>
+
+      <div class="callout">
+        <strong>这里要区分两套关键词</strong>
+        A 层的 Intent 关键词用于判断“用户想做什么”；SQL/RAG 的 attribute/action/review 关键词用于判断“回答需要哪些证据”。
+        两套列表可以重叠，但不是同一个计数器。例如“元”在 SQL 的 attribute_signals 中，但不在 A 层 Shopping 弱词列表中。
+      </div>
+
+      <div class="diagram">
+        <div class="diagram-title">
+          <h3>A 层遇到“旅行 + 购物”时的当前处理 <span class="status-current">当前已支持明确多意图</span></h3>
+          <span>多个类别都达到独立证据阈值时返回 1–2 个 Intent；只有单类别达到阈值时才走原来的单选逻辑</span>
+        </div>
+        <div class="tree-block">
+          <svg class="tree-lines"></svg>
+          <div class="root-node node-purple">
+            <h3>计算四类关键词分数</h3>
+            <p>Shopping 分数 = 强购物词 + 弱价格词；Travel 分数 = Travel 关键词 + 天数正则；Negotiation / Customer Service 各自计数。</p>
+            <div class="score-line">
+              <span class="score-chip">shopping_score</span>
+              <span class="score-chip">travel_score</span>
+              <span class="score-chip">negotiation_score</span>
+              <span class="score-chip">customer_service_score</span>
+            </div>
+          </div>
+          <div class="tree-children" style="--cols:4">
+            <article class="branch-node node-green">
+              <div class="edge-label">两个以上类别达到阈值</div>
+              <h3>返回多意图</h3>
+              <p>Shopping 需要强购物词，Travel 需要分数 ≥ 2；按分数排序保留前两个。</p>
+            </article>
+            <article class="branch-node node-purple">
+              <div class="edge-label">只有一个类别达到阈值</div>
+              <h3>返回单意图</h3>
+              <p>继续沿用原来的 max-score 路径，不会凭空添加第二个意图。</p>
+            </article>
+            <article class="branch-node node-orange">
+              <div class="edge-label">Shopping 只有价格/预算弱词</div>
+              <h3>Shopping 不成候选</h3>
+              <p>必须至少有一个强购物词；避免把旅行预算误判成购物任务。</p>
+            </article>
+            <article class="branch-node node-red">
+              <div class="edge-label">没有类别达到阈值</div>
+              <h3>进入 B/C</h3>
+              <p>关键词层返回 None，再交给上下文沿用或小模型。</p>
+            </article>
+          </div>
+        </div>
+      </div>
+
+      <div class="callout warning">
+        <strong>旅行 + 购物的直接例子</strong>
+        “给我推荐一双 800 元的跑鞋，再给我一份杭州玩两天的计划”会同时得到 Shopping=3、Travel=2 两个候选，因此 A 层返回
+        <code>intents=["shopping","travel"]</code>，主 Intent 按分数取 shopping，并进入 <code>shopping_travel</code> 复合分支。
+      </div>
+
+      <div class="diagram">
+        <div class="diagram-title">
+          <h3>C 层小模型遇到复合意图时的当前处理 <span class="status-current">支持 1–2 个 Intent</span></h3>
+          <span>模型不再被强制二选一；intent 保留主 Intent，intents 保存完整意图集合</span>
+        </div>
+        <div class="tree-block">
+          <svg class="tree-lines"></svg>
+          <div class="root-node node-blue">
+            <h3>小模型收到复合请求</h3>
+            <p>输出 <code>intent</code>、<code>intents</code>、<code>primary_intent</code>、<code>intent_scores</code>。意图列表最多两个。</p>
+          </div>
+          <div class="tree-children" style="--cols:3">
+            <article class="branch-node node-green">
+              <div class="edge-label">intents 长度 = 1</div>
+              <h3>单意图</h3>
+              <p>兼容原有行为，intent 就是唯一意图。</p>
+            </article>
+            <article class="branch-node node-green">
+              <div class="edge-label">intents 长度 = 2 且都合法</div>
+              <h3>双意图</h3>
+              <p>例如 <code>intents=["shopping","travel"]</code>，primary_intent 决定主标签。</p>
+            </article>
+            <article class="branch-node node-red">
+              <div class="edge-label">数组超过两个或字段非法</div>
+              <h3>修复 / 兜底</h3>
+              <p>先进入主模型 repair；仍失败才落回默认分类。</p>
+            </article>
+          </div>
+        </div>
+      </div>
+
+      <div class="diagram">
+        <div class="diagram-title">
+          <h3>“旅行 + 购物两个都要”的复合执行流程 <span class="status-current">基础能力已接入</span></h3>
+          <span>当前按顺序执行 ShoppingGraph 和 TravelPlanGraph，再合并稳定正文；共享预算联动仍是后续增强</span>
+        </div>
+        <div class="chain">
+          <article class="flow-node node-purple">
+            <h3>多意图分类结果</h3>
+            <p><code>intents: ["shopping","travel"]</code>、<code>primary_intent</code>、<code>intent_scores</code>；旧 <code>intent</code> 保留为主意图。</p>
+          </article>
+          <div class="chain-link"><span class="link-label">多意图</span></div>
+          <article class="flow-node node-blue">
+            <h3>Composite Route / 复合路由</h3>
+            <p><code>_route()</code> 检测到 shopping+travel 后返回 <code>shopping_travel</code>，进入复合节点。</p>
+          </article>
+          <div class="chain-link"><span class="link-label">并行或顺序执行</span></div>
+          <article class="flow-node node-green">
+            <h3>ShoppingGraph + TravelPlanGraph</h3>
+            <p>购物子图查 SQL/RAG，旅行子图生成行程；当前顺序执行两个子图，分别传递场景化分类。</p>
+          </article>
+          <div class="chain-link"><span class="link-label">merge</span></div>
+          <article class="flow-node node-cyan">
+            <h3>跨场景合并</h3>
+            <p>输出同时包含商品推荐和旅行计划的最终回答；共享预算统一计算属于下一步增强。</p>
+          </article>
+        </div>
+      </div>
+
+      <div class="diagram">
+        <div class="diagram-title"><h3>双意图实现状态与剩余改造</h3><span>基础分类、路由和双子图执行已接入；下面列出当前状态和仍可增强的部分</span></div>
+        <div class="table-wrap">
+          <table class="name-table">
+            <thead><tr><th>位置</th><th>当前状态</th><th>仍可增强</th></tr></thead>
+            <tbody>
+              <tr>
+                <td><code>app/classifier.py</code></td>
+                <td>已增加 <code>intents</code>/<code>intent_scores</code>，保留单值兼容。</td>
+                <td>继续优化候选阈值、模型评分校准和跨轮多意图继承。</td>
+              </tr>
+              <tr>
+                <td><code>langgraph_orchestrator.py</code></td>
+                <td>已增加 <code>shopping_travel</code> composite 节点。</td>
+                <td>继续支持真正 fan-out/并行执行、共享预算和更多复合组合。</td>
+              </tr>
+              <tr>
+                <td><code>orchestrator_v2.py</code></td>
+                <td>复合节点分别给购物/旅行场景传入各自分类。</td>
+                <td>把 EvidencePlanner 扩展为跨意图证据并集，支持共享 facts/sources。</td>
+              </tr>
+              <tr>
+                <td><code>shopping_graph.py</code> / <code>travel_graph.py</code></td>
+                <td>两个子图都会执行，但暂未共享预算状态。</td>
+                <td>增加预算、日期、人数和装备需求的跨场景共享状态。</td>
+              </tr>
+              <tr>
+                <td><code>streaming.py</code> / <code>process_timeline.py</code></td>
+                <td>复合正文已稳定合并，token/reset 冲突已屏蔽。</td>
+                <td>增加真正的并行子图进度分组和分支标签。</td>
+              </tr>
+              <tr>
+                <td><code>tests/</code></td>
+                <td>已加入 shopping+travel 样例和 composite 路由测试。</td>
+                <td>补充同分、不同分、预算合并、检索并集和失败恢复测试。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="callout success">
+        <strong>多意图下 SQL/RAG 应该怎么合并不是简单选 mixed</strong>
+        应先按每个 Intent 分别算证据需求，再取并集：
+        <div class="formula">shopping_needs = {product, review}
+travel_needs   = {review, local_guides, memory, tools}
+
+combined.Product = shopping_needs.product OR travel_needs.product
+combined.Review  = shopping_needs.review  OR travel_needs.review
+combined.sources = SQL ∪ RAG ∪ local_guides ∪ memory ∪ tools
+combined.strategy 由最终 Product/Review 派生，但工具/攻略/记忆需单独执行</div>
+      </div>
+
+      <div class="diagram">
+        <div class="diagram-title"><h3>小模型结果质量分支</h3><span>只有这一层可能发生主模型仲裁或修复</span></div>
+        <div class="tree-block">
+          <svg class="tree-lines"></svg>
+          <div class="root-node node-blue">
+            <h3>校验小模型输出</h3>
+            <p>必填字段、字符串、枚举、数值 confidence 全部检查。</p>
+          </div>
+          <div class="tree-children" style="--cols:4">
+            <article class="branch-node node-green">
+              <div class="edge-label">confidence ≥ 0.55</div>
+              <h3>接受</h3>
+              <p>直接返回小模型分类。</p>
+            </article>
+            <article class="branch-node node-orange">
+              <div class="edge-label">confidence &lt; 0.55</div>
+              <h3>主模型仲裁</h3>
+              <p>重新独立判断；失败则保留有效候选。</p>
+            </article>
+            <article class="branch-node node-orange">
+              <div class="edge-label">JSON / 字段异常</div>
+              <h3>主模型修复</h3>
+              <p>只做一次 repair。</p>
+            </article>
+            <article class="branch-node node-red">
+              <div class="edge-label">仲裁或修复也失败</div>
+              <h3>默认兜底</h3>
+              <p>general / react / chat / none，confidence=0.3。</p>
+            </article>
+          </div>
+        </div>
+      </div>
+
+      <div class="diagram">
+        <div class="diagram-title"><h3>Intent 的五类定义与小模型输出</h3><span>关键词层命中时不会调用小模型；未命中才让小模型判断这些语义类别</span></div>
+        <div class="table-wrap">
+          <table class="name-table">
+            <thead><tr><th>Intent</th><th>中文含义</th><th>典型任务</th><th>顶层去向</th></tr></thead>
+            <tbody>
+              <tr><td><code>shopping</code></td><td>购物</td><td>找商品、推荐、比较、价格/品牌/库存筛选</td><td>Shopping 分支</td></tr>
+              <tr><td><code>customer_service</code></td><td>客户服务</td><td>订单、物流、退换、退款、投诉、售后</td><td>Shopping 分支</td></tr>
+              <tr><td><code>travel</code></td><td>旅行</td><td>目的地、酒店、景点、攻略、路线、行程规划</td><td>Travel 分支</td></tr>
+              <tr><td><code>negotiation</code></td><td>多人协商</td><td>朋友/大家一起决定、偏好协调、投票</td><td>协商提示分支</td></tr>
+              <tr><td><code>general</code></td><td>通用对话</td><td>闲聊、一般问答、通用工具请求</td><td>ReAct 或普通生成</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="formula">小模型输出 Intent 的方法：
+输入 = 当前消息 + 最近对话上下文 + 上一轮分类（仅作为连续指代线索）
+输出 = 一个严格 JSON，其中 intent 只能是上述 5 个枚举值
+若 confidence < 0.55 → 主模型仲裁
+若 JSON/字段非法 → 主模型修复
+若都失败 → general / react / chat / none</div>
+      </div>
+
+      <div class="decision-strip">
+        <article class="decision"><b>产品关键词安全网</b><span>general 命中商品/价格/推荐词 → 强制 shopping/search/mixed。</span></article>
+        <article class="decision"><b>旅游场景约束</b><span>仅 scene=travel 时纠正为 travel/rag_only。</span></article>
+        <article class="decision"><b>当前 UI 限制</b><span>智能对话固定 scene=general，因此旅游约束当前不可达。</span></article>
+        <article class="decision"><b>输出</b><span>保存为顶层与场景共享的 ClassificationResult。</span></article>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2>03 · Shopping / Customer Service：SQL 与 RAG 分支</h2>
+          <p>这是 SQL/RAG 的实际决策层。父节点是 plan_retrieval，四个子节点是互斥策略出口。</p>
+        </div>
+        <div class="chapter">SHOP</div>
+      </div>
+
+      <div class="diagram">
+        <div class="diagram-title"><h3>SQL/RAG 判定流程图 · 第 1 层：关键词计数</h3><span>三个计数器并行运行，全部是确定性代码，不是小模型</span></div>
+        <div class="tree-block">
+          <svg class="tree-lines"></svg>
+          <div class="root-node node-cyan">
+            <h3>q = query.lower()</h3>
+            <p>对用户查询逐个检查关键词列表；统计的是命中的关键词条目数。</p>
+          </div>
+          <div class="tree-children" style="--cols:3">
+            <article class="branch-node node-purple">
+              <div class="edge-label">review_signals</div>
+              <h3>评价信号计数</h3>
+              <p>14 个关键词：评价、口碑、好不好、差评、好评、吐槽、怎么样、耐用、质量、体验、舒适、缓震、真实用户、推荐理由。</p>
+            </article>
+            <article class="branch-node node-cyan">
+              <div class="edge-label">attribute_signals</div>
+              <h3>结构化属性计数</h3>
+              <p>18 个关键词：价格、多少钱、元、预算、库存、有货、品牌、类别、分类、排序、防水、尺寸、颜色、规格、低于、高于、以内、以上。</p>
+            </article>
+            <article class="branch-node node-cyan">
+              <div class="edge-label">product_action_signals</div>
+              <h3>商品动作计数</h3>
+              <p>13 个关键词：推荐、找、买、搜、搜索、商品、哪款、哪双、哪个、对比、比较、选购、筛选。</p>
+            </article>
+          </div>
+        </div>
+        <div class="formula">计数规则：sum(1 for kw in list if kw in q)
+同一关键词重复出现只算 1；任意一个计数 > 0 就算命中，没有“至少两个词”的阈值。</div>
+      </div>
+
+      <div class="diagram">
+        <div class="diagram-title"><h3>SQL/RAG 判定流程图 · 第 2 层：按 Intent 套布尔公式</h3><span>classification.intent 决定使用哪一行公式</span></div>
+        <div class="tree-block">
+          <svg class="tree-lines"></svg>
+          <div class="root-node node-blue">
+            <h3>classification.intent</h3>
+            <p>注意：这里使用的是分类器给出的主 Intent；当前系统没有多 Intent 列表。</p>
+          </div>
+          <div class="tree-children" style="--cols:4">
+            <article class="branch-node node-gray">
+              <div class="edge-label">customer_service</div>
+              <h3>P=False</h3>
+              <p>R = review_signals &gt; 0。订单本应走 Repository，当前购物子图没有接上。</p>
+            </article>
+            <article class="branch-node node-green">
+              <div class="edge-label">shopping</div>
+              <h3>P=属性或动作</h3>
+              <p>P = (attribute&gt;0 OR action&gt;0)；纯评价问题强制 P=False。R = review&gt;0。</p>
+            </article>
+            <article class="branch-node node-cyan">
+              <div class="edge-label">travel</div>
+              <h3>P=False, R=True</h3>
+              <p>此公式在购物检索规划中存在，但正常 Travel 分支不调用 RetrievalService。</p>
+            </article>
+            <article class="branch-node node-gray">
+              <div class="edge-label">其他</div>
+              <h3>P=False, R=False</h3>
+              <p>没有 SQL/RAG 数据需求。</p>
+            </article>
+          </div>
+        </div>
+      </div>
+
+      <div class="diagram">
+        <div class="diagram-title"><h3>SQL/RAG 判定流程图 · 第 3 层：派生检索策略</h3><span>Product/Review 两个布尔值共同决定最终数据源</span></div>
+        <div class="tree-block">
+          <svg class="tree-lines"></svg>
+          <div class="root-node node-cyan">
+            <h3>needs_product + needs_review</h3>
+            <p>进入 EvidencePlanner，映射为 required_sources 和 effective_strategy。</p>
+          </div>
+          <div class="tree-children" style="--cols:4">
+            <article class="branch-node node-gray">
+              <div class="edge-label">P=False<br>R=False</div>
+              <h3>none</h3>
+              <p>不调用 SQL 或 RAG。</p>
+            </article>
+            <article class="branch-node node-cyan">
+              <div class="edge-label">P=True<br>R=False</div>
+              <h3>sql_only</h3>
+              <p>required_sources = {"sql"}。</p>
+            </article>
+            <article class="branch-node node-cyan">
+              <div class="edge-label">P=False<br>R=True</div>
+              <h3>rag_only</h3>
+              <p>required_sources = {"rag"}。</p>
+            </article>
+            <article class="branch-node node-green">
+              <div class="edge-label">P=True<br>R=True</div>
+              <h3>mixed</h3>
+              <p>required_sources = {"sql","rag"}，当前编排层并发执行。</p>
+            </article>
+          </div>
+        </div>
+      </div>
+
+      <div class="diagram">
+        <div class="diagram-title"><h3>Product / Review 的完整判定公式</h3><span>这里不调用小模型；只使用确定性关键词计数 + classification.intent 选择公式</span></div>
+        <div class="formula">q = 用户查询转小写
+review_signals    = 命中的 review 关键词条目数
+attribute_signals = 命中的属性/约束关键词条目数
+product_action_signals = 命中的商品动作关键词条目数
+
+计数方式：for kw in keyword_list: if kw in q，计 +1
+同一个关键词重复出现仍只算 1；任何一个计数 > 0 就算命中，没有“至少 2 个”阈值。</div>
+        <div class="table-wrap">
+          <table class="name-table">
+            <thead><tr><th>classification.intent</th><th>needs_product（Product）</th><th>needs_review（Review）</th></tr></thead>
+            <tbody>
+              <tr>
+                <td><code>customer_service</code></td>
+                <td><span class="answer-no">False</span>，固定不查商品目录</td>
+                <td><code>review_signals &gt; 0</code></td>
+              </tr>
+              <tr>
+                <td><code>shopping</code></td>
+                <td><code>(attribute_signals &gt; 0 OR product_action_signals &gt; 0)</code><br>并且，如果只有评价词而没有属性/动作词，则强制 <span class="answer-no">False</span></td>
+                <td><code>review_signals &gt; 0</code></td>
+              </tr>
+              <tr>
+                <td><code>travel</code></td>
+                <td><span class="answer-no">False</span></td>
+                <td><span class="answer-yes">True</span>，固定使用评价/口碑证据</td>
+              </tr>
+              <tr>
+                <td>其他</td>
+                <td><span class="answer-no">False</span></td>
+                <td><span class="answer-no">False</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="formula">needs_product && needs_review → mixed
+needs_product only         → sql_only
+needs_review only          → rag_only
+neither                    → none</div>
+        <p><strong>重要：</strong>小模型也会输出 <code>retrieval</code>，但 ShoppingGraph 的 <code>_classify_data_needs()</code> 会重新计算上面的布尔值；因此 Product/Review 的最终执行判断不是小模型直接给出的。</p>
+      </div>
+
+      <div class="callout success">
+        <strong>“按 Intent 套布尔公式”到底是什么意思？</strong>
+        它不是再给 Intent 打分，而是执行一条<strong>证据需求策略</strong>：
+        <div class="formula">Intent 决定“这类任务通常需要什么事实”
+关键词计数决定“这次请求有没有明确要这些事实”
+布尔公式把二者组合成：
+    needs_product  → 是否需要商品目录/结构化约束
+    needs_review   → 是否需要评价/口碑/体验
+EvidencePlanner 再把布尔值映射为 SQL、RAG、mixed、none</div>
+        <p>
+          例如 Shopping 的公式是 <code>Product=(attribute&gt;0 OR action&gt;0)</code>、<code>Review=review&gt;0</code>。
+          如果用户只问“这双鞋评价怎么样”，只有 Review=True，Product=False，所以走 RAG，不为了指代词额外查商品表；
+          如果问“800 元以内推荐跑鞋和评价”，Product=True、Review=True，所以 SQL 和 RAG 都执行。
+        </p>
+      </div>
+
+      <div class="diagram">
+        <div class="diagram-title"><h3>Product / Review 判定的用途</h3><span>从意图到事实，从事实到数据源</span></div>
+        <div class="tree-block">
+          <svg class="tree-lines"></svg>
+          <div class="root-node node-blue">
+            <h3>classification.intent + 当前查询关键词</h3>
+            <p>两者共同决定这次回答需要哪些证据，而不是让 SQL/RAG 互相兜底。</p>
+          </div>
+          <div class="tree-children" style="--cols:3">
+            <article class="branch-node node-cyan">
+              <div class="edge-label">needs_product=True</div>
+              <h3>需要商品事实</h3>
+              <p>商品名、价格、品牌、库存、分类、规格等，映射到 SQL/products。</p>
+            </article>
+            <article class="branch-node node-purple">
+              <div class="edge-label">needs_review=True</div>
+              <h3>需要评价事实</h3>
+              <p>评价、口碑、质量、体验等，映射到 RAG/评价文档。</p>
+            </article>
+            <article class="branch-node node-green">
+              <div class="edge-label">两个都 True</div>
+              <h3>mixed</h3>
+              <p>SQL 和 RAG 都是 required source，结果融合后再进入生成。</p>
+            </article>
+          </div>
+        </div>
+      </div>
+
+      <div class="diagram">
+        <div class="tree-block">
+          <svg class="tree-lines"></svg>
+          <div class="root-node node-cyan">
+            <h3>ShoppingGraph.plan_retrieval</h3>
+            <p>根据 review_signals、attribute_signals、product_action_signals 计算 needs_product / needs_review。</p>
+            <div class="meta"><span class="tag">classification.retrieval 不直接决定执行</span></div>
+          </div>
+          <div class="tree-children" style="--cols:4">
+            <article class="branch-node node-gray">
+              <div class="edge-label">product=false<br>review=false</div>
+              <h3>none</h3>
+              <p>不进入 RetrievalService。</p>
+            </article>
+            <article class="branch-node node-cyan">
+              <div class="edge-label">product=true<br>review=false</div>
+              <h3>sql_only</h3>
+              <p>只查商品结构化目录。</p>
+            </article>
+            <article class="branch-node node-cyan">
+              <div class="edge-label">product=false<br>review=true</div>
+              <h3>rag_only</h3>
+              <p>只查评价 / 口碑向量库。</p>
+            </article>
+            <article class="branch-node node-green">
+              <div class="edge-label">product=true<br>review=true</div>
+              <h3>mixed</h3>
+              <p>SQL 与 RAG 都是必需证据，并行执行。</p>
+            </article>
+          </div>
+        </div>
+      </div>
+
+      <div class="diagram">
+        <div class="diagram-title"><h3>RetrievalService 内部数据源</h3><span>缓存先于数据源；SQL/RAG 不是主备降级关系</span></div>
+        <div class="tree-block">
+          <svg class="tree-lines"></svg>
+          <div class="root-node node-cyan">
+            <h3>EvidencePlanner → Cache → Execute → Merge → Rerank</h3>
+            <p>缓存 60 秒；top_k=5；RAG 粗召回 20；mixed 并发，每个数据源独立 12 秒截止。</p>
+          </div>
+          <div class="tree-children" style="--cols:3">
+            <article class="branch-node node-gray">
+              <div class="edge-label">cache key 命中</div>
+              <h3>缓存返回</h3>
+              <p>查询 + strategy + top_k + needs + owner + plan 命中时直接返回。</p>
+            </article>
+            <article class="branch-node node-cyan">
+              <div class="edge-label">sql ∈ selected_sources</div>
+              <h3>SQL 证据链</h3>
+              <p>关键词直查 SQL 与 NL2SQL 都执行，SafeSQL 校验后去重合并。</p>
+              <div class="meta"><span class="tag">只读 SQLite</span><span class="tag">≤200 行</span></div>
+            </article>
+            <article class="branch-node node-cyan">
+              <div class="edge-label">rag ∈ selected_sources</div>
+              <h3>RAG 证据链</h3>
+              <p>Chroma 召回、owner 隔离；必要时用 SQL.needs_rag 做定向补查。</p>
+              <div class="meta"><span class="tag">Embedding</span><span class="tag">Chroma</span></div>
+            </article>
+          </div>
+        </div>
+      </div>
+
+      <div class="diagram">
+        <div class="tree-block">
+          <svg class="tree-lines"></svg>
+          <div class="root-node node-blue">
+            <h3>SQL + RAG 融合结果</h3>
+            <p>按 product_id 关联 related_reviews，记录 source_errors、missing_evidence、evidence_coverage、partial。</p>
+          </div>
+          <div class="tree-children" style="--cols:3">
+            <article class="branch-node node-green">
+              <div class="edge-label">Rerank 可用</div>
+              <h3>Cross-Encoder 精排</h3>
+              <p>商品候选和 RAG 文档分别精排到 Top 5。</p>
+            </article>
+            <article class="branch-node node-orange">
+              <div class="edge-label">精排异常 / 未启用</div>
+              <h3>确定性降级</h3>
+              <p>向量分优先，关键词同分打破；无向量分时按关键词。</p>
+            </article>
+            <article class="branch-node node-red">
+              <div class="edge-label">任一必需源失败</div>
+              <h3>部分结果</h3>
+              <p>保留另一源证据并强制披露缺口，不伪造缺失内容。</p>
+            </article>
+          </div>
+        </div>
+      </div>
+
+      <div class="diagram">
+        <div class="chain">
+          <article class="flow-node node-blue">
+            <h3>拼接上下文并生成</h3>
+            <p>商品、评价、检索诊断、跨场景长期记忆一起进入购物生成 prompt。</p>
+          </article>
+          <div class="chain-link"><span class="link-label">流式生成</span></div>
+          <article class="flow-node node-green">
+            <h3>validate：证据一致性校验</h3>
+            <p>检查空回答、真实商品名、缺失商品/评价披露、partial/unanswerable 披露。</p>
+          </article>
+          <div class="chain-link"><span class="link-label">校验失败</span></div>
+          <article class="flow-node node-orange">
+            <h3>唯一一次修复</h3>
+            <p>把错误作为 validation_feedback，基于同一检索结果重新生成并再次校验。</p>
+          </article>
+          <div class="chain-link"><span class="link-label">再次失败 → 报错</span></div>
+          <article class="flow-node node-red">
+            <h3>失败收束</h3>
+            <p>不继续无限重试。</p>
+          </article>
+        </div>
+      </div>
+
+      <div class="callout danger">
+        <strong>客服订单缺口</strong>
+        customer_service 被派到 ShoppingGraph，但订单 Repository 没有接入该子图；“查订单/订单状态”可能走 none + 购物提示词，而不会调用 OrderRepository。
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2>04 · Travel：route 的第二层分流与 Plan &amp; Execute 循环</h2>
+          <p>旅行是 route 最明确发挥作用的场景，也是唯一具备完整计划—执行—反思—修订闭环的分支。</p>
+        </div>
+        <div class="chapter">TRAVEL</div>
+      </div>
+
+      <div class="diagram">
+        <div class="tree-block">
+          <svg class="tree-lines"></svg>
+          <div class="root-node node-green">
+            <h3>Travel 分支</h3>
+            <p>顶层 intent=travel 进入 TravelAgent。</p>
+          </div>
+          <div class="tree-children" style="--cols:2">
+            <article class="branch-node node-green">
+              <div class="edge-label">route=react</div>
+              <h3>旅游问答</h3>
+              <p>拼接跨场景长期记忆，直接流式生成；不调用本地攻略和 RetrievalService。</p>
+            </article>
+            <article class="branch-node node-blue">
+              <div class="edge-label">route=plan_and_execute</div>
+              <h3>旅游规划</h3>
+              <p>构建历史 + 本地攻略 TXT + 长期记忆上下文，进入 TravelPlanGraph。</p>
+            </article>
+          </div>
+        </div>
+      </div>
+
+      <div class="diagram">
+        <div class="tree-block">
+          <svg class="tree-lines"></svg>
+          <div class="root-node node-blue">
+            <h3>extract_requirements：确定性规则抽取</h3>
+            <p>目的地、天数、日期、预算、人数；缺目的地或天数即需澄清。</p>
+          </div>
+          <div class="tree-children" style="--cols:2">
+            <article class="branch-node node-red">
+              <div class="edge-label">缺 destination 或 days</div>
+              <h3>clarify</h3>
+              <p>返回“请补充目的地/天数”，本轮结束。</p>
+            </article>
+            <article class="branch-node node-blue">
+              <div class="edge-label">核心字段完整</div>
+              <h3>make_plan</h3>
+              <p>主模型生成完整行程。</p>
+            </article>
+          </div>
+        </div>
+      </div>
+
+      <div class="diagram">
+        <div class="diagram-title"><h3>Plan &amp; Execute 闭环</h3><span>橙色虚线表示修订后重新进入步骤构建</span></div>
+        <div class="tree-block">
+          <svg class="tree-lines"></svg>
+          <div class="root-node node-blue">
+            <h3>计划正文</h3>
+            <p>按“第 N 天 / Day N”切成结构化步骤；没有天标题时整个计划作为单一步骤。</p>
+          </div>
+          <div class="tree-children" style="--cols:3">
+            <article class="branch-node node-cyan">
+              <div class="edge-label">逐日执行</div>
+              <h3>execute_steps</h3>
+              <p>天气、路线、酒店和本地活动；工具失败/模拟/过期会记录 warning。</p>
+            </article>
+            <article class="branch-node node-purple">
+              <div class="edge-label">步骤执行后</div>
+              <h3>reflect</h3>
+              <p>模型宽松审核 + 天数/预算/步骤状态硬校验。</p>
+            </article>
+            <article class="branch-node node-green">
+              <div class="edge-label">pass / minor / 修订达 3 次</div>
+              <h3>finalize</h3>
+              <p>输出最终计划，清理修订说明。</p>
+            </article>
+          </div>
+        </div>
+      </div>
+
+      <div class="split">
+        <article class="panel">
+          <h3>revise 分支</h3>
+          <p>只有 critical 硬错误且修订次数 &lt; 3 才进入 revise。</p>
+          <ul>
+            <li>用审核 suggestions 重写完整计划。</li>
+            <li>回到 build_steps → execute_steps → reflect。</li>
+            <li>最多 3 次，达到上限强制保留当前版本。</li>
+          </ul>
+        </article>
+        <article class="panel">
+          <h3>工具执行条件</h3>
+          <ul>
+            <li>天气：每一步都按目的地 + 日期调用。</li>
+            <li>路线：步骤文本识别“从 A 到 B”才调用。</li>
+            <li>酒店：含住宿词，或第 1 天；预算均摊每晚。</li>
+            <li>活动：本地 destination/outdoor activities TXT。</li>
+          </ul>
+        </article>
+      </div>
+
+      <div class="callout warning">
+        <strong>travel 不使用 SQL/RAG</strong>
+        分类器即使输出 rag_only/mixed，travel 执行链也不会调用 RetrievalService；其资料来自本地 TXT 和长期记忆。
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2>05 · General：ReAct 与普通生成</h2>
+          <p>这里能直观看到 route 的第二个明确作用点。</p>
+        </div>
+        <div class="chapter">GENERAL</div>
+      </div>
+
+      <div class="diagram">
+        <div class="tree-block">
+          <svg class="tree-lines"></svg>
+          <div class="root-node node-gray">
+            <h3>General 分支</h3>
+            <p>intent=general。</p>
+          </div>
+          <div class="tree-children" style="--cols:2">
+            <article class="branch-node node-purple">
+              <div class="edge-label">route=react</div>
+              <h3>ToolReActGraph</h3>
+              <p>Agent 决定直接回答或调用工具；Tools 执行后回到 Agent，最多 6 步。</p>
+              <div class="meta"><span class="tag purple">agent ↔ tools</span><span class="tag">工具 10s 超时</span></div>
+            </article>
+            <article class="branch-node node-gray">
+              <div class="edge-label">route=plan_and_execute / 其他</div>
+              <h3>普通 LLM 流式生成</h3>
+              <p>最近 5 条历史 + 当前消息；没有计划分解、SQL/RAG、工具执行或反思。</p>
+              <div class="meta"><span class="tag">命名与实际不一致</span></div>
+            </article>
+          </div>
+        </div>
+      </div>
+
+      <div class="split">
+        <article class="panel">
+          <h3>ReAct 可用只读工具</h3>
+          <ul>
+            <li>天气、路线、酒店、当前时间。</li>
+            <li>商品搜索、商品评价、订单状态。</li>
+            <li>安全的记忆读取工具。</li>
+            <li>写入工具默认不注册。</li>
+          </ul>
+        </article>
+        <article class="panel">
+          <h3>ReAct 收束规则</h3>
+          <ul>
+            <li>没有 tool_calls → finalize。</li>
+            <li>达到 6 步仍有 tool_calls → max_steps_reached。</li>
+            <li>工具异常转为结构化失败 ToolMessage。</li>
+            <li>最终回答取最后一个无工具调用的 AIMessage。</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2>06 · 公共收尾：done → 候选记忆 → 人工审批</h2>
+          <p>所有场景分支最终都会收敛到同一个尾部。</p>
+        </div>
+        <div class="chapter">TAIL</div>
+      </div>
+
+      <div class="diagram">
+        <div class="chain">
+          <article class="flow-node node-gray">
+            <h3>finalize</h3>
+            <p>保存助手回复到短期记忆，并发送包含 classification 的 done 事件。</p>
+          </article>
+          <div class="chain-link"><span class="link-label">进入图节点</span></div>
+          <article class="flow-node node-purple">
+            <h3>extract_memory</h3>
+            <p>小模型只提取事实候选，与已有记忆去重；失败保留诊断。</p>
+          </article>
+        </div>
+      </div>
+
+      <div class="diagram">
+        <div class="tree-block">
+          <svg class="tree-lines"></svg>
+          <div class="root-node node-purple">
+            <h3>MemoryExtractionResult</h3>
+            <p>UI 消费 memory_extraction 事件。</p>
+          </div>
+          <div class="tree-children" style="--cols:3">
+            <article class="branch-node node-gray">
+              <div class="edge-label">无候选且无错误</div>
+              <h3>本轮无记忆</h3>
+              <p>只展示检查完成，不写长期记忆。</p>
+            </article>
+            <article class="branch-node node-orange">
+              <div class="edge-label">有候选</div>
+              <h3>等待人工审批</h3>
+              <p>save_selected / save_all / reject。</p>
+            </article>
+            <article class="branch-node node-red">
+              <div class="edge-label">提取异常</div>
+              <h3>失败诊断</h3>
+              <p>不保存。</p>
+            </article>
+          </div>
+        </div>
+      </div>
+
+      <div class="diagram">
+        <div class="tree-block">
+          <svg class="tree-lines"></svg>
+          <div class="root-node node-orange">
+            <h3>MemoryApprovalGraph</h3>
+            <p>人工决策是长期记忆写入前的强制边界。</p>
+          </div>
+          <div class="tree-children" style="--cols:2">
+            <article class="branch-node node-green">
+              <div class="edge-label">save_selected / save_all</div>
+              <h3>持久化</h3>
+              <p>写入长期向量记忆和 Markdown 文档。</p>
+            </article>
+            <article class="branch-node node-gray">
+              <div class="edge-label">reject</div>
+              <h3>拒绝</h3>
+              <p>不写入，并记录 rejected 避免本轮重复弹出。</p>
+            </article>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2>07 · 独立入口</h2>
+          <p>这些能力与智能对话主链并列存在，不经过消息分类树。</p>
+        </div>
+        <div class="chapter">AUX</div>
+      </div>
+      <div class="aux-grid">
+        <article class="aux-card">
+          <h3>多人协商工作台</h3>
+          <p>参与者配置 → 偏好分析 → 共同点 → 冲突识别 → [冲突解决] → 生成协商计划。</p>
+        </article>
+        <article class="aux-card">
+          <h3>记忆中心</h3>
+          <p>向量/Markdown 浏览、编辑、删除、更新和清理；敏感写操作必须审批。</p>
+        </article>
+        <article class="aux-card">
+          <h3>导入中心</h3>
+          <p>数据库导入、RAG 文档增量导入、来源删除、向量库重建和导入历史。</p>
+        </article>
+        <article class="aux-card">
+          <h3>MCP Protocol Server</h3>
+          <p>独立发布 Tool Registry；默认只读。主 ReAct 仍是静态 bind_tools，不是 MCP 动态发现路由。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2>08 · 关键词与规则全集</h2>
+          <p>这些是上述分支标签背后的完整代码规则。</p>
+        </div>
+        <div class="chapter">RULES</div>
+      </div>
+
+      <details open>
+        <summary>route：plan_and_execute 触发词与旅游天数正则</summary>
+        <div class="details-body">
+          <div class="keywords">
+            <span class="keyword">规划</span><span class="keyword">计划</span><span class="keyword">清单</span><span class="keyword">安排</span>
+            <span class="keyword">预算分配</span><span class="keyword">帮我列</span><span class="keyword">行程</span><span class="keyword">装修</span>
+            <span class="keyword">准备</span><span class="keyword">策划</span><span class="keyword">方案</span><span class="keyword">统筹</span>
+            <span class="keyword">编排</span><span class="keyword">设计路线</span>
+          </div>
+          <div class="code-block">_TRAVEL_DURATION_RE =
+r"(?:玩|游|待|停留)\s*\d+\s*(?:天|日)|\d+\s*(?:天|日)\s*(?:游|行程|攻略)"</div>
+        </div>
+      </details>
+
+      <details>
+        <summary>intent：完整关键词集合</summary>
+        <div class="details-body">
+          <b>shopping 强信号</b>
+          <div class="keywords">
+            <span class="keyword">买</span><span class="keyword">找</span><span class="keyword">搜</span><span class="keyword">推荐</span><span class="keyword">商品</span>
+            <span class="keyword">鞋</span><span class="keyword">衣服</span><span class="keyword">手机</span><span class="keyword">电脑</span><span class="keyword">平板</span>
+            <span class="keyword">耳机</span><span class="keyword">背包</span><span class="keyword">帐篷</span><span class="keyword">冲锋衣</span><span class="keyword">睡袋</span>
+            <span class="keyword">泳衣</span><span class="keyword">T恤</span><span class="keyword">衬衫</span><span class="keyword">裤子</span><span class="keyword">外套</span>
+            <span class="keyword">连衣裙</span><span class="keyword">裙子</span><span class="keyword">跑步鞋</span><span class="keyword">登山鞋</span><span class="keyword">运动鞋</span>
+            <span class="keyword">哪个好</span><span class="keyword">哪个更好</span><span class="keyword">对比</span><span class="keyword">比较</span><span class="keyword">区别</span>
+            <span class="keyword">小米</span><span class="keyword">iPhone</span><span class="keyword">苹果</span><span class="keyword">华为</span><span class="keyword">Nike</span>
+            <span class="keyword">Adidas</span><span class="keyword">阿迪</span><span class="keyword">优衣库</span><span class="keyword">ZARA</span><span class="keyword">波司登</span>
+            <span class="keyword">Salomon</span><span class="keyword">迪卡侬</span><span class="keyword">安踏</span><span class="keyword">李宁</span>
+          </div>
+          <b>travel</b>
+          <div class="keywords">
+            <span class="keyword">旅行</span><span class="keyword">旅游</span><span class="keyword">酒店</span><span class="keyword">景点</span><span class="keyword">机票</span>
+            <span class="keyword">出行</span><span class="keyword">度假</span><span class="keyword">目的地</span><span class="keyword">行程</span><span class="keyword">攻略</span>
+            <span class="keyword">好玩</span><span class="keyword">风景</span><span class="keyword">景区</span><span class="keyword">民宿</span><span class="keyword">住宿</span>
+            <span class="keyword">路线</span><span class="keyword">几天</span><span class="keyword">天游</span><span class="keyword">杭州</span><span class="keyword">北京</span>
+            <span class="keyword">上海</span><span class="keyword">成都</span><span class="keyword">西安</span><span class="keyword">云南</span><span class="keyword">大理</span>
+            <span class="keyword">丽江</span><span class="keyword">三亚</span><span class="keyword">厦门</span><span class="keyword">桂林</span><span class="keyword">张家界</span>
+            <span class="keyword">西藏</span><span class="keyword">新疆</span><span class="keyword">规划</span><span class="keyword">两天</span><span class="keyword">三天</span>
+            <span class="keyword">一日游</span><span class="keyword">自驾游</span><span class="keyword">周边游</span>
+          </div>
+          <b>negotiation</b>
+          <div class="keywords"><span class="keyword">一起</span><span class="keyword">朋友</span><span class="keyword">大家</span><span class="keyword">协商</span><span class="keyword">都同意</span><span class="keyword">投票</span></div>
+          <b>customer_service</b>
+          <div class="keywords"><span class="keyword">退</span><span class="keyword">换</span><span class="keyword">订单</span><span class="keyword">物流</span><span class="keyword">投诉</span><span class="keyword">退款</span><span class="keyword">售后</span><span class="keyword">查订单</span><span class="keyword">订单状态</span></div>
+          <b>shopping 弱信号</b>
+          <div class="keywords"><span class="keyword">价格</span><span class="keyword">便宜</span><span class="keyword">贵</span><span class="keyword">打折</span><span class="keyword">优惠</span><span class="keyword">多少钱</span><span class="keyword">元的</span><span class="keyword">块钱</span><span class="keyword">预算</span></div>
+          <b>通用购物动作（属于 shopping 列表，但不算“强购物信号”）</b>
+          <div class="keywords"><span class="keyword">找</span><span class="keyword">搜</span><span class="keyword">推荐</span><span class="keyword">哪个好</span><span class="keyword">哪个更好</span><span class="keyword">对比</span><span class="keyword">比较</span><span class="keyword">区别</span></div>
+        </div>
+      </details>
+
+      <details>
+        <summary>产品关键词安全网完整列表</summary>
+        <div class="details-body">
+          <p>只在分类结果为 <code>general</code> 时检查；任一命中就强制 <code>shopping/search/mixed</code>。</p>
+          <div class="keywords">
+            <span class="keyword">鞋</span><span class="keyword">衣服</span><span class="keyword">手机</span><span class="keyword">电脑</span><span class="keyword">背包</span>
+            <span class="keyword">帐篷</span><span class="keyword">冲锋衣</span><span class="keyword">睡袋</span><span class="keyword">泳衣</span><span class="keyword">T恤</span>
+            <span class="keyword">衬衫</span><span class="keyword">裤子</span><span class="keyword">外套</span><span class="keyword">连衣裙</span>
+            <span class="keyword">元</span><span class="keyword">块</span><span class="keyword">预算</span><span class="keyword">价格</span><span class="keyword">多少钱</span><span class="keyword">推荐</span>
+          </div>
+        </div>
+      </details>
+
+      <details>
+        <summary>关键词快速分类的精确顺序</summary>
+        <div class="details-body">
+          <div class="code-block">1. route=plan_and_execute if route关键词或旅游天数正则命中
+2. 统计 shopping/travel/negotiation/customer_service 强命中
+3. travel_score = travel强命中 + 旅游天数正则
+4. shopping_score += shopping弱信号
+5. travel_score >= 2 且无强购物信号 → travel
+6. 否则取四类 score 最大值
+7. shopping 无强信号时，不能只靠弱价格词成立
+8. 只有 max_match >= 2 才返回；否则进入下一层</div>
+        </div>
+      </details>
+
+      <details>
+        <summary>指代沿用与任务切换</summary>
+        <div class="details-body">
+          <div class="keywords">
+            <span class="keyword">这个</span><span class="keyword">那个</span><span class="keyword">它</span><span class="keyword">他们</span><span class="keyword">第二个</span>
+            <span class="keyword">刚才</span><span class="keyword">之前</span><span class="keyword">上面</span><span class="keyword">继续</span><span class="keyword">还是</span>
+            <span class="keyword">改成</span><span class="keyword">按刚才</span><span class="keyword">就按</span><span class="keyword">同上</span><span class="keyword">那个方案</span>
+          </div>
+          <p>沿用上一轮需要：有 previous + 当前消息含指代词 + 没有强购物/travel/customer_service/negotiation 新任务信号。</p>
+        </div>
+      </details>
+
+      <details open>
+        <summary>Product / Review 到底看哪些关键词？是小模型吗？</summary>
+        <div class="details-body">
+          <p><strong>不是小模型。</strong>Product/Review 由 <code>OrchestratorV2._classify_data_needs()</code> 的确定性关键词计数决定。计数是“列表中有多少个不同关键词作为子串命中查询”，不是词在句子里出现多少次，也不要求至少两个不同词。</p>
+          <div class="formula">Product = 规则布尔值，不是模型字段
+Review  = 规则布尔值，不是模型字段
+classification.retrieval = 小模型的建议值，但不在这里直接执行</div>
+          <p>Shopping 的完整公式：<code>Product=(attribute&gt;0 OR action&gt;0)</code>，且纯评价问题会强制 Product=False；<code>Review=review&gt;0</code>。Customer Service 固定 Product=False，Review 看评价词。Travel 固定 Product=False、Review=True。</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>购物事实需求关键词</summary>
+        <div class="details-body">
+          <b>review_signals</b>
+          <div class="keywords"><span class="keyword">评价</span><span class="keyword">口碑</span><span class="keyword">好不好</span><span class="keyword">差评</span><span class="keyword">好评</span><span class="keyword">吐槽</span><span class="keyword">怎么样</span><span class="keyword">耐用</span><span class="keyword">质量</span><span class="keyword">体验</span><span class="keyword">舒适</span><span class="keyword">缓震</span><span class="keyword">真实用户</span><span class="keyword">推荐理由</span></div>
+          <b>attribute_signals</b>
+          <div class="keywords"><span class="keyword">价格</span><span class="keyword">多少钱</span><span class="keyword">元</span><span class="keyword">预算</span><span class="keyword">库存</span><span class="keyword">有货</span><span class="keyword">品牌</span><span class="keyword">类别</span><span class="keyword">分类</span><span class="keyword">排序</span><span class="keyword">防水</span><span class="keyword">尺寸</span><span class="keyword">颜色</span><span class="keyword">规格</span><span class="keyword">低于</span><span class="keyword">高于</span><span class="keyword">以内</span><span class="keyword">以上</span></div>
+          <b>product_action_signals</b>
+          <div class="keywords"><span class="keyword">推荐</span><span class="keyword">找</span><span class="keyword">买</span><span class="keyword">搜</span><span class="keyword">搜索</span><span class="keyword">商品</span><span class="keyword">哪款</span><span class="keyword">哪双</span><span class="keyword">哪个</span><span class="keyword">对比</span><span class="keyword">比较</span><span class="keyword">选购</span><span class="keyword">筛选</span></div>
+        </div>
+      </details>
+
+      <details>
+        <summary>旅行需求抽取与 critical 审核规则</summary>
+        <div class="details-body">
+          <div class="keywords"><span class="keyword">杭州</span><span class="keyword">北京</span><span class="keyword">上海</span><span class="keyword">成都</span><span class="keyword">三亚</span><span class="keyword">西安</span><span class="keyword">丽江</span><span class="keyword">大理</span></div>
+          <div class="code-block">days   ← (\d+)\s*(?:天|日)
+date   ← (\d{4}-\d{2}-\d{2})
+budget ← (\d+(?:\.\d+)?)\s*(?:元|块|¥)
+people ← (\d+)\s*人，默认 1
+
+缺 destination/days → clarify
+计划天数不一致 → critical
+总费用 > budget × 1.05 → critical
+任何步骤非 completed → critical</div>
+        </div>
+      </details>
+
+      <details>
+        <summary>SQL 安全规则</summary>
+        <div class="details-body">
+          <div class="code-block">只允许 SELECT / WITH；单语句；长度 ≤ 10000
+禁止写入、DDL、事务、PRAGMA、ATTACH/DETACH、LOAD_EXTENSION
+禁止 load_extension / writefile / readfile / edit
+SQLite mode=ro + query_only=ON + authorizer
+自由 NL2SQL 默认只能访问 products、reviews
+orders/users 只能走带用户权限的 Repository
+超时 2 秒，最多 200 行</div>
+        </div>
+      </details>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2>09 · 当前实现偏差与风险</h2>
+          <p>把“当前代码事实”“兼容层”和“目标能力”分开。</p>
+        </div>
+        <div class="chapter">AUDIT</div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>级别</th><th>问题</th><th>当前事实</th><th>影响</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><span class="priority-high">高</span></td>
+              <td>复合 Intent 基础执行已接入</td>
+              <td>A 可返回 shopping+travel，C 支持 intents 列表，_route() 进入 shopping_travel，两个子图都会执行。</td>
+              <td>共享预算、真正并行 fan-out、跨意图 EvidencePlanner 仍待增强。</td>
+            </tr>
+            <tr><td><span class="priority-high">高</span></td><td><code>classification.retrieval</code> 不是执行真值</td><td>购物链重新计算 needs/strategy，travel 完全不走 RetrievalService。</td><td>小模型检索判断可能被覆盖或忽略。</td></tr>
+            <tr><td><span class="priority-high">高</span></td><td>客服订单链未闭合</td><td>customer_service 进 ShoppingGraph，但 OrderRepository 未接入。</td><td>查订单可能不访问订单库。</td></tr>
+            <tr><td><span class="priority-high">高</span></td><td>general/plan_and_execute 无计划图</td><td>顶层直接走普通 LLM 流式生成。</td><td>采购/清单类任务缺计划、执行、反思。</td></tr>
+            <tr><td><span class="priority-medium">中</span></td><td>旅游场景约束不可达</td><td>UI 固定 scene=general。</td><td>旅游纠偏规则不会启用。</td></tr>
+            <tr><td><span class="priority-medium">中</span></td><td>旅行问答资料来源文案不一致</td><td>提示称读本地攻略，实际只拼长期记忆。</td><td>过程展示与真实证据不一致。</td></tr>
+            <tr><td><span class="priority-low">低</span></td><td>旧 Router/Reflection/HybridRetriever 是兼容层</td><td>当前主链用 UnifiedClassifier、TravelPlanGraph reflection、RetrievalService。</td><td>容易误读历史架构。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer class="footer">依据当前工作区实际调用路径绘制。每个 SVG 箭头都从父节点真实底部中心连接到子节点真实顶部中心。</footer>
+  </main>
+
+  <script>
+    (function () {
+      function drawTree(block) {
+        const svg = block.querySelector(":scope > svg.tree-lines");
+        const root = block.querySelector(":scope > .root-node");
+        const children = Array.from(block.querySelectorAll(":scope > .tree-children > .branch-node"));
+        if (!svg || !root || children.length === 0) return;
+
+        const width = block.clientWidth;
+        const height = block.clientHeight;
+        const blockRect = block.getBoundingClientRect();
+        const rootRect = root.getBoundingClientRect();
+        const rootBox = {
+          x: rootRect.left - blockRect.left + rootRect.width / 2,
+          y: rootRect.bottom - blockRect.top
+        };
+
+        svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+        svg.setAttribute("width", width);
+        svg.setAttribute("height", height);
+        svg.innerHTML = `
+          <defs>
+            <marker id="arrow-${Math.random().toString(36).slice(2)}" markerWidth="9" markerHeight="9" refX="7.2" refY="4.5" orient="auto" markerUnits="strokeWidth">
+              <path d="M 0 0 L 9 4.5 L 0 9 z" fill="#8795aa"></path>
+            </marker>
+          </defs>`;
+        const marker = svg.querySelector("marker").id;
+
+        children.forEach((child) => {
+          const childRect = child.getBoundingClientRect();
+          const targetX = childRect.left - blockRect.left + childRect.width / 2;
+          const targetY = childRect.top - blockRect.top - 5;
+          const gap = Math.max(31, (targetY - rootBox.y) * .47);
+          const midY = rootBox.y + gap;
+          const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+          path.setAttribute(
+            "d",
+            `M ${rootBox.x} ${rootBox.y} V ${midY} H ${targetX} V ${targetY}`
+          );
+          path.setAttribute("marker-end", `url(#${marker})`);
+          svg.appendChild(path);
+        });
+      }
+
+      function drawAll() {
+        document.querySelectorAll(".tree-block").forEach(drawTree);
+      }
+
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", drawAll);
+      } else {
+        drawAll();
+      }
+
+      let resizeTimer;
+      window.addEventListener("resize", () => {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(drawAll, 120);
+      });
+
+      window.addEventListener("load", drawAll);
+    })();
+  </script>
+</body>
+</html>

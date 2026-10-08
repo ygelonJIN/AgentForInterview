@@ -14,7 +14,7 @@ from app.retrieval.rag import RetrievalResult, RAGRetriever
 from app.session import build_thread_id
 
 
-def test_config_persists_api_keys_only_to_local_config(tmp_path, monkeypatch):
+def test_config_separates_api_keys_into_local_secrets_file(tmp_path, monkeypatch):
     config_file = tmp_path / "config.json"
     monkeypatch.setattr(config, "CONFIG_FILE", str(config_file))
     monkeypatch.setattr(config, "_main", {"api_key": "runtime-secret", "base_url": "https://main", "model": "main-model"})
@@ -25,8 +25,12 @@ def test_config_persists_api_keys_only_to_local_config(tmp_path, monkeypatch):
 
     raw = config_file.read_text(encoding="utf-8")
     payload = json.loads(raw)
-    assert "runtime-secret" in raw
-    assert payload["main"]["api_key"] == "runtime-secret"
+    secrets_file = tmp_path / "config.secrets.json"
+    secrets_raw = secrets_file.read_text(encoding="utf-8")
+    assert "runtime-secret" not in raw
+    assert "api_key" not in payload["main"]
+    assert "runtime-secret" in secrets_raw
+    assert secrets_file.stat().st_mode & 0o777 == 0o600
 
     config_file.write_text(json.dumps({
         "main": {"api_key": "legacy-secret", "base_url": "https://legacy", "model": "legacy-model"},
@@ -42,6 +46,10 @@ def test_config_persists_api_keys_only_to_local_config(tmp_path, monkeypatch):
     assert config._main == {"api_key": "legacy-secret", "base_url": "https://legacy", "model": "legacy-model"}
     assert config._small["api_key"] == "legacy-small"
     assert config._embedding["api_key"] == "legacy-embedding"
+    migrated_config = json.loads(config_file.read_text(encoding="utf-8"))
+    assert "api_key" not in migrated_config["main"]
+    migrated_secrets = json.loads((tmp_path / "config.secrets.json").read_text(encoding="utf-8"))
+    assert migrated_secrets["main"]["api_key"] == "legacy-secret"
 
 
 def test_environment_main_key_falls_back_to_embedding(monkeypatch):

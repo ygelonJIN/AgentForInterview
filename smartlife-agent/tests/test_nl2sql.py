@@ -90,3 +90,191 @@ def test_required_products():
         count = c.fetchone()[0]
         assert count > 0, f"缺少商品: {name}"
     conn.close()
+
+
+def test_explicit_keyword_queries_database_even_when_nl2sql_model_fails():
+    from app.retrieval.nl2sql import NL2SQLChain
+
+    class BrokenChain:
+        def __init__(self):
+            self.calls = 0
+
+        def invoke(self, _payload):
+            self.calls += 1
+            raise RuntimeError("model unavailable")
+
+    class Executor:
+        def execute(self, sql, params=()):
+            assert "帐篷" in params[0]
+            return {
+                "rows": [{"id": 13, "name": "双人防水帐篷", "price": 599}],
+                "row_count": 1,
+            }
+
+    chain = NL2SQLChain.__new__(NL2SQLChain)
+    chain.chain = BrokenChain()
+    chain.sql_executor = Executor()
+
+    result = chain.query("我要买帐篷，预算3000块玩5天", max_retries=1)
+
+    assert chain.chain.calls == 1
+    assert result["results"][0]["name"] == "双人防水帐篷"
+    assert result["authoritative"] is True
+    assert result["fallback"] is False
+    assert result["keyword_count"] == 1
+    assert result["query_sources"] == ["keyword_sql", "nl2sql"]
+    assert result["failure_stage"] == ""
+    assert "error" not in result
+    assert any("NL2SQL 增强未完成" in item for item in result["warnings"])
+
+
+def test_keyword_results_are_returned_before_slow_nl2sql_blocks_query():
+    import time
+
+    from app.retrieval.nl2sql import NL2SQLChain
+
+    class SlowChain:
+        def invoke(self, _payload):
+            time.sleep(0.2)
+            raise AssertionError("慢模型不应阻塞关键词权威结果")
+
+    class Executor:
+        def execute(self, sql, params=()):
+            return {
+                "rows": [{"id": 6, "name": "针织修身上衣", "price": 159}],
+                "row_count": 1,
+            }
+
+    chain = NL2SQLChain.__new__(NL2SQLChain)
+    chain.chain = SlowChain()
+    chain.sql_executor = Executor()
+    chain.MODEL_ENRICHMENT_TIMEOUT_SECONDS = 0.01
+
+    started = time.perf_counter()
+    result = chain.query("推荐几件适合女生的衣服", max_retries=1)
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 1
+    assert result["authoritative"] is True
+    assert result["results"][0]["name"] == "针织修身上衣"
+    assert "error" not in result
+    assert result["warnings"]
+
+
+def test_keyword_and_nl2sql_results_are_deduplicated_by_product_id():
+    from app.retrieval.nl2sql import NL2SQLChain, SQLQuery
+
+    class ExactChain:
+        def __init__(self):
+            self.calls = 0
+
+        def invoke(self, _payload):
+            self.calls += 1
+            return SQLQuery(
+                sql="SELECT * FROM products WHERE name LIKE '%帐篷%'",
+                explanation="模型补充查询",
+                needs_rag=["耐用"],
+            )
+
+    class Executor:
+        def execute(self, sql, params=()):
+            return {
+                "rows": [{"id": 13, "name": "双人防水帐篷", "price": 599}],
+                "row_count": 1,
+            }
+
+    chain = NL2SQLChain.__new__(NL2SQLChain)
+    chain.chain = ExactChain()
+    chain.sql_executor = Executor()
+
+    result = chain.query("买一个帐篷", max_retries=0)
+
+    assert chain.chain.calls == 1
+    assert result["count"] == 1
+    assert result["duplicate_count"] == 1
+    assert result["keyword_count"] == 1
+    assert result["model_count"] == 1
+    assert result["query_sources"] == ["keyword_sql", "nl2sql"]
+    assert result["needs_rag"] == ["耐用"]
+    assert result["error"] if "error" in result else True
+
+
+def test_nl2sql_is_still_required_when_no_keyword_hits():
+    from app.retrieval.nl2sql import NL2SQLChain
+
+    class BrokenChain:
+        def __init__(self):
+            self.calls = 0
+
+        def invoke(self, _payload):
+            self.calls += 1
+            raise RuntimeError("model unavailable")
+
+    class UnexpectedExecutor:
+        def execute(self, *_args, **_kwargs):
+            raise AssertionError("没有关键词时不应执行关键词 SQL")
+
+    chain = NL2SQLChain.__new__(NL2SQLChain)
+    chain.chain = BrokenChain()
+    chain.sql_executor = UnexpectedExecutor()
+
+    result = chain.query("帮我做一套完整方案", max_retries=1)
+
+    assert chain.chain.calls == 2
+    assert result["results"] == []
+    assert result["failure_stage"] == "nl2sql_model"
+    assert result["fallback"] is False
+
+
+def test_nl2sql_empty_result_does_not_invent_products_without_keyword():
+    from app.retrieval.nl2sql import NL2SQLChain, SQLQuery
+
+    class EmptyExactChain:
+        def invoke(self, _payload):
+            return SQLQuery(
+                sql="SELECT * FROM products WHERE 1 = 0",
+                explanation="精确条件",
+                needs_rag=[],
+            )
+
+    class Executor:
+        def execute(self, *_args, **_kwargs):
+            return {"rows": [], "row_count": 0}
+
+    chain = NL2SQLChain.__new__(NL2SQLChain)
+    chain.chain = EmptyExactChain()
+    chain.sql_executor = Executor()
+
+    result = chain.query("帮我做一套完整方案", max_retries=1)
+
+    assert result["results"] == []
+    assert result["fallback"] is False
+    assert result["failure_stage"] == "empty_result"
+
+
+def test_nl2sql_sql_execution_error_is_not_reported_as_empty_authoritative_result():
+    from app.retrieval.nl2sql import NL2SQLChain, SQLQuery
+
+    class ExactChain:
+        def invoke(self, _payload):
+            return SQLQuery(
+                sql="SELECT * FROM products",
+                explanation="精确条件",
+                needs_rag=[],
+            )
+
+    class BrokenExecutor:
+        def execute(self, *_args, **_kwargs):
+            raise RuntimeError("database locked")
+
+    chain = NL2SQLChain.__new__(NL2SQLChain)
+    chain.chain = ExactChain()
+    chain.sql_executor = BrokenExecutor()
+
+    result = chain.query("帮我做一套完整方案", max_retries=1)
+
+    assert result["failure_stage"] == "sql_execution"
+    assert "database locked" in result["error"]
+    assert result["results"] == []
+    assert result["authoritative"] is False
+    assert result["fallback"] is False

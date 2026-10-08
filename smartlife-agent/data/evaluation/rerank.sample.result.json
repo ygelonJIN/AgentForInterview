@@ -1,0 +1,18 @@
+{
+  "k": 2,
+  "case_count": 2,
+  "strategies": {
+    "vector": {
+      "case_count": 2,
+      "recall@2": 1.0,
+      "mrr@2": 0.5,
+      "ndcg@2": 0.6309297535714575
+    },
+    "keyword": {
+      "case_count": 2,
+      "recall@2": 1.0,
+      "mrr@2": 1.0,
+      "ndcg@2": 1.0
+    }
+  }
+}

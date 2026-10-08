@@ -2,19 +2,26 @@
 SmartLife Agent - 数据库初始化脚本
 创建 SQLite 数据库并插入种子数据
 """
-import sqlite3
+import argparse
 import os
-import shutil
+import sqlite3
+from datetime import datetime
 
-def init_database():
+def init_database(force: bool = False):
     data_dir = os.path.dirname(os.path.abspath(__file__))
     db_path = os.path.join(data_dir, "products.db")
     
-    # 清理旧数据库（可能是目录）
-    if os.path.isdir(db_path):
-        shutil.rmtree(db_path)
-    elif os.path.exists(db_path):
-        os.remove(db_path)
+    backup_path = None
+    if os.path.exists(db_path):
+        if not force:
+            raise RuntimeError(
+                f"数据库已存在: {db_path}。该脚本会重建种子数据库；"
+                "增量导入请使用 scripts/import_data.py db。"
+                "确认重建时请显式传入 --force。"
+            )
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup_path = f"{db_path}.backup-{timestamp}"
+        os.replace(db_path, backup_path)
     
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
@@ -238,6 +245,8 @@ def init_database():
     
     conn.commit()
     conn.close()
+    if backup_path:
+        print(f"原数据库已备份: {backup_path}")
     print(f"数据库初始化完成: {db_path}")
     
     # 验证
@@ -249,4 +258,16 @@ def init_database():
     conn.close()
 
 if __name__ == "__main__":
-    init_database()
+    parser = argparse.ArgumentParser(
+        description="创建带种子数据的全新 products.db；已有数据库需要 --force，且会自动备份。",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="备份并重建已有数据库；不要用于增量导入",
+    )
+    args = parser.parse_args()
+    try:
+        init_database(force=args.force)
+    except RuntimeError as exc:
+        parser.exit(2, f"{exc}\n")

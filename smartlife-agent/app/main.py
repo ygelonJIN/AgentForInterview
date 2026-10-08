@@ -23,7 +23,7 @@ from app.config import set_main_config, set_small_config, set_embedding_config, 
 from app.observability import log_exception, log_warning
 from app.async_runner import SharedAsyncRunner
 from app.stream_response import StreamResponseBuffer
-from app.streaming import deduplicate_process_events
+from app.streaming import deduplicate_process_events, reconcile_tool_events
 from app.process_timeline import build_process_timeline, infer_active_step
 from app.ui.content import (
     filter_travel_resources,
@@ -87,8 +87,45 @@ if "pending_compressed_summary" not in st.session_state:
     st.session_state["pending_compressed_summary"] = ""
 if "sensitive_action_service" not in st.session_state:
     st.session_state["sensitive_action_service"] = None
-if "pending_sensitive_action" not in st.session_state:
-    st.session_state["pending_sensitive_action"] = None
+if "assistant_msgs" not in st.session_state:
+    st.session_state["assistant_msgs"] = []
+if "social_msgs" not in st.session_state:
+    st.session_state["social_msgs"] = []
+
+
+def _migrate_legacy_in_memory_conversations():
+    """当前会话启动时幂等迁移旧内存消息，避免升级后丢历史。"""
+    from app.memory.conversation_store import ConversationStore
+    from app.session import build_thread_id
+
+    store = ConversationStore()
+    migrations = []
+    for scene, key in (
+        ("general", "assistant_msgs"),
+        ("general", "messages"),
+        ("negotiation", "social_msgs"),
+    ):
+        messages = st.session_state.get(key) or []
+        if not isinstance(messages, list) or not messages:
+            continue
+        thread_id = build_thread_id(
+            st.session_state["user_id"],
+            scene,
+            st.session_state["browser_session_id"],
+        )
+        migrations.append({
+            "thread_id": thread_id,
+            "key": key,
+            **store.migrate_messages(
+                thread_id,
+                messages,
+                metadata={"scene": scene, "legacy_session_key": key},
+            ),
+        })
+    return migrations
+
+
+_migrate_legacy_in_memory_conversations()
 
 # ========== Orchestrator 初始化 ==========
 def get_orchestrator_v2():
@@ -142,50 +179,85 @@ def get_sensitive_action_service():
     return st.session_state["sensitive_action_service"]
 
 
-def _queue_sensitive_action(action_type, payload, description):
-    service = get_sensitive_action_service()
-    result = service.start(
-        action_type,
-        st.session_state["user_id"],
-        payload,
-    )
-    st.session_state["pending_sensitive_action"] = {
-        "approval_id": result["approval_id"],
+def _save_sensitive_result(result, action_type):
+    if action_type == "memory_save_summary":
+        st.session_state.pop("pending_conversation_summary", None)
+    receipt = result.get("state", {}).get("result") or {}
+    operation_result = receipt.get("result", receipt) if isinstance(receipt, dict) else receipt
+    st.session_state["last_memory_action_result"] = {
+        "status": result.get("status", "completed"),
         "action_type": action_type,
-        "payload": payload,
-        "description": description,
+        "result": operation_result,
     }
-    st.rerun()
 
 
-def render_sensitive_action_approval():
-    pending = st.session_state.get("pending_sensitive_action")
+def render_inline_sensitive_action(
+    action_type,
+    payload,
+    description,
+    *,
+    key,
+    submit_label,
+    primary=False,
+):
+    """在操作发生的位置完成敏感操作确认，不跳到页面顶部。"""
+    state_key = f"pending_inline_{key}"
+    pending = st.session_state.get(state_key)
     if not pending:
+        if st.button(
+            submit_label,
+            key=f"request_inline_{key}",
+            type="primary" if primary else "secondary",
+            use_container_width=True,
+        ):
+            st.session_state[state_key] = {
+                "action_type": action_type,
+                "payload": payload,
+                "description": description,
+            }
+            st.rerun()
         return
 
-    st.warning(f"⚠️ 需要确认敏感操作：{pending['description']}")
-    st.json(pending.get("payload", {}))
+    st.warning(f"确认执行：{pending['description']}？")
     approve_col, reject_col = st.columns(2)
     with approve_col:
-        if st.button("✅ 批准执行", key="approve_sensitive_action"):
+        if st.button("同意", key=f"approve_inline_{key}", type="primary", use_container_width=True):
             service = get_sensitive_action_service()
-            result = service.resume(pending["approval_id"], {
-                "action": "approve",
-                "idempotency_key": pending.get("payload", {}).get("idempotency_key"),
-            })
-            st.success(f"操作已完成：{result.get('status')}")
-            if pending.get("action_type") == "memory_save_summary":
-                st.session_state.pop("pending_compressed_summary", None)
-                st.session_state.pop("pending_compressed_scene", None)
-            st.session_state["pending_sensitive_action"] = None
+            try:
+                result = service.resume(pending.get("approval_id") or _start_inline_sensitive_action(pending), {
+                    "action": "approve",
+                    "idempotency_key": pending.get("payload", {}).get("idempotency_key"),
+                })
+                _save_sensitive_result(result, pending.get("action_type"))
+            except Exception as exc:
+                st.session_state["last_memory_action_result"] = {
+                    "status": "error",
+                    "action_type": pending.get("action_type"),
+                    "message": f"{type(exc).__name__}: {exc}",
+                }
+            st.session_state[state_key] = None
             st.rerun()
     with reject_col:
-        if st.button("❌ 拒绝执行", key="reject_sensitive_action"):
-            service = get_sensitive_action_service()
-            service.resume(pending["approval_id"], {"action": "reject"})
-            st.info("已拒绝敏感操作")
-            st.session_state["pending_sensitive_action"] = None
+        if st.button("拒绝", key=f"reject_inline_{key}", use_container_width=True):
+            approval_id = pending.get("approval_id") or _start_inline_sensitive_action(pending)
+            get_sensitive_action_service().resume(approval_id, {"action": "reject"})
+            st.session_state[state_key] = None
+            st.session_state["last_memory_action_result"] = {
+                "status": "rejected",
+                "action_type": pending.get("action_type"),
+                "result": {},
+            }
             st.rerun()
+
+
+def _start_inline_sensitive_action(pending):
+    result = get_sensitive_action_service().start(
+        pending["action_type"],
+        st.session_state["user_id"],
+        pending.get("payload", {}),
+    )
+    pending["approval_id"] = result["approval_id"]
+    return pending["approval_id"]
 
 
 def _clear_memory_extraction_state():
@@ -369,6 +441,59 @@ def _esc(s):
     return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _split_execution_logs(events):
+    logs = []
+    regular = []
+    for event in events or []:
+        if event.get("event") == "execution_log":
+            logs.append(event)
+        else:
+            regular.append(event)
+    return regular, logs
+
+
+def _execution_logs_html(events):
+    _, logs = _split_execution_logs(events)
+    if not logs:
+        return ""
+    rows = []
+    for index, event in enumerate(logs, start=1):
+        data = event.get("data", {}) or {}
+        status = data.get("status", "info")
+        icon = {"ok": "✓", "warning": "!", "error": "×", "running": "…"}.get(status, "·")
+        graph = _esc(data.get("graph", ""))
+        node = _esc(data.get("node", ""))
+        kind = _esc(data.get("kind", ""))
+        message = _esc(data.get("message", ""))
+        branch = data.get("branch")
+        attempt = data.get("attempt")
+        max_attempts = data.get("max_attempts")
+        iteration = data.get("iteration")
+        max_iterations = data.get("max_iterations")
+        duration = data.get("duration_ms")
+        meta = [f"<code>{graph}:{node}</code>", kind]
+        if branch:
+            meta.append(f"分支 <code>{_esc(branch)}</code>")
+        if attempt is not None:
+            meta.append(f"尝试 {_esc(attempt)}/{_esc(max_attempts or '?')}")
+        if iteration is not None:
+            meta.append(f"迭代 {_esc(iteration)}/{_esc(max_iterations or '?')}")
+        if duration is not None:
+            meta.append(f"{_esc(duration)}ms")
+        rows.append(
+            f'<div class="execution-log-row execution-log-{_esc(status)}">'
+            f'<span class="execution-log-icon">{icon}</span>'
+            f'<div><div class="execution-log-meta">#{index} · {" · ".join(meta)}</div>'
+            f'<div class="execution-log-message">{message}</div></div></div>'
+        )
+    return (
+        '<details class="execution-log-panel" open>'
+        f'<summary>执行日志 · {len(logs)} 条（分支、重试、循环、降级）</summary>'
+        f'<div class="execution-log-list">{"".join(rows)}</div>'
+        '</details>'
+    )
+
+
 def _fmt_event_html(evt):
     """把单个过程事件渲染成统一的 HTML 过程卡片。"""
     et = evt.get("event", "")
@@ -408,23 +533,31 @@ def _fmt_event_html(evt):
         if tn in {"行程执行", "计划自检", "计划审核"}:
             return ""
         ti = (data.get("input", "") or "").replace("\n", " ").strip()
+        is_completed = data.get("status") == "completed"
+        status = "completed" if is_completed else "active"
+        tool_output = (data.get("output", "") or "").replace("\n", " ").strip()
         if tn == "nl2sql":
             short_sql = ti if len(ti) <= 160 else ti[:160] + "…"
+            action = "结构化查询已完成" if is_completed else "正在执行结构化查询"
             return (
-                '<div class="process-card active">'
+                f'<div class="process-card {status}">'
                 '<div class="process-title">商品数据检索</div>'
-                f'<div class="process-copy">正在执行结构化查询<br><code>{_esc(short_sql)}</code></div></div>'
+                f'<div class="process-copy">{action}<br><code>{_esc(short_sql)}</code>'
+                f'{f"<br>{_esc(tool_output)}" if tool_output else ""}</div></div>'
             )
         if tn == "rag":
+            action = "检索已完成" if is_completed else "正在检索"
             return (
-                '<div class="process-card active">'
+                f'<div class="process-card {status}">'
                 '<div class="process-title">评价与攻略检索</div>'
-                f'<div class="process-copy">{_esc(ti)}</div></div>'
+                f'<div class="process-copy">{action} · {_esc(ti)}'
+                f'{f"<br>{_esc(tool_output)}" if tool_output else ""}</div></div>'
             )
         return (
-            '<div class="process-card active">'
-            f'<div class="process-title">{_esc(tn)}</div>'
-            f'<div class="process-copy">{_esc(ti)}</div></div>'
+            f'<div class="process-card {status}">'
+            f'<div class="process-title">{_esc(tn)}{" · 已完成" if is_completed else ""}</div>'
+            f'<div class="process-copy">{_esc(ti)}'
+            f'{f"<br>{_esc(tool_output)}" if tool_output else ""}</div></div>'
         )
     if et == "tool_result":
         tn = data.get("tool", "")
@@ -457,18 +590,22 @@ def _persistent_events(events):
 
 def _process_events_html(events, include_transient=False, active_step=None):
     """生成一组过程事件的稳定 HTML，按逻辑节点去重。"""
+    normalized_active_step = active_step or infer_active_step(events)
+    persistent = events if include_transient else _persistent_events(events)
+    regular_events, _ = _split_execution_logs(persistent)
     source_events = build_process_timeline(
-        deduplicate_process_events(
-        events if include_transient else _persistent_events(events)
+        reconcile_tool_events(
+            deduplicate_process_events(regular_events),
+            completed=normalized_active_step >= 4,
         ),
-        active_step=active_step or infer_active_step(events),
+        active_step=normalized_active_step,
     )
     cards = []
     for evt in source_events:
         h = _fmt_event_html(evt)
         if h:
             cards.append(h)
-    return "".join(cards)
+    return "".join(cards) + _execution_logs_html(persistent)
 
 
 def render_process_events(events, include_transient=False):
@@ -701,8 +838,9 @@ def render_app_sidebar():
                 st.session_state["active_page"] = page_key
                 st.rerun()
         st.markdown("---")
-        pending_count = int(bool(st.session_state.get("show_memory_extraction"))) + int(
-            bool(st.session_state.get("pending_sensitive_action"))
+        pending_count = int(bool(st.session_state.get("show_memory_extraction"))) + sum(
+            1 for key, value in st.session_state.items()
+            if key.startswith("pending_inline_") and value
         )
         if pending_count:
             st.info(f"有 {pending_count} 项内容等待处理，可在记忆中心完成。")
@@ -1152,63 +1290,96 @@ def render_memory_search():
             render_empty("没有找到相关 MD 记忆。")
 
 
-def render_memory_compression():
-    render_section_header("会话压缩", "将过长会话整理为摘要，确认后再写入长期记忆")
-    if "assistant_msgs" in st.session_state:
-        st.caption(f"当前智能助手会话包含 {len(st.session_state['assistant_msgs'])} 条消息")
-    compress_col, action_col = st.columns([2, 1])
-    with compress_col:
-        compress_scene = st.selectbox(
-            "压缩范围",
-            options=["auto", "shopping", "travel", "social"],
-            format_func=lambda value: {
-                "auto": "智能助手统一会话",
-                "shopping": "购物/客服",
-                "travel": "旅行",
-                "social": "多人协商",
-            }[value],
-            key="compress_scene",
-        )
-    with action_col:
-        st.markdown('<div class="form-action-spacer"></div>', unsafe_allow_html=True)
-        if st.button("生成摘要", key="compress_conversation", use_container_width=True):
-            orch = get_orchestrator_v2()
-            if orch:
-                summary = orch.compress_conversation(
-                    st.session_state["user_id"],
-                    st.session_state["browser_session_id"],
-                    scene=compress_scene,
-                )
-                if summary:
-                    st.session_state["pending_compressed_summary"] = summary
-                    st.session_state["pending_compressed_scene"] = compress_scene
-                    st.rerun()
-                else:
-                    st.info("没有可压缩的对话。")
-            else:
-                st.warning("请先在个人中心配置主模型。")
+def render_conversation_summary():
+    render_section_header("会话摘要", "选择一条具体对话；同一对话已有摘要时直接复用，不重复生成")
+    try:
+        from app.memory.conversation_store import ConversationStore
+        store = ConversationStore()
+        threads = store.list_threads(st.session_state["user_id"])
+    except Exception as exc:
+        st.warning(f"会话列表加载失败：{exc}")
+        return
 
-    pending_summary = st.session_state.get("pending_compressed_summary", "")
-    if pending_summary:
-        st.markdown("#### 待确认摘要")
-        st.info(pending_summary)
-        save_col, discard_col = st.columns(2)
-        with save_col:
-            if st.button("保存到长期记忆", key="save_compressed", use_container_width=True):
-                _queue_sensitive_action(
-                    "memory_save_summary",
-                    {
-                        "user_id": st.session_state["user_id"],
-                        "summary": pending_summary,
-                        "idempotency_key": f"memory-summary-{uuid.uuid4().hex}",
-                    },
-                    "保存会话摘要到长期记忆",
-                )
-        with discard_col:
-            if st.button("放弃摘要", key="discard_compressed", use_container_width=True):
-                st.session_state.pop("pending_compressed_summary", None)
-                st.session_state.pop("pending_compressed_scene", None)
-                st.rerun()
+    if not threads:
+        render_empty("还没有可压缩的已归档对话。")
+        return
+
+    labels = {
+        item["thread_id"]: (
+            f"{item.get('scene', 'general')} · {item.get('message_count', 0)} 条 · "
+            f"{str(item.get('last_at', ''))[:16]} · {item.get('preview', '')}"
+        )
+        for item in threads
+    }
+    thread_id = st.selectbox(
+        "选择对话",
+        options=[item["thread_id"] for item in threads],
+        format_func=lambda value: labels[value],
+        key="summary_thread_id",
+    )
+    messages = store.list_messages(thread_id)
+    conversation_hash = store.conversation_hash(messages)
+    existing = store.get_summary(thread_id, conversation_hash)
+    pending = st.session_state.get("pending_conversation_summary") or {}
+    same_pending = (
+        pending.get("thread_id") == thread_id
+        and pending.get("conversation_hash") == conversation_hash
+    )
+
+    if existing:
+        st.info("该对话已有摘要，本次直接复用，不再重复生成。")
+        st.text_area(
+            "已保存摘要",
+            value=existing.get("summary", ""),
+            key=f"existing_summary_{conversation_hash[:12]}",
+            height=180,
+            disabled=True,
+        )
+        return
+
+    if same_pending and pending.get("summary"):
+        summary_key = f"conversation_summary_{conversation_hash[:12]}"
+        edited_summary = st.text_area(
+            "摘要内容",
+            value=pending["summary"],
+            key=summary_key,
+            height=180,
+        )
+        render_inline_sensitive_action(
+            "memory_save_summary",
+            {
+                "user_id": st.session_state["user_id"],
+                "summary": edited_summary,
+                "thread_id": thread_id,
+                "conversation_hash": conversation_hash,
+                "idempotency_key": f"memory-summary-{uuid.uuid4().hex}",
+            },
+            "保存所选对话的摘要",
+            key=f"save_summary_{conversation_hash[:12]}",
+            submit_label="保存摘要",
+            primary=True,
+        )
+        if st.button("放弃摘要", key=f"discard_summary_{conversation_hash[:12]}", use_container_width=True):
+            st.session_state.pop("pending_conversation_summary", None)
+            st.rerun()
+        return
+
+    if st.button("生成摘要", key=f"generate_summary_{conversation_hash[:12]}", type="primary"):
+        try:
+            from app.memory.compressor import MemoryCompressor
+            summary = MemoryCompressor().compress(messages)
+        except Exception as exc:
+            st.error(f"摘要生成失败：{exc}")
+            return
+        if summary:
+            st.session_state["pending_conversation_summary"] = {
+                "thread_id": thread_id,
+                "conversation_hash": conversation_hash,
+                "summary": summary,
+            }
+            st.rerun()
+        else:
+            st.info("没有生成摘要内容。")
 
 
 def render_md_memory_manager():
@@ -1226,15 +1397,8 @@ def render_md_memory_manager():
         return
 
     types = ["全部", *sorted({item.get("type", "general") for item in all_memories})]
-    categories = ["全部", *sorted({
-        str(item.get("category", item.get("event_type", "general")))
-        for item in all_memories
-    })]
-    type_col, category_col = st.columns(2)
-    with type_col:
-        selected_type = st.selectbox("记忆类型", types, key="memory_type_filter")
-    with category_col:
-        selected_category = st.selectbox("记忆分类", categories, key="memory_category_filter")
+    selected_type = st.selectbox("记忆类型", types, key="memory_type_filter")
+    selected_category = "全部"
 
     filtered = [
         item for item in all_memories
@@ -1244,7 +1408,14 @@ def render_md_memory_manager():
     st.caption(f"共 {len(filtered)} 条记忆")
     for item in filtered:
         title = item["content"][:48] + ("…" if len(item["content"]) > 48 else "")
-        with st.expander(f"{item.get('category', item.get('event_type', 'general'))} · {title}"):
+        pending_here = bool(
+            st.session_state.get(f"pending_inline_delete_{item['id']}")
+            or st.session_state.get(f"pending_inline_update_{item['id']}")
+        )
+        with st.expander(
+            f"{item.get('category', item.get('event_type', 'general'))} · {title}",
+            expanded=pending_here,
+        ):
             meta_col, content_col = st.columns([1, 3])
             with meta_col:
                 st.caption(f"类型：{item.get('type', 'general')}")
@@ -1259,37 +1430,211 @@ def render_md_memory_manager():
                 )
                 delete_col, update_col = st.columns(2)
                 with delete_col:
-                    if st.button("删除", key=f"delete_{item['id']}", use_container_width=True):
-                        _queue_sensitive_action(
-                            "memory_delete",
-                            {
-                                "user_id": st.session_state["user_id"],
-                                "memory_id": item["id"],
-                                "idempotency_key": f"memory-delete-{item['id']}-{uuid.uuid4().hex}",
-                            },
-                            f"删除记忆 {item['id']}",
-                        )
+                    render_inline_sensitive_action(
+                        "memory_delete",
+                        {
+                            "user_id": st.session_state["user_id"],
+                            "memory_id": item["id"],
+                            "idempotency_key": f"memory-delete-{item['id']}-{uuid.uuid4().hex}",
+                        },
+                        f"删除记忆 {item['id']}",
+                        key=f"delete_{item['id']}",
+                        submit_label="删除",
+                    )
                 with update_col:
-                    if st.button("更新", key=f"update_{item['id']}", use_container_width=True):
-                        _queue_sensitive_action(
-                            "memory_update",
-                            {
-                                "user_id": st.session_state["user_id"],
-                                "memory_id": item["id"],
-                                "content": new_content,
-                                "idempotency_key": f"memory-update-{item['id']}-{uuid.uuid4().hex}",
-                            },
-                            f"更新记忆 {item['id']}",
-                        )
+                    render_inline_sensitive_action(
+                        "memory_update",
+                        {
+                            "user_id": st.session_state["user_id"],
+                            "memory_id": item["id"],
+                            "content": new_content,
+                            "idempotency_key": f"memory-update-{item['id']}-{uuid.uuid4().hex}",
+                        },
+                        f"更新记忆 {item['id']}",
+                        key=f"update_{item['id']}",
+                        submit_label="更新",
+                    )
+
+
+
+def render_last_memory_action_result():
+    result = st.session_state.pop("last_memory_action_result", None)
+    if not result:
+        return
+    status = result.get("status")
+    payload = result.get("result") or {}
+    message = result.get("message", "")
+    errors = payload.get("errors") if isinstance(payload, dict) else None
+    if status == "error" or errors:
+        st.error(message or "记忆操作未完全成功，请检查 Embedding 配置后重试。")
+    elif status == "executed":
+        st.success("记忆操作已完成")
+    elif status == "rejected":
+        st.info("已取消记忆操作")
+    else:
+        st.info("记忆操作未执行")
+
+
+def render_vector_memory_browser():
+    render_section_header("向量记忆", "默认仅显示统计，点击后查看全部向量内容和元数据")
+    try:
+        from app.memory.long_term import LongTermMemory
+        memories = LongTermMemory().list_user_memories(st.session_state["user_id"], limit=200)
+    except Exception as exc:
+        st.warning(f"向量记忆加载失败：{exc}")
+        return
+
+    if not memories:
+        render_empty("没有可显示的向量记忆。")
+        return
+
+    type_counts: dict[str, int] = {}
+    for item in memories:
+        metadata = item.get("metadata", {})
+        memory_type = str(metadata.get("memory_type", metadata.get("type", "unknown")))
+        type_counts[memory_type] = type_counts.get(memory_type, 0) + 1
+    summary = "、".join(f"{name} {count} 条" for name, count in sorted(type_counts.items()))
+
+    st.caption(f"共 {len(memories)} 条 · {summary}")
+    vector_pending = any(
+        key.startswith(("pending_inline_vector_", "pending_inline_update_vector_"))
+        and value
+        for key, value in st.session_state.items()
+    )
+    with st.expander(
+        f"展开全部向量记忆（{len(memories)} 条）",
+        expanded=vector_pending,
+    ):
+        for item in memories:
+            metadata = item.get("metadata", {})
+            memory_type = metadata.get("memory_type", metadata.get("type", "memory"))
+            title = (item.get("content") or "未命名向量记忆")[:52]
+            st.markdown(f"**{memory_type} · {title}**")
+            edit_key = f"vector_edit_{item.get('id')}"
+            source_key = f"{edit_key}_source"
+            current_content = item.get("content", "")
+            if st.session_state.get(source_key) != current_content:
+                st.session_state[edit_key] = current_content
+                st.session_state[source_key] = current_content
+            edited_content = st.text_area(
+                "向量记忆内容",
+                key=edit_key,
+                height=120,
+            )
+            st.caption(
+                f"vector_id: {item.get('id')} · memory_id: {metadata.get('memory_id') or '无'} · "
+                f"type: {memory_type} · version: {metadata.get('version', '-')}"
+            )
+            vector_key = str(item.get("id", "")).replace("-", "_")
+            memory_id = metadata.get("memory_id")
+            update_col, delete_col = st.columns(2)
+            with update_col:
+                render_inline_sensitive_action(
+                    "memory_update_vector",
+                    {
+                        "user_id": st.session_state["user_id"],
+                        "vector_id": item.get("id"),
+                        "content": edited_content,
+                        "idempotency_key": f"memory-vector-update-{uuid.uuid4().hex}",
+                    },
+                    "更新向量记忆" + ("及对应 MD" if memory_id else ""),
+                    key=f"update_vector_{vector_key}",
+                    submit_label="保存修改",
+                )
+            with delete_col:
+                render_inline_sensitive_action(
+                    "memory_delete_vector",
+                    {
+                        "user_id": st.session_state["user_id"],
+                        "vector_id": item.get("id"),
+                        "idempotency_key": f"memory-vector-delete-{uuid.uuid4().hex}",
+                    },
+                    "删除向量记忆" + ("及对应 MD" if memory_id else ""),
+                    key=f"vector_{vector_key}",
+                    submit_label="删除",
+                )
+            st.divider()
+
+
+def render_md_document_editor():
+    render_section_header("MD 原文编辑", "直接编辑 preferences.md / events.md，保存后同步索引和向量记忆")
+    try:
+        from app.memory.md_memory import MDMemory
+        md_memory = MDMemory()
+        user_id = st.session_state["user_id"]
+        preferences_content = md_memory.get_raw_document(user_id, "preferences")
+        events_content = md_memory.get_raw_document(user_id, "events")
+    except Exception as exc:
+        st.warning(f"MD 原文加载失败：{exc}")
+        return
+
+    for widget_key, current_content in (
+        ("raw_preferences_md", preferences_content),
+        ("raw_events_md", events_content),
+    ):
+        source_key = f"{widget_key}_source"
+        if st.session_state.get(source_key) != current_content:
+            st.session_state[widget_key] = current_content
+            st.session_state[source_key] = current_content
+
+    preferences_tab, events_tab = st.tabs(["preferences.md", "events.md"])
+    with preferences_tab:
+        edited_preferences = st.text_area(
+            "偏好记忆 Markdown",
+            key="raw_preferences_md",
+            height=360,
+        )
+    with events_tab:
+        edited_events = st.text_area(
+            "事件记忆 Markdown",
+            key="raw_events_md",
+            height=360,
+        )
+
+    st.caption(
+        "不强制手写格式：直接在文档末尾添加普通段落，保存时会自动补 memory_id、分类和时间。"
+        "提交后会在同一位置出现“同意/拒绝”；只有显示“记忆操作已完成”才代表向量已经持久化。"
+    )
+    st.caption("“清理无MD对应向量”只批量删除找不到 MD/index 对应关系的遗留向量，不会删除正常同步的记忆。")
+    sync_payload = {
+        "user_id": user_id,
+        "preferences_content": md_memory.autofmt_document(
+            "preferences", edited_preferences, preferences_content
+        ),
+        "events_content": md_memory.autofmt_document(
+            "events", edited_events, events_content
+        ),
+        "idempotency_key": f"memory-md-sync-{uuid.uuid4().hex}",
+    }
+    render_inline_sensitive_action(
+        "memory_sync_markdown",
+        sync_payload,
+        "保存 MD 并同步向量记忆",
+        key="md_sync",
+        submit_label="保存 MD 并同步向量",
+        primary=True,
+    )
+    render_inline_sensitive_action(
+        "memory_cleanup_vectors",
+        {
+            "user_id": user_id,
+            "idempotency_key": f"memory-orphan-cleanup-{uuid.uuid4().hex}",
+        },
+        "批量清理没有 MD/index 对应关系的向量记忆",
+        key="orphan_cleanup",
+        submit_label="清理无MD对应向量",
+    )
+
 
 
 def render_memory_page():
     render_page_header(
         "记忆中心",
-        "统一管理候选记忆、会话摘要、分类检索和 MD 文档记忆。",
+        "按对话生成摘要，并统一编辑 MD 记忆与向量记忆。",
         "Memory Center",
     )
-    render_sensitive_action_approval()
+    render_last_memory_action_result()
+    render_memory_extraction_panel("", "memory_center")
 
     try:
         from app.memory.long_term import LongTermMemory
@@ -1302,22 +1647,21 @@ def render_memory_page():
     except Exception:
         vector_count = 0
         md_count = 0
-    pending_count = int(bool(st.session_state.get("show_memory_extraction")))
+    pending_count = int(bool(st.session_state.get("show_memory_extraction"))) + sum(
+        1 for key, value in st.session_state.items()
+        if key.startswith("pending_inline_") and value
+    )
 
     metric_columns([
         ("向量记忆", vector_count, "语义召回"),
         ("MD 文档记忆", md_count, "可读、可编辑"),
         ("待确认内容", pending_count, "需要用户决定"),
-        ("敏感操作", int(bool(st.session_state.get("pending_sensitive_action"))), "执行前审批"),
+        ("敏感操作", sum(1 for key, value in st.session_state.items() if key.startswith("pending_inline_") and value), "原位确认"),
     ])
 
-    if st.session_state.get("show_memory_extraction"):
-        render_section_header("候选记忆", "确认后才会写入长期记忆")
-        render_memory_extraction_panel(None, "memory_center")
-
-    render_memory_search()
-    render_memory_compression()
-    render_md_memory_manager()
+    render_conversation_summary()
+    render_vector_memory_browser()
+    render_md_document_editor()
 
 
 def render_model_configuration():
@@ -1456,11 +1800,17 @@ def render_profile_page():
     render_model_configuration()
 
 
+def render_import_page():
+    from app.ui.import_center import render_import_page as render_import_center
+    render_import_center()
+
+
 def render_page(page_key: str):
     pages = {
         "assistant": render_assistant_page,
         "catalog": render_catalog_page,
         "memory": render_memory_page,
+        "import": render_import_page,
         "profile": render_profile_page,
     }
     pages.get(page_key, render_assistant_page)()

@@ -64,4 +64,53 @@ def test_cross_scene_memory_recall_uses_current_query():
 
     result = memory.get_cross_scene_memories("user-1", "shopping", query="杭州")
 
-    assert result == [{"content": "用户喜欢杭州西湖", "metadata": {"memory_id": "a"}}]
+    assert [item["content"] for item in result] == ["用户喜欢杭州西湖"]
+    assert result[0]["metadata"]["memory_id"] == "a"
+
+
+def test_vector_recall_failure_falls_back_to_persisted_user_memory():
+    class _BrokenVectorStore:
+        def similarity_search(self, *_args, **_kwargs):
+            raise ConnectionError("embedding service unavailable")
+
+        @property
+        def _collection(self):
+            class _Collection:
+                @staticmethod
+                def get(**_kwargs):
+                    return {
+                        "ids": ["gender", "hobby"],
+                        "documents": ["我是女生", "我喜欢弹吉他"],
+                        "metadatas": [
+                            {
+                                "user_id": "user-1",
+                                "memory_id": "gender",
+                                "category": "general",
+                                "memory_type": "preference",
+                            },
+                            {
+                                "user_id": "user-1",
+                                "memory_id": "hobby",
+                                "category": "general",
+                                "memory_type": "preference",
+                            },
+                        ],
+                    }
+
+            return _Collection()
+
+    memory = LongTermMemory.__new__(LongTermMemory)
+    memory.vectorstore = _BrokenVectorStore()
+    memory._memory_store = {}
+
+    result = memory.get_cross_scene_memories(
+        "user-1",
+        "shopping",
+        query="我要去杭州旅行并购买衣服",
+    )
+
+    assert {item["content"] for item in result} == {"我是女生", "我喜欢弹吉他"}
+    assert all(
+        item["metadata"]["recall_source"] == "local_memory_fallback"
+        for item in result
+    )

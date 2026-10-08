@@ -1,72 +1,60 @@
-"""
-天气查询工具 - Function Calling
-"""
+"""真实天气查询工具。"""
+
+from datetime import date as date_type
+
 from langchain_core.tools import tool
-from pydantic import BaseModel, Field
-from typing import Optional
-import random
-from datetime import datetime
-from app.observability import log_warning
-from app.tools.providers import get_weather_provider
+from pydantic import BaseModel, Field, field_validator
+
+from app.tools.providers import ProviderUnavailable, get_weather_provider
+
 
 class WeatherInput(BaseModel):
-    city: str = Field(description="城市名称")
+    city: str = Field(min_length=1, max_length=80, description="城市名称")
     date: str = Field(description="日期，格式 YYYY-MM-DD")
 
-WEATHER_DATA = {
-    "杭州": {"temp_range": (15, 28), "conditions": ["晴", "多云", "小雨"], "humidity": (60, 85)},
-    "北京": {"temp_range": (5, 25), "conditions": ["晴", "多云", "雾霾"], "humidity": (20, 60)},
-    "上海": {"temp_range": (18, 30), "conditions": ["多云", "小雨", "阴"], "humidity": (70, 90)},
-    "成都": {"temp_range": (16, 26), "conditions": ["多云", "阴", "小雨"], "humidity": (65, 85)},
-    "三亚": {"temp_range": (24, 33), "conditions": ["晴", "多云"], "humidity": (75, 95)},
-    "西安": {"temp_range": (8, 24), "conditions": ["晴", "多云", "沙尘"], "humidity": (30, 60)},
-    "丽江": {"temp_range": (10, 22), "conditions": ["晴", "多云"], "humidity": (40, 70)},
-    "大理": {"temp_range": (12, 24), "conditions": ["晴", "多云", "小雨"], "humidity": (50, 75)},
-}
+    @field_validator("date")
+    @classmethod
+    def validate_date(cls, value: str) -> str:
+        try:
+            parsed = date_type.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError("date 必须是有效的 YYYY-MM-DD 日期") from exc
+        if parsed.isoformat() != value:
+            raise ValueError("date 必须使用 YYYY-MM-DD 格式")
+        return value
+
 
 @tool("get_weather", args_schema=WeatherInput)
 def get_weather(city: str, date: str) -> dict:
-    """获取指定城市和日期的天气信息，包括温度、天气状况、湿度"""
+    """获取指定城市和日期的真实天气，包括温度、天气状况、湿度和来源信息。"""
     provider = get_weather_provider()
-    if provider.configured:
-        try:
-            external = provider.fetch({"city": city, "date": date})
-            return {
-                **external,
-                "city": external.get("city", city),
-                "date": external.get("date", date),
-                "simulated": False,
-                "source": provider.url,
-            }
-        except Exception as exc:
-            log_warning("tools.weather_provider", str(exc), {"city": city, "date": date})
-    else:
-        log_warning("tools.weather_provider", "未配置外部天气 provider，使用本地模拟", {"city": city})
-    if city in WEATHER_DATA:
-        data = WEATHER_DATA[city]
-        temp = random.randint(*data["temp_range"])
-        condition = random.choice(data["conditions"])
-        humidity = random.randint(*data["humidity"])
+    try:
+        provider_response = provider.fetch_with_meta({"city": city, "date": date})
+        external = provider_response.payload
+        if not any(key in external for key in ("temperature", "condition", "humidity")):
+            raise ValueError("weather provider 缺少天气结果字段")
         return {
-            "city": city,
-            "date": date,
-            "temperature": f"{temp}°C",
-            "condition": condition,
-            "humidity": f"{humidity}%",
-            "suggestion": "适合出行" if condition in ["晴", "多云"] else "建议室内活动",
-            "simulated": True,
-            "source": "local_mock_weather",
+            "city": external.get("city", city),
+            "date": external.get("date", date),
+            "temperature": external.get("temperature", ""),
+            "temperature_min": external.get("temperature_min"),
+            "temperature_max": external.get("temperature_max"),
+            "condition": external.get("condition", ""),
+            "humidity": external.get("humidity", ""),
+            "precipitation_probability": external.get("precipitation_probability"),
+            "suggestion": external.get("suggestion", ""),
+            "simulated": False,
+            "source": provider.url,
+            "cache_status": provider_response.cache_status,
+            "fetched_at": provider_response.fetched_at,
+            "stale": provider_response.stale,
+            "warnings": list(provider_response.warnings),
         }
-    return {
-        "city": city,
-        "date": date,
-        "temperature": "20°C",
-        "condition": "晴",
-        "humidity": "50%",
-        "suggestion": "适合出行",
-        "simulated": True,
-        "source": "local_mock_weather",
-    }
+    except Exception as exc:
+        if isinstance(exc, ProviderUnavailable):
+            raise
+        raise ProviderUnavailable(f"天气 provider 不可用: {exc}") from exc
+
 
 def get_weather_tools():
     return [get_weather]

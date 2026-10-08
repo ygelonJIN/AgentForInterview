@@ -27,6 +27,42 @@ def test_reranker_keyword_fallback():
     assert len(result) == 2
     assert all("rerank_score" in r for r in result)
 
+
+def test_cross_encoder_reranker_uses_scores_without_mutating_input():
+    from app.retrieval.reranker import CrossEncoderReranker
+
+    class _Model:
+        def predict(self, _pairs):
+            return [0.1, 0.9]
+
+    reranker = CrossEncoderReranker(initialize=False)
+    reranker.model = _Model()
+    docs = [{"content": "A", "score": 0.1}, {"content": "B", "score": 0.2}]
+
+    result = reranker.rerank("query", docs, top_n=2)
+
+    assert [item["content"] for item in result] == ["B", "A"]
+    assert all(item["rerank_source"] == "cross_encoder" for item in result)
+    assert docs == [{"content": "A", "score": 0.1}, {"content": "B", "score": 0.2}]
+
+
+def test_cross_encoder_failure_preserves_vector_score_order():
+    from app.retrieval.reranker import CrossEncoderReranker
+
+    class _BrokenModel:
+        def predict(self, _pairs):
+            raise RuntimeError("model failed")
+
+    reranker = CrossEncoderReranker(initialize=False)
+    reranker.model = _BrokenModel()
+    result = reranker.rerank("query", [
+        {"content": "keyword query", "score": 0.3},
+        {"content": "other", "score": 0.1},
+    ], top_n=2)
+
+    assert [item["content"] for item in result] == ["other", "keyword query"]
+    assert all(item["rerank_source"] == "vector_score_keyword_tiebreak" for item in result)
+
 def test_nl2sql_model():
     """测试 NL2SQL 输出模型"""
     from app.retrieval.nl2sql import SQLQuery

@@ -45,15 +45,61 @@ class SensitiveActionService:
         def memory_save_summary(_user_id, payload, _decision):
             if not self.memory_repository:
                 raise RuntimeError("记忆仓储未初始化")
-            return {"memory_id": self.memory_repository.save_summary(
-                payload["user_id"], payload["summary"], {"source": "approved_summary"}
-            )}
+            metadata = {
+                "source": "conversation_summary",
+                "thread_id": payload.get("thread_id", ""),
+                "conversation_hash": payload.get("conversation_hash", ""),
+            }
+            memory_id = self.memory_repository.save_summary(
+                payload["user_id"], payload["summary"], metadata
+            )
+            if payload.get("thread_id") and payload.get("conversation_hash"):
+                from app.memory.conversation_store import ConversationStore
+                ConversationStore().register_summary(
+                    payload["thread_id"],
+                    payload["conversation_hash"],
+                    payload["summary"],
+                    memory_id=memory_id,
+                )
+            return {"memory_id": memory_id}
+
+        def memory_sync_markdown(_user_id, payload, _decision):
+            if not self.memory_repository:
+                raise RuntimeError("记忆仓储未初始化")
+            return self.memory_repository.replace_markdown_documents(
+                payload["user_id"],
+                payload.get("preferences_content", ""),
+                payload.get("events_content", ""),
+            )
+
+        def memory_update_vector(_user_id, payload, _decision):
+            if not self.memory_repository:
+                raise RuntimeError("记忆仓储未初始化")
+            return self.memory_repository.update_vector_record(
+                payload["user_id"], payload["vector_id"], payload["content"]
+            )
+
+        def memory_delete_vector(_user_id, payload, _decision):
+            if not self.memory_repository:
+                raise RuntimeError("记忆仓储未初始化")
+            return self.memory_repository.delete_vector_record(
+                payload["user_id"], payload["vector_id"]
+            )
+
+        def memory_cleanup_vectors(_user_id, payload, _decision):
+            if not self.memory_repository:
+                raise RuntimeError("记忆仓储未初始化")
+            return self.memory_repository.cleanup_orphan_vectors(payload["user_id"])
 
         return {
             "memory_delete": memory_delete,
             "memory_update": memory_update,
             "memory_clear": memory_clear,
             "memory_save_summary": memory_save_summary,
+            "memory_sync_markdown": memory_sync_markdown,
+            "memory_update_vector": memory_update_vector,
+            "memory_delete_vector": memory_delete_vector,
+            "memory_cleanup_vectors": memory_cleanup_vectors,
         }
 
     def _graph(self, action_type: str) -> ActionApprovalGraph:

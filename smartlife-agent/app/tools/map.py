@@ -1,54 +1,74 @@
-"""
-地图查询工具 - Function Calling
-"""
+"""真实路线查询工具。"""
+
+from typing import Literal, Optional
+
 from langchain_core.tools import tool
-from pydantic import BaseModel, Field
-from typing import Optional
-import random
-from app.observability import log_warning
-from app.tools.providers import get_route_provider
+from pydantic import BaseModel, Field, model_validator
+
+from app.tools.providers import ProviderUnavailable, get_route_provider
+
 
 class MapInput(BaseModel):
-    origin: str = Field(description="起点")
-    destination: str = Field(description="终点")
-    mode: str = Field(default="driving", description="交通方式：driving/walking/transit")
+    origin: str = Field(min_length=1, max_length=120, description="起点")
+    destination: str = Field(min_length=1, max_length=120, description="终点")
+    mode: Literal["driving", "walking"] = Field(
+        default="driving",
+        description="交通方式：driving/walking",
+    )
+    city: Optional[str] = Field(
+        default=None,
+        max_length=80,
+        description="城市或区域上下文，用于消歧同名地点",
+    )
+
+    @model_validator(mode="after")
+    def validate_locations(self):
+        if self.origin.strip() == self.destination.strip():
+            raise ValueError("origin 和 destination 不能相同")
+        return self
+
 
 @tool("get_route", args_schema=MapInput)
-def get_route(origin: str, destination: str, mode: str = "driving") -> dict:
-    """获取两点之间的路线和距离信息"""
+def get_route(
+    origin: str,
+    destination: str,
+    mode: str = "driving",
+    city: Optional[str] = None,
+) -> dict:
+    """获取两点之间的真实驾车或步行路线、距离、预计时间和来源信息。"""
     provider = get_route_provider()
-    if provider.configured:
-        try:
-            external = provider.fetch({"origin": origin, "destination": destination, "mode": mode})
-            return {
-                **external,
-                "origin": external.get("origin", origin),
-                "destination": external.get("destination", destination),
-                "mode": external.get("mode", mode),
-                "simulated": False,
-                "source": provider.url,
-            }
-        except Exception as exc:
-            log_warning("tools.route_provider", str(exc), {"origin": origin, "destination": destination})
-    else:
-        log_warning("tools.route_provider", "未配置外部路线 provider，使用本地模拟", {"origin": origin})
-    distance = random.uniform(1, 50)
-    speed_map = {"driving": 40, "walking": 5, "transit": 25}
-    speed = speed_map.get(mode, 30)
-    duration = distance / speed * 60
-    
-    mode_names = {"driving": "驾车", "walking": "步行", "transit": "公共交通"}
-    
-    return {
-        "origin": origin,
-        "destination": destination,
-        "mode": mode_names.get(mode, mode),
-        "distance": f"{distance:.1f}公里",
-        "duration": f"{duration:.0f}分钟",
-        "route": f"从{origin}出发，经主要道路到达{destination}",
-        "simulated": True,
-        "source": "local_mock_map",
-    }
+    try:
+        provider_response = provider.fetch_with_meta({
+            "origin": origin,
+            "destination": destination,
+            "mode": mode,
+            "city": city,
+        })
+        external = provider_response.payload
+        if not any(key in external for key in ("distance", "duration", "route")):
+            raise ValueError("route provider 缺少路线结果字段")
+        return {
+            "origin": external.get("origin", origin),
+            "destination": external.get("destination", destination),
+            "mode": external.get("mode", mode),
+            "city": city,
+            "distance": external.get("distance", ""),
+            "duration": external.get("duration", ""),
+            "route": external.get("route", ""),
+            "distance_km": external.get("distance_km"),
+            "duration_minutes": external.get("duration_minutes"),
+            "simulated": False,
+            "source": provider.url,
+            "cache_status": provider_response.cache_status,
+            "fetched_at": provider_response.fetched_at,
+            "stale": provider_response.stale,
+            "warnings": list(provider_response.warnings),
+        }
+    except Exception as exc:
+        if isinstance(exc, ProviderUnavailable):
+            raise
+        raise ProviderUnavailable(f"路线 provider 不可用: {exc}") from exc
+
 
 def get_map_tools():
     return [get_route]

@@ -10,9 +10,10 @@ from datetime import datetime
 class ShortTermMemory:
     """短期记忆管理器"""
 
-    def __init__(self, max_messages: int = 50):
+    def __init__(self, max_messages: int = 50, conversation_store=None):
         self.conversations: Dict[str, List[Dict[str, Any]]] = {}
         self.max_messages = max_messages
+        self.conversation_store = conversation_store
         self._lock = RLock()
 
     def add_message(self, session_id: str, role: str, content: str, metadata: Dict = None):
@@ -28,6 +29,10 @@ class ShortTermMemory:
                 "metadata": metadata or {},
             }
             history.append(message)
+            if self.conversation_store:
+                self.conversation_store.append_message(
+                    session_id, role, content, metadata=metadata or {}
+                )
 
             # 超过最大消息数时裁剪
             if len(history) > self.max_messages:
@@ -37,6 +42,8 @@ class ShortTermMemory:
         """获取对话历史"""
         with self._lock:
             history = list(self.conversations.get(session_id, []))
+        if not history and self.conversation_store:
+            history = self.conversation_store.list_messages(session_id)
         if last_n:
             return history[-last_n:]
         return history
@@ -55,9 +62,11 @@ class ShortTermMemory:
         return messages
 
     def clear(self, session_id: str):
-        """清除会话历史"""
+        """清除会话历史和持久化归档"""
         with self._lock:
             self.conversations.pop(session_id, None)
+        if self.conversation_store:
+            self.conversation_store.delete_thread(session_id)
 
     def get_summary(self, session_id: str) -> str:
         """获取会话摘要"""

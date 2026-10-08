@@ -1,0 +1,4 @@
+{"id":"shopping-price-1","scene":"shopping","user_id":"benchmark-user","session_id":"session-1","message":"推荐一双500元以下的跑步鞋","metadata":{"strategy":"sql_only","top_k":5}}
+{"id":"shopping-review-1","scene":"shopping","user_id":"benchmark-user","session_id":"session-2","message":"跑步鞋的缓震和耐用性怎么样","metadata":{"strategy":"rag_only","top_k":5}}
+{"id":"shopping-mixed-1","scene":"shopping","user_id":"benchmark-user","session_id":"session-3","message":"推荐一双500元以下且口碑好的跑步鞋","metadata":{"strategy":"mixed","top_k":5}}
+{"id":"general-1","scene":"general","user_id":"benchmark-user","session_id":"session-4","message":"你好"}

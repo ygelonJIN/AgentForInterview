@@ -58,3 +58,27 @@ def test_fuzzy_query_uses_parameters_instead_of_interpolating_values():
     assert "%跑步鞋%" in params
     assert 300 in params
     assert "跑步鞋" not in sql
+
+
+def test_generic_sql_executor_denies_private_order_and_user_tables():
+    executor = SafeSQLExecutor(DB_PATH, max_rows=10, timeout_seconds=1.0)
+
+    with pytest.raises(Exception):
+        executor.execute("SELECT * FROM orders")
+    with pytest.raises(Exception):
+        executor.execute("SELECT * FROM users")
+
+
+def test_order_repository_always_scopes_queries_to_current_user():
+    from app.retrieval.order_repository import OrderAuthorizationError, OrderRepository
+
+    repository = OrderRepository(DB_PATH)
+    user_1_orders = repository.get_order_status("user_001")
+    user_2_orders = repository.get_order_status("user_002")
+
+    assert user_1_orders
+    assert all(row["user_id"] == "user_001" for row in user_1_orders)
+    assert all(row["user_id"] == "user_002" for row in user_2_orders)
+
+    with pytest.raises(OrderAuthorizationError):
+        repository.get_order_status("")

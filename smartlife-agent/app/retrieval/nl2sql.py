@@ -10,6 +10,7 @@ NL2SQL 模块 - 自然语言到 SQL 转换
 import sqlite3
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import Dict, List, Any, Optional
 from langchain_core.prompts import ChatPromptTemplate
 from app.config import create_small_llm
@@ -24,13 +25,15 @@ class SQLQuery(BaseModel):
 
 class NL2SQLChain:
     """NL2SQL 链"""
+
+    MODEL_ENRICHMENT_TIMEOUT_SECONDS = 2.0
     
     DB_SCHEMA = """
 数据库表结构：
 - products(id, name, category, subcategory, price, waterproof, brand, stock, description, rating, created_at)
 - reviews(id, product_id, user_id, content, rating, created_at)
-- orders(id, user_id, product_id, quantity, status, total_price, created_at)
-- users(id, name, age, preferences, budget, created_at)
+
+订单和用户数据不通过自由 NL2SQL 访问，只能调用带用户权限的固定 Repository API。
 
 商品分类体系：
 - 服装: 
@@ -180,72 +183,184 @@ SQL: SELECT * FROM products WHERE name LIKE '%背包%' AND price <= 300"""),
         """兼容旧接口：返回参数化 SQL 文本。"""
         return self._build_fuzzy_query(user_query)[0]
     
-    def query(self, user_query: str, max_retries: int = 2) -> Dict[str, Any]:
+    def _build_keyword_query(self, user_query: str) -> tuple[str, List[Any]]:
+        """为明确商品词构建权威参数化查询。
+
+        只使用商品词映射，不把价格数字自动当成商品价格，避免把旅行预算误判为
+        商品筛选条件。命中关键词时必须直接查询数据库。
         """
-        执行 NL2SQL 查询
-        
-        Args:
-            user_query: 用户查询
-            max_retries: 最大重试次数
-            
-        Returns:
-            查询结果
+        terms = list(dict.fromkeys(self._expand_terms(user_query)))
+        if not terms:
+            return "", []
+        clauses = []
+        params: List[Any] = []
+        for term in terms:
+            clauses.append("(name LIKE ? OR subcategory LIKE ?)")
+            params.extend((f"%{term}%", f"%{term}%"))
+        return (
+            f"SELECT * FROM products WHERE {' OR '.join(clauses)} LIMIT 200",
+            params,
+        )
+
+    @staticmethod
+    def _deduplicate_products(products: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], int]:
+        unique: List[Dict[str, Any]] = []
+        seen = set()
+        duplicates = 0
+        for product in products:
+            if not isinstance(product, dict):
+                continue
+            identity = (
+                ("id", str(product.get("id")))
+                if product.get("id") is not None
+                else (
+                    "fingerprint",
+                    str(product.get("name", "")),
+                    str(product.get("brand", "")),
+                    str(product.get("price", "")),
+                )
+            )
+            if identity in seen:
+                duplicates += 1
+                continue
+            seen.add(identity)
+            unique.append(product)
+        return unique, duplicates
+
+    def _invoke_model_enrichment(self, payload: Dict[str, Any]) -> SQLQuery:
+        """关键词结果 已有权威商品时，给 NL2SQL 增强一个很短的总预算。"""
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nl2sql-enrichment")
+        future = executor.submit(self.chain.invoke, payload)
+        try:
+            return future.result(timeout=self.MODEL_ENRICHMENT_TIMEOUT_SECONDS)
+        except FutureTimeoutError as exc:
+            raise TimeoutError(
+                f"NL2SQL 增强超过 {self.MODEL_ENRICHMENT_TIMEOUT_SECONDS:.3g}s 未返回"
+            ) from exc
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    def query(self, user_query: str, max_retries: int = 1) -> Dict[str, Any]:
+        """执行商品查询：关键词直查与 NL2SQL 都执行，并对商品结果去重。
+
+        关键词命中时直接查询数据库；无论是否命中，都继续运行一次小模型，
+        以免遗漏用户提到的其他条件或商品。返回的每个商品行都来自数据库。
         """
+        if max_retries < 0:
+            raise ValueError("max_retries 不能为负数")
+
+        keyword_sql, keyword_params = self._build_keyword_query(user_query)
+        keyword_results: List[Dict[str, Any]] = []
+        keyword_error = ""
+        if keyword_sql:
+            try:
+                keyword_results = self.sql_executor.execute(keyword_sql, keyword_params)["rows"]
+            except Exception as exc:
+                keyword_error = f"{type(exc).__name__}: {exc}"
+
+        model_results: List[Dict[str, Any]] = []
+        model_sql = ""
+        model_explanation = ""
+        model_needs_rag: List[str] = []
+        model_error = ""
+        failure_stage = "nl2sql_model"
+        model_execution_succeeded = False
+        last_error: Optional[Exception] = None
+
         for attempt in range(max_retries + 1):
             try:
-                # 使用 LLM 生成 SQL
-                sql_result = self.chain.invoke({"user_query": user_query})
-                
-                execution = self.sql_executor.execute(sql_result.sql)
-                results = execution["rows"]
-                
-                # 如果结果为空，尝试模糊匹配
-                if not results and attempt < max_retries:
-                    fuzzy_sql, fuzzy_params = self._build_fuzzy_query(user_query)
-                    execution = self.sql_executor.execute(fuzzy_sql, fuzzy_params)
-                    results = execution["rows"]
-                    
-                    if results:
-                        return {
-                            "sql": fuzzy_sql,
-                            "explanation": f"LLM 查询无结果，使用模糊匹配: {sql_result.explanation}",
-                            "needs_rag": sql_result.needs_rag,
-                            "results": results,
-                            "count": len(results),
-                            "fallback": True
-                        }
-                
-                return {
-                    "sql": sql_result.sql,
-                    "explanation": sql_result.explanation,
-                    "needs_rag": sql_result.needs_rag,
-                    "results": results,
-                    "count": len(results)
-                }
-                
-            except Exception as e:
-                if attempt < max_retries:
-                    # 尝试模糊匹配
-                    try:
-                        fuzzy_sql, fuzzy_params = self._build_fuzzy_query(user_query)
-                        execution = self.sql_executor.execute(fuzzy_sql, fuzzy_params)
-                        results = execution["rows"]
-                        
-                        return {
-                            "sql": fuzzy_sql,
-                            "explanation": f"LLM 查询出错，使用模糊匹配: {str(e)}",
-                            "needs_rag": [],
-                            "results": results,
-                            "count": len(results),
-                            "fallback": True
-                        }
-                    except Exception as fallback_error:
-                        continue
+                if keyword_results:
+                    sql_result = self._invoke_model_enrichment({"user_query": user_query})
                 else:
-                    return {"error": str(e), "sql": sql_result.sql if 'sql_result' in locals() else "", "needs_rag": []}
-        
-        return {"error": "查询失败", "sql": "", "needs_rag": []}
-    
+                    sql_result = self.chain.invoke({"user_query": user_query})
+            except Exception as exc:
+                last_error = exc
+                model_error = f"{type(exc).__name__}: {exc}"
+                failure_stage = (
+                    "nl2sql_model_timeout"
+                    if isinstance(exc, TimeoutError)
+                    else "nl2sql_model"
+                )
+                if keyword_results:
+                    break
+                continue
+
+            model_sql = sql_result.sql
+            model_explanation = sql_result.explanation
+            model_needs_rag = list(sql_result.needs_rag or [])
+            try:
+                execution = self.sql_executor.execute(sql_result.sql)
+                model_results = execution["rows"]
+                model_execution_succeeded = True
+            except Exception as exc:
+                last_error = exc
+                model_error = f"{type(exc).__name__}: {exc}"
+                failure_stage = "sql_execution"
+                continue
+
+            if model_results:
+                break
+
+        merged_results, duplicate_count = self._deduplicate_products(
+            keyword_results + model_results
+        )
+
+        errors = [item for item in (keyword_error, model_error) if item]
+        if keyword_error and model_error:
+            failure_stage = f"keyword_sql_execution+{failure_stage}"
+        elif keyword_error:
+            failure_stage = "keyword_sql_execution"
+        elif model_error:
+            pass
+        elif not merged_results and not model_execution_succeeded:
+            failure_stage = "nl2sql_model"
+        elif not merged_results:
+            failure_stage = "empty_result"
+
+        query_sources = []
+        if keyword_sql:
+            query_sources.append("keyword_sql")
+        # 小模型路径每次都强制尝试；失败也属于已执行的查询来源。
+        query_sources.append("nl2sql")
+
+        warnings: List[str] = []
+        if merged_results and errors:
+            warnings.append(
+                "关键词查询已返回可验证商品；NL2SQL 增强未完成，结构化约束证据可能不完整"
+            )
+            errors = []
+
+        result = {
+            "results": merged_results,
+            "count": len(merged_results),
+            "authoritative": bool(merged_results),
+            "fallback": False,
+            "query_sources": query_sources,
+            "keyword_sql": keyword_sql,
+            "model_sql": model_sql,
+            "keyword_count": len(keyword_results),
+            "model_count": len(model_results),
+            "duplicate_count": duplicate_count,
+            "needs_rag": model_needs_rag,
+            "explanation": model_explanation or "关键词直接查询",
+            "failure_stage": failure_stage if errors or not merged_results else "",
+        }
+        if errors:
+            result["error"] = "；".join(errors)
+            result["warnings"] = [
+                "部分查询失败，但已返回可验证的数据库商品行；请在回答中披露证据不完整"
+            ] if merged_results else []
+        elif warnings:
+            result["warnings"] = warnings
+        if last_error and not model_results:
+            result["sql"] = model_sql or keyword_sql
+        else:
+            result["sql"] = "\n-- keyword_sql\n{}\n-- model_sql\n{}".format(
+                keyword_sql,
+                model_sql,
+            ).strip()
+        return result
+
     def query_with_context(self, user_query: str, context: Dict[str, Any] = None) -> Dict[str, Any]:
         """
         带上下文的查询

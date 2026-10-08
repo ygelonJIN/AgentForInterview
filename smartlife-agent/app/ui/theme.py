@@ -24,6 +24,7 @@ NAV_ITEMS = (
     ("✦", "智能助手", "assistant"),
     ("◫", "生活目录", "catalog"),
     ("◇", "记忆中心", "memory"),
+    ("⇧", "数据导入", "import"),
     ("○", "个人中心", "profile"),
 )
 
@@ -531,6 +532,54 @@ section[data-testid="stSidebar"] [data-testid="stAlert"] svg {
 .process-card.error { border-color: #fecaca; background: #fff1f2; }
 .process-card .process-title { font-weight: 750; }
 .process-card .process-copy { color: var(--muted); margin-top: 0.18rem; line-height: 1.55; }
+.execution-log-panel {
+  margin-top: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.78);
+  overflow: hidden;
+}
+.execution-log-panel > summary {
+  cursor: pointer;
+  padding: 0.72rem 0.9rem;
+  color: var(--ink);
+  font-weight: 720;
+}
+.execution-log-list { padding: 0 0.9rem 0.75rem; }
+.execution-log-row {
+  display: grid;
+  grid-template-columns: 1.35rem minmax(0, 1fr);
+  gap: 0.55rem;
+  padding: 0.55rem 0;
+  border-top: 1px solid var(--line);
+}
+.execution-log-icon {
+  width: 1.25rem;
+  height: 1.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 850;
+  background: var(--primary-soft);
+  color: var(--primary-dark);
+}
+.execution-log-ok .execution-log-icon { background: var(--teal-soft); color: var(--teal); }
+.execution-log-warning .execution-log-icon { background: var(--amber-soft); color: var(--amber); }
+.execution-log-error .execution-log-icon { background: #fff1f2; color: var(--danger); }
+.execution-log-meta {
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.5;
+}
+.execution-log-message {
+  margin-top: 0.12rem;
+  color: var(--ink);
+  font-size: 0.86rem;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
 
 .review-card {
   padding: 1rem 1.1rem;

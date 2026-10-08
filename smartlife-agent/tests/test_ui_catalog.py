@@ -68,6 +68,9 @@ def test_global_ui_layout_contract_covers_requested_fixes():
         '--control-radius: 14px',
         'border-radius: var(--control-radius) !important',
         '.sidebar-brand',
+        '.execution-log-panel',
+        '.execution-log-row',
+        '.execution-log-message',
         '[data-testid="stChatInput"] > div > div',
         'background: var(--surface) !important',
         'background: #6366f1 !important',
@@ -120,7 +123,7 @@ def test_whole_card_selection_switches_assistant_and_catalog_views():
     assert any(item.label == "参与者 ID" for item in app.text_input)
 
     nav_labels = {button.label for button in app.sidebar.button}
-    assert nav_labels == {"智能助手", "生活目录", "记忆中心", "个人中心"}
+    assert nav_labels == {"智能助手", "生活目录", "记忆中心", "数据导入", "个人中心"}
 
     catalog_button = next(
         button for button in app.sidebar.button if button.label == "生活目录"
@@ -132,3 +135,17 @@ def test_whole_card_selection_switches_assistant_and_catalog_views():
     review_button.click().run()
     assert not app.exception
     assert any(item.label == "搜索评价" for item in app.text_input)
+
+
+def test_data_import_page_shows_self_service_templates():
+    app = AppTest.from_file(Path(__file__).parents[1] / "app" / "main.py", default_timeout=20).run()
+    next(button for button in app.sidebar.button if button.label == "数据导入").click().run()
+
+    assert not app.exception
+    labels = {button.label for button in app.button}
+    assert {"开始数据库导入", "开始 RAG 导入"} <= labels
+    assert any(item.label == "导入记录" for item in app.tabs)
+    download_labels = {button.label for button in app.download_button}
+    assert "数据库-products.csv" in download_labels
+    assert "RAG-reviews.jsonl" in download_labels
+    assert "数据库建表 SQL（仅用于空库）" in download_labels

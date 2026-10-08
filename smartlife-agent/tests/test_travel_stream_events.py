@@ -53,6 +53,13 @@ def test_travel_plan_emits_steps_two_and_three_and_resets_before_revision(monkey
     )
     agent = TravelAgent.__new__(TravelAgent)
     agent._build_plan_context = lambda *_args, **_kwargs: "攻略与偏好"
+    agent.travel_tool_executor = type("FakeExecutor", (), {
+        "get_weather_evidence": staticmethod(
+            lambda *_args, **_kwargs: __import__("asyncio").sleep(
+                0, {"accepted": False, "simulated": False, "error": "unavailable"}
+            )
+        )
+    })()
     queue = _Queue()
 
     result = asyncio.run(agent.plan_trip_streaming(

@@ -5,6 +5,7 @@ import asyncio
 from langchain_core.messages import AIMessage, HumanMessage
 
 from app.agents.react_graph import ToolReActGraph
+from app.observability import get_trace_recorder
 
 
 class _Tool:
@@ -93,3 +94,16 @@ def test_react_graph_reports_unknown_tool_without_crashing():
 
     assert result["tool_results"][0]["ok"] is False
     assert "未知工具" in result["tool_results"][0]["error"]
+
+
+def test_react_graph_records_model_and_tool_trace_spans():
+    recorder = get_trace_recorder()
+    recorder.clear()
+    tool = _Tool()
+    graph = ToolReActGraph(_Model(), [tool], max_steps=4, tool_timeout=1.0)
+
+    asyncio.run(graph.run_streaming([HumanMessage(content="查询回显")], thread_id="trace-react"))
+
+    spans = recorder.summary()["spans"]
+    assert spans["model.react_agent"]["count"] == 2
+    assert spans["tool.echo"]["count"] == 1

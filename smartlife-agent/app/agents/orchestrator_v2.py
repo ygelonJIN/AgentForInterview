@@ -38,15 +38,18 @@ from app.agents.react_graph import ToolReActGraph
 from app.agents.shopping_graph import ShoppingGraph
 from app.negotiation.graph import NegotiationGraph
 from app.memory.short_term import ShortTermMemory
+from app.memory.conversation_store import ConversationStore
 from app.memory.long_term import LongTermMemory
 from app.memory.compressor import MemoryCompressor
 from app.memory.md_memory import MDMemory
 from app.memory.extractor import MemoryExtractor, MemoryExtractionResult
 from app.memory.approval_graph import MemoryApprovalGraph
 from app.memory.repository import MemoryRepository
+from app.evaluation.ab_logging import ExperimentLogger
+from app.retrieval.reranker import create_reranker
 from app.session import build_thread_id
 from app.tools import get_safe_tools
-from app.observability import log_exception
+from app.observability import extract_model_usage, log_exception, timed_span
 
 
 class OrchestratorV2:
@@ -73,6 +76,7 @@ class OrchestratorV2:
 
         # 记忆
         self._short_term_memory = None
+        self._conversation_store = None
         self._long_term_memory = None
         self._compressor = None
         self._md_memory = None
@@ -80,7 +84,12 @@ class OrchestratorV2:
         self._rag_retriever = None
         self._nl2sql_chain = None
         self._retrieval_service = None
-        self._reranker = None
+        self._reranker = create_reranker()
+        self._experiment_logger = (
+            ExperimentLogger()
+            if os.environ.get("SMARTLIFE_AB_LOGGING", "").strip().lower() in {"1", "true", "yes", "on"}
+            else None
+        )
         self._memory_approval_graph = None
         self._react_graph = None
         self._shopping_graph = None
@@ -95,9 +104,17 @@ class OrchestratorV2:
         ])
 
     @property
+    def conversation_store(self):
+        if self._conversation_store is None:
+            self._conversation_store = ConversationStore()
+        return self._conversation_store
+
+    @property
     def short_term_memory(self):
         if self._short_term_memory is None:
-            self._short_term_memory = ShortTermMemory()
+            self._short_term_memory = ShortTermMemory(
+                conversation_store=self.conversation_store,
+            )
         return self._short_term_memory
 
     @property
@@ -220,7 +237,9 @@ class OrchestratorV2:
                 await self._do_process(user_message, user_id, thread_id, queue)
             except Exception as e:
                 log_exception("orchestrator.streaming", e, {"thread_id": thread_id})
-                await queue.emit_error(f"处理失败: {str(e)}")
+                await queue.emit_error(
+                    f"处理失败: {type(e).__name__}: {str(e) or '(无错误信息)'}"
+                )
             finally:
                 await queue.finish()
 
@@ -297,12 +316,17 @@ class OrchestratorV2:
 
         history_for_classification = self.short_term_memory.get_history(thread_id, last_n=11)[:-1]
         previous_classification = self._last_classifications.get(thread_id)
-        classification = await self.classifier.aclassify_streaming(
-            user_message,
-            queue,
-            history=history_for_classification,
-            previous=previous_classification,
-        )
+        with timed_span(
+            "classify.turn",
+            trace_id=getattr(queue, "trace_id", ""),
+            attributes={"thread_id": thread_id},
+        ):
+            classification = await self.classifier.aclassify_streaming(
+                user_message,
+                queue,
+                history=history_for_classification,
+                previous=previous_classification,
+            )
         self._last_classifications[thread_id] = classification
 
         if classification.intent == "general":
@@ -414,7 +438,7 @@ class OrchestratorV2:
         await queue.emit(EventType.DONE, {
             "response": response_text,
             "classification": classification.model_dump(),
-            "agent_used": classification.intent,
+            "agent_used": getattr(classification, "agent_label", classification.intent),
             "memories": {
                 "short_term_count": len(self.short_term_memory.get_history(thread_id)),
             }
@@ -508,6 +532,7 @@ class OrchestratorV2:
         planned_strategy: str,
         needs: Dict[str, Any],
         queue: EventQueue,
+        user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """购物子图节点：执行 SQL/RAG 检索。"""
         return await self._smart_retrieve(
@@ -515,6 +540,7 @@ class OrchestratorV2:
             planned_strategy,
             queue,
             needs=needs,
+            owner=user_id,
         )
 
     async def generate_shopping_response(
@@ -525,6 +551,7 @@ class OrchestratorV2:
         classification: ClassificationResult,
         retrieval: Dict[str, Any],
         queue: EventQueue,
+        validation_feedback: str = "",
     ) -> str:
         """购物子图节点：构建上下文并流式生成回答。"""
         chat_history = self.get_chat_history(thread_id)
@@ -537,9 +564,10 @@ class OrchestratorV2:
             )
         memory_context = ""
         if cross_memories:
-            memory_context = "\n用户历史偏好：\n" + "\n".join(
+            memory_context = "\n".join(
                 [m["content"] for m in cross_memories[:3]]
             )
+        weather_context = await self.travel_agent.get_weather_context(user_message)
 
         full_input = user_message
         if retrieval.get("product_context"):
@@ -549,8 +577,20 @@ class OrchestratorV2:
         if retrieval.get("diagnostics"):
             diag_text = "\n".join([f"- {d}" for d in retrieval["diagnostics"]])
             full_input += f"\n\n【检索诊断信息】\n{diag_text}"
+        if weather_context:
+            full_input += f"\n\n{weather_context}"
         if memory_context:
-            full_input += f"\n\n【用户历史偏好】\n{memory_context}"
+            full_input += (
+                "\n\n【用户长期 Memory】\n"
+                "以下内容来自已保存的用户 Memory，可用于个性化，不得否认或改写：\n"
+                f"{memory_context}"
+            )
+        if validation_feedback:
+            full_input += (
+                "\n\n【上一版回答未通过校验，请修正】\n"
+                f"{validation_feedback}\n"
+                "请基于同一检索结果重新生成，只修正校验问题，不要编造新数据。"
+            )
 
         await queue.emit(EventType.STEP, {
             "step": 3, "total": 4,
@@ -569,6 +609,11 @@ class OrchestratorV2:
 - 如果【检索诊断信息】提示评价检索失败或降级，必须明确告知用户当前评价信息不完整，并说明原因；
 - 绝对不能编造评价内容或伪造用户口碑。
 
+【真实数据规则】
+- 天气和路线只能引用【真实工具证据】；失败、过期或来源不明的数据不能当作当前或实时信息；
+- 如果【天气工具状态】说明数据不可用，必须明确说未获取到可验证的实时天气，不得给出猜测温度、季节典型值或虚构天气；
+- 【用户长期 Memory】是真实的已保存偏好，应按用户需求自然使用；与本轮明确要求冲突时以本轮要求为准。
+
 回复要求：
 - 用中文回复
 - 只推荐【商品信息】中的真实商品，给出商品名、价格、品牌
@@ -580,22 +625,75 @@ class OrchestratorV2:
         ])
         chain = prompt | self.llm
         full_response = ""
-        async for chunk in chain.astream({
-            "chat_history": chat_history,
-            "input": full_input
-        }):
-            if chunk.content:
-                full_response += chunk.content
-                await queue.emit_token(chunk.content, step="generate")
+        with timed_span(
+            "model.shopping_generate",
+            trace_id=getattr(queue, "trace_id", ""),
+            attributes={"user_id": user_id},
+        ) as measurement:
+            async for chunk in chain.astream({
+                "chat_history": chat_history,
+                "input": full_input
+            }):
+                if chunk.content:
+                    full_response += chunk.content
+                    await queue.emit_token(chunk.content, step="generate")
+                measurement.add_attributes(extract_model_usage(chunk))
         return full_response
 
     @staticmethod
     def validate_shopping_response(response: str, retrieval: Dict[str, Any]) -> None:
-        """购物子图节点：执行最低限度的输出契约校验。"""
+        """购物子图节点：校验空回答、证据缺口披露和已知商品一致性。"""
         if not response or not response.strip():
             raise ValueError("购物回答为空")
         if not isinstance(retrieval, dict):
             raise ValueError("检索结果格式错误")
+
+        response = response.strip()
+        needs = retrieval.get("needs") or {}
+        if retrieval.get("unanswerable"):
+            disclosed = any(marker in response for marker in ("无法", "不完整", "不可用", "失败"))
+            if not disclosed:
+                raise ValueError("必需证据不可用时必须明确披露无法完成完整回答")
+        if retrieval.get("partial"):
+            disclosed = any(marker in response for marker in ("部分", "不完整", "暂未", "缺少", "无法"))
+            if not disclosed:
+                raise ValueError("部分证据缺失时必须明确披露信息不完整")
+        product_context = str(retrieval.get("product_context") or "")
+        review_context = str(retrieval.get("review_context") or "")
+        diagnostics = [str(item) for item in retrieval.get("diagnostics") or []]
+        products = retrieval.get("products") or []
+
+        if needs.get("needs_product") and not product_context:
+            if "暂未找到符合条件的商品" not in response:
+                raise ValueError("缺少商品证据时必须明确回答暂未找到符合条件的商品")
+        if product_context and "暂未找到符合条件的商品" in response:
+            raise ValueError("已检索到商品证据，不应声称暂未找到商品")
+
+        review_failed = (
+            not review_context
+            and any(
+                ("RAG" in item and ("失败" in item or "未返回" in item))
+                or ("评价" in item and ("失败" in item or "未返回" in item))
+                for item in diagnostics
+            )
+        )
+        if needs.get("needs_review") and review_failed:
+            disclosed = "评价" in response and any(
+                marker in response
+                for marker in ("不完整", "未找到", "暂未", "无法", "失败", "没有")
+            )
+            if not disclosed:
+                raise ValueError("评价检索失败时必须明确披露评价信息不完整")
+
+        known_names = [
+            str(product.get("name", "")).strip()
+            for product in products
+            if isinstance(product, dict) and str(product.get("name", "")).strip()
+        ]
+        if product_context and known_names and not any(
+            name in response for name in known_names
+        ):
+            raise ValueError("回答必须至少引用一个检索到的真实商品名称")
 
     async def _run_shopping_streaming(
         self,
@@ -616,38 +714,65 @@ class OrchestratorV2:
         )
 
     def _classify_data_needs(self, query: str, classification: 'ClassificationResult') -> dict:
-        """基于查询语义与分类结果推导数据需求，避免仅依赖关键词选择 RAG/SQL"""
+        """按事实需求选择 SQL/RAG，不把二者当成固定降级顺序。"""
         q = (query or '').lower()
-        review_signals = sum(1 for kw in ['评价', '口碑', '好不好', '差评', '好评', '吐槽', '怎么样', '耐用', '质量', '体验'] if kw in q)
-        attribute_signals = sum(1 for kw in ['价格', '多少钱', '元', '预算', '库存', '品牌', '类别', '分类', '排序', '防水'] if kw in q)
-        product_signals = sum(1 for kw in ['推荐', '找', '买', '搜', '商品', '哪款', '哪双', '哪个', '对比', '比较'] if kw in q)
+        review_signals = sum(1 for kw in [
+            '评价', '口碑', '好不好', '差评', '好评', '吐槽', '怎么样', '耐用',
+            '质量', '体验', '舒适', '缓震', '真实用户', '推荐理由',
+        ] if kw in q)
+        attribute_signals = sum(1 for kw in [
+            '价格', '多少钱', '元', '预算', '库存', '有货', '品牌', '类别', '分类',
+            '排序', '防水', '尺寸', '颜色', '规格', '低于', '高于', '以内', '以上',
+        ] if kw in q)
+        product_action_signals = sum(1 for kw in [
+            '推荐', '找', '买', '搜', '搜索', '商品', '哪款', '哪双', '哪个',
+            '对比', '比较', '选购', '筛选',
+        ] if kw in q)
 
-        needs_review = False
-        needs_product = False
-
-        if classification.intent in ('shopping', 'customer_service'):
-            needs_product = True
-            if classification.sub_intent in ('review', 'qa', 'service') or review_signals >= 1:
-                needs_review = True
-            if review_signals >= 2 and attribute_signals == 0 and product_signals == 0:
-                needs_review = True
+        if classification.intent == 'customer_service':
+            # 订单/客服应由专门 Repository 处理，不能误判成商品证据检索。
+            needs_product = False
+            needs_review = review_signals > 0
+        elif classification.intent in ('shopping',):
+            needs_product = attribute_signals > 0 or product_action_signals > 0
+            needs_review = review_signals > 0
+            # 纯评价/体验问题不需要商品 SQL；只有明确商品动作或结构化约束才查目录。
+            if review_signals and not attribute_signals and not product_action_signals:
+                # 纯体验/评价问题只依赖评价证据；不为了指代词强制查询商品表。
                 needs_product = False
         elif classification.intent == 'travel':
-            needs_review = True
             needs_product = False
+            needs_review = True
+        else:
+            needs_product = False
+            needs_review = False
 
-        strategy = classification.retrieval
-        if needs_review and needs_product:
+        if needs_product and needs_review:
             strategy = 'mixed'
-        elif needs_review:
-            strategy = 'rag_only'
         elif needs_product:
             strategy = 'sql_only'
+        elif needs_review:
+            strategy = 'rag_only'
+        else:
+            strategy = 'none'
 
+        facts = []
+        required_sources = []
+        if needs_product:
+            facts.extend(['product_catalog', 'product_constraints'])
+            required_sources.append('sql')
+        if needs_review:
+            facts.append('review_sentiment')
+            required_sources.append('rag')
         return {
             'needs_review': needs_review,
             'needs_product': needs_product,
-            'strategy': strategy
+            'strategy': strategy,
+            'facts': facts,
+            'required_sources': required_sources,
+            'optional_sources': [],
+            'allow_partial': True,
+            'source_policy': 'independent_not_fallback',
         }
 
     async def _emit_retrieval_plan(self, queue: 'EventQueue', strategy: str, needs: dict, source: str = 'policy'):
@@ -677,10 +802,15 @@ class OrchestratorV2:
         chain = general_prompt | self.llm
         full_response = ""
 
-        async for chunk in chain.astream({}):
-            if chunk.content:
-                full_response += chunk.content
-                await queue.emit_token(chunk.content, step="general")
+        with timed_span(
+            "model.general_generate",
+            trace_id=getattr(queue, "trace_id", ""),
+        ) as measurement:
+            async for chunk in chain.astream({}):
+                if chunk.content:
+                    full_response += chunk.content
+                    await queue.emit_token(chunk.content, step="general")
+                measurement.add_attributes(extract_model_usage(chunk))
 
         return full_response
 
@@ -700,7 +830,13 @@ class OrchestratorV2:
         }, step="react")
 
         async def on_event(event: str, data: Dict[str, Any]):
-            if event == "tool_call":
+            if event == "execution_log":
+                await queue.emit_execution_log({
+                    "event": event,
+                    "data": data,
+                    "step": data.get("step", "react"),
+                })
+            elif event == "tool_call":
                 await queue.emit_tool_call(
                     data.get("tool", ""),
                     data.get("args", {}),
@@ -733,19 +869,52 @@ class OrchestratorV2:
         query: str,
         strategy: str,
         queue: EventQueue,
-        needs: dict = None
+        needs: dict = None,
+        owner: Optional[str] = None,
     ) -> dict:
         """智能检索 - 统一委托 RetrievalService，编排层只处理事件和上下文。"""
-        retrieval = self.retrieval_service.retrieve(
+        experiment_logger = getattr(self, "_experiment_logger", None)
+        rerank_variant = None
+        if experiment_logger is not None and getattr(self, "_reranker", None) is not None:
+            rerank_variant = experiment_logger.assign_variant(owner or "anonymous", query)
+        retrieve_kwargs = {
+            "strategy": strategy,
+            "top_k": 5,
+            "needs": needs,
+            "owner": owner,
+            "concurrent": True,
+            "trace_id": getattr(queue, "trace_id", ""),
+        }
+        if rerank_variant is not None:
+            retrieve_kwargs["rerank_variant"] = rerank_variant
+        retrieval = await asyncio.to_thread(
+            self.retrieval_service.retrieve,
             query,
-            strategy=strategy,
-            top_k=5,
-            needs=needs,
+            **retrieve_kwargs,
         )
+        if experiment_logger is not None and rerank_variant is not None:
+            product_ids = [
+                str(item.get("id"))
+                for item in retrieval.get("products", [])
+                if isinstance(item, dict) and item.get("id") is not None
+            ]
+            document_ids = [
+                str(item.get("metadata", {}).get("document_id") or item.get("metadata", {}).get("id") or index)
+                for index, item in enumerate(retrieval.get("documents", []))
+            ]
+            experiment_logger.log_impression(
+                user_id=owner or "anonymous",
+                session_id=getattr(queue, "trace_id", "") or "session",
+                query=query,
+                variant=rerank_variant,
+                ranked_document_ids=product_ids + document_ids,
+                metadata={"strategy": strategy, "selected_sources": retrieval.get("selected_sources", [])},
+            )
 
-        if strategy in ("sql_only", "mixed"):
+        selected_sources = set(retrieval.get("selected_sources") or [])
+        if "sql" in selected_sources:
             await queue.emit_tool_call("nl2sql", retrieval.get("sql", ""), step="retrieval")
-        if strategy in ("rag_only", "mixed"):
+        if "rag" in selected_sources:
             await queue.emit_tool_call(
                 "rag",
                 f"返回 {len(retrieval.get('documents', []))} 条文档",
@@ -758,7 +927,8 @@ class OrchestratorV2:
             for product in retrieval["products"][:5]:
                 product_parts.append(
                     f"- {product.get('name', '')} | ¥{product.get('price', '')} | "
-                    f"{product.get('brand', '')} | {str(product.get('description', ''))[:50]}"
+                    f"{product.get('brand', '')} | 分类: {product.get('subcategory', '')} | "
+                    f"库存: {product.get('stock', '')} | {str(product.get('description', ''))[:50]}"
                 )
 
         review_parts = []
@@ -770,10 +940,21 @@ class OrchestratorV2:
         return {
             'product_context': '\n'.join(product_parts).strip(),
             'review_context': '\n'.join(review_parts).strip(),
+            'products': retrieval.get("products", [])[:5],
             'diagnostics': retrieval.get("diagnostics", []),
             'rag_ok': retrieval.get("rag_ok"),
             'rag_error': retrieval.get("rag_error"),
             'strategy': retrieval.get("strategy", strategy),
+            'effective_strategy': retrieval.get("effective_strategy", strategy),
+            'selected_sources': retrieval.get("selected_sources", []),
+            'source_status': retrieval.get("source_status", {}),
+            'source_errors': retrieval.get("source_errors", {}),
+            'source_timings_ms': retrieval.get("source_timings_ms", {}),
+            'source_timeout_seconds': retrieval.get("source_timeout_seconds"),
+            'evidence_coverage': retrieval.get("evidence_coverage"),
+            'missing_evidence': retrieval.get("missing_evidence", []),
+            'partial': retrieval.get("partial", False),
+            'unanswerable': retrieval.get("unanswerable", False),
             'needs': retrieval.get("needs", needs)
         }
 

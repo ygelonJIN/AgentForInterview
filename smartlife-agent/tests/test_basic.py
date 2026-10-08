@@ -13,10 +13,10 @@ def test_imports():
     """测试导入"""
     try:
         from app.router import TaskRouter, TaskRoute
-        from app.mcp_servers.base import BaseMCPServer
-        from app.mcp_servers.shopping_server import ShoppingMCPServer
-        from app.mcp_servers.travel_server import TravelMCPServer
-        from app.mcp_servers.memory_server import MemoryMCPServer
+        from app.tools.tool_bundle import ToolBundle
+        from app.tools.shopping_tools import ShoppingToolProvider
+        from app.tools.travel_tools import TravelToolProvider
+        from app.tools.memory_tools import MemoryToolProvider
         assert True
     except ImportError as e:
         pytest.fail(f"导入失败: {e}")
@@ -37,11 +37,11 @@ def test_task_route_model():
     assert route.complexity == "simple"
     assert route.estimated_steps == 1
 
-def test_shopping_mcp_server():
-    """测试Shopping MCP Server"""
-    from app.mcp_servers.shopping_server import ShoppingMCPServer
+def test_shopping_tool_provider():
+    """测试 ShoppingToolProvider"""
+    from app.tools.shopping_tools import ShoppingToolProvider
     
-    server = ShoppingMCPServer()
+    server = ShoppingToolProvider()
     tools = server.get_tools()
     
     assert len(tools) == 3
@@ -50,25 +50,24 @@ def test_shopping_mcp_server():
     assert "get_product_reviews" in tool_names
     assert "get_order_status" in tool_names
 
-def test_travel_mcp_server():
-    """测试Travel MCP Server"""
-    from app.mcp_servers.travel_server import TravelMCPServer
+def test_travel_tool_provider():
+    """测试 TravelToolProvider"""
+    from app.tools.travel_tools import TravelToolProvider
     
-    server = TravelMCPServer()
+    server = TravelToolProvider()
     tools = server.get_tools()
     
-    assert len(tools) == 4
+    assert len(tools) == 3
     tool_names = [tool.name for tool in tools]
     assert "search_destinations" in tool_names
     assert "get_local_activities" in tool_names
     assert "plan_itinerary" in tool_names
-    assert "search_hotels" in tool_names
 
-def test_memory_mcp_server():
-    """测试Memory MCP Server"""
-    from app.mcp_servers.memory_server import MemoryMCPServer
+def test_memory_tool_provider():
+    """测试 MemoryToolProvider"""
+    from app.tools.memory_tools import MemoryToolProvider
     
-    server = MemoryMCPServer()
+    server = MemoryToolProvider()
     tools = server.get_tools()
     
     assert len(tools) == 5

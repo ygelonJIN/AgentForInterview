@@ -7,7 +7,15 @@ __pycache__/
 
 # Local runtime configuration and credentials
 smartlife-agent/data/config.json
+smartlife-agent/data/config.secrets.json
 smartlife-agent/.env
 smartlife-agent/.env.*
 *.pem
 *.key
+smartlife-agent/data/conversations.db
+smartlife-agent/data/import_history.db
+smartlife-agent/data/imports/
+smartlife-agent/data/*.backup-*
+smartlife-agent/chroma_db.backup*/
+smartlife-agent/chroma_db.rebuild-*/
+smartlife-agent/data/evaluation/ab_events.db

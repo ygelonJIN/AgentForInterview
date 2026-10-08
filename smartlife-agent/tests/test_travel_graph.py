@@ -1,8 +1,10 @@
 """TravelPlanGraph 的步骤、执行、反思和修订闭环测试。"""
 
 import asyncio
+import re
 
 from app.agents.travel_graph import TravelPlanGraph
+from app.observability import get_trace_recorder
 
 
 class _Planner:
@@ -12,7 +14,10 @@ class _Planner:
     async def __call__(self, request, context, previous_plan=None, feedback=None, on_token=None):
         self.calls.append((request, previous_plan, feedback))
         suffix = "修订版" if previous_plan else "初版"
-        plan = f"{suffix}：\n第一天：西湖\n第二天：灵隐寺\n第三天：返程"
+        day_match = re.search(r"(\d+)\s*天", request)
+        days = int(day_match.group(1)) if day_match else 3
+        lines = [f"第{index + 1}天：行程{index + 1}" for index in range(days)]
+        plan = f"{suffix}：\n" + "\n".join(lines)
         if on_token:
             await on_token(plan, "plan" if previous_plan is None else "revise")
         return plan
@@ -126,3 +131,93 @@ def test_travel_graph_records_executor_failure_without_crashing():
     assert failed
     assert completed
     assert failed[0]["error"]
+
+
+def test_deterministic_day_mismatch_forces_revision_even_if_model_passes():
+    class _ThreeDayPlanner:
+        def __init__(self):
+            self.calls = 0
+
+        async def __call__(self, request, context, previous_plan=None, feedback=None, on_token=None):
+            self.calls += 1
+            return "第一天：A\n第二天：B\n第三天：C"
+
+    planner = _ThreeDayPlanner()
+    state = _run(
+        TravelPlanGraph(
+            planner=planner,
+            reflector=_Reflector([
+                {"is_satisfactory": True},
+                {"is_satisfactory": True},
+            ]),
+            executor=_Executor(),
+            max_revisions=1,
+        ),
+        "上海2天预算500元",
+    )
+
+    assert planner.calls == 2
+    assert state["status"] == "max_revisions_reached"
+    assert any("计划天数不一致" in issue for issue in state["reflection"]["issues"])
+
+
+def test_deterministic_budget_overrun_forces_revision():
+    class _OverBudgetPlanner:
+        async def __call__(self, request, context, previous_plan=None, feedback=None, on_token=None):
+            return "第一天：A\n第二天：B\n总费用：1200元"
+
+    state = _run(
+        TravelPlanGraph(
+            planner=_OverBudgetPlanner(),
+            reflector=_Reflector([
+                {"is_satisfactory": True},
+                {"is_satisfactory": True},
+            ]),
+            executor=_Executor(),
+            max_revisions=1,
+        ),
+        "上海2天预算800元",
+    )
+
+    assert state["status"] == "max_revisions_reached"
+    assert any("预算超支" in issue for issue in state["reflection"]["issues"])
+
+
+def test_invalid_reflection_format_does_not_silently_pass():
+    state = _run(
+        TravelPlanGraph(
+            planner=_Planner(),
+            reflector=_Reflector(["pass", "看起来没问题"]),
+            executor=_Executor(),
+            max_revisions=1,
+        ),
+        "上海2天预算500元",
+    )
+
+    assert state["status"] == "max_revisions_reached"
+    assert any(
+        "审核结果" in issue or "缺少有效字段" in issue
+        for issue in state["reflection"]["issues"]
+    )
+
+
+def test_travel_graph_records_model_and_execution_trace_spans():
+    recorder = get_trace_recorder()
+    recorder.clear()
+    graph = TravelPlanGraph(
+        planner=_Planner(),
+        reflector=_Reflector([{"is_satisfactory": True}]),
+        executor=_Executor(),
+    )
+
+    asyncio.run(graph.run_streaming(
+        "杭州3天预算1000元",
+        "user-1",
+        "",
+        thread_id="trace-travel",
+    ))
+
+    spans = recorder.summary()["spans"]
+    assert spans["model.travel_plan"]["count"] == 1
+    assert spans["travel.execute_steps"]["count"] == 1
+    assert spans["model.travel_reflect"]["count"] == 1

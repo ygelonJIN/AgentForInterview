@@ -1,10 +1,12 @@
 """
 社交协商状态机 - LangGraph
 """
+import asyncio
 from typing import Dict, List, Any, Optional, TypedDict
 from langgraph.graph import StateGraph, END, START
 from app.negotiation.preference import PreferenceAnalyzer, UserPreference
 from app.negotiation.conflict import ConflictResolver
+from app.reliability import NodePolicy, RetryPolicy
 
 
 class NegotiationState(TypedDict):
@@ -24,21 +26,38 @@ class NegotiationState(TypedDict):
 class NegotiationGraph:
     """社交协商图"""
 
-    def __init__(self, preference_analyzer=None, conflict_resolver=None):
+    def __init__(self, preference_analyzer=None, conflict_resolver=None, node_policies=None):
         self.preference_analyzer = preference_analyzer or PreferenceAnalyzer()
         self.conflict_resolver = conflict_resolver or ConflictResolver()
+        self.node_policies = node_policies or {
+            name: NodePolicy(timeout_seconds=30, retry_policy=RetryPolicy(max_attempts=1))
+            for name in (
+                "analyze_preferences", "find_common_ground", "identify_conflicts",
+                "resolve_conflicts", "generate_plan",
+            )
+        }
         self.graph = self._build_graph()
+
+    def _policy_node(self, name: str, node):
+        policy = self.node_policies[name]
+
+        async def run(state: NegotiationState):
+            async def operation(_attempt: int):
+                return await asyncio.to_thread(node, state)
+            return await policy.run(operation)
+
+        return run
 
     def _build_graph(self) -> StateGraph:
         """构建状态图"""
         graph = StateGraph(NegotiationState)
 
         # 添加节点
-        graph.add_node("analyze_preferences", self._analyze_preferences)
-        graph.add_node("find_common_ground", self._find_common_ground)
-        graph.add_node("identify_conflicts", self._identify_conflicts)
-        graph.add_node("resolve_conflicts", self._resolve_conflicts)
-        graph.add_node("generate_plan", self._generate_plan)
+        graph.add_node("analyze_preferences", self._policy_node("analyze_preferences", self._analyze_preferences))
+        graph.add_node("find_common_ground", self._policy_node("find_common_ground", self._find_common_ground))
+        graph.add_node("identify_conflicts", self._policy_node("identify_conflicts", self._identify_conflicts))
+        graph.add_node("resolve_conflicts", self._policy_node("resolve_conflicts", self._resolve_conflicts))
+        graph.add_node("generate_plan", self._policy_node("generate_plan", self._generate_plan))
 
         # 定义边
         graph.add_edge(START, "analyze_preferences")
@@ -178,8 +197,8 @@ class NegotiationGraph:
         participants: List[Dict[str, Any]],
         scenario: str = "travel",
     ) -> Dict[str, Any]:
-        """执行协商流程"""
-        return self.graph.invoke(self._initial_state(participants, scenario))
+        """同步兼容入口；内部与流式入口共享同一 LangGraph。"""
+        return asyncio.run(self.run_streaming(participants, scenario))
 
     async def run_streaming(
         self,
