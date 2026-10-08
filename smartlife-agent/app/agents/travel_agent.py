@@ -10,7 +10,7 @@ from functools import partial
 from typing import Dict, List, Any, Optional, AsyncGenerator
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
-from app.config import create_llm
+from app.config import create_llm, create_small_llm
 from app.memory.long_term import LongTermMemory
 from app.agents.travel_graph import TravelPlanGraph
 from app.observability import extract_model_usage, timed_span
@@ -34,6 +34,7 @@ class TravelAgent:
     def __init__(self, model_name: str = None):
         self.model_name = model_name
         self.llm = create_llm(model_name)
+        self.reflect_llm = create_small_llm(max_tokens=1200)
         self._memory = None
         self.travel_tool_executor = TravelToolExecutor()
 
@@ -242,7 +243,7 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
         llm=None,
         trace_id: str = "",
     ):
-        chain = self.reflect_prompt | (llm or self.llm)
+        chain = self.reflect_prompt | (llm or getattr(self, "reflect_llm", self.llm))
         with timed_span(
             "model.travel_reflect_usage",
             trace_id=trace_id,
@@ -272,7 +273,7 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
 
     async def _reflector_sync_adapter(self, request: str, plan: str):
         messages = self.reflect_prompt.format_messages(original_request=request, plan=plan)
-        return self.llm.invoke(messages).content
+        return getattr(self, "reflect_llm", self.llm).invoke(messages).content
 
     async def _execute_plan_step(self, step: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, Any]:
         """执行真实天气和路线工具。"""
@@ -377,6 +378,7 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
             context_parts.append(weather_context)
         context = "\n\n".join(part for part in context_parts if part.strip())
         request_llm = create_llm(getattr(self, "model_name", None))
+        reflect_llm = getattr(self, "reflect_llm", request_llm)
 
         async def on_token(token: str, stage: str):
             if queue:
@@ -438,7 +440,7 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
             ),
             reflector=partial(
                 self._reflector_streaming,
-                llm=request_llm,
+                llm=reflect_llm,
                 trace_id=f"travel:{user_id}:stream",
             ),
             executor=self._execute_plan_step,

@@ -11,14 +11,22 @@ class StreamResponseBuffer:
 
     def __init__(self):
         self._tokens: List[str] = []
+        self._section_tokens: Dict[str, List[str]] = {}
         self._done_response = ""
 
-    def append_token(self, token: str) -> None:
+    def append_token(self, token: str, section: str = "") -> None:
         if token:
-            self._tokens.append(token)
+            if section:
+                self._section_tokens.setdefault(section, []).append(token)
+            else:
+                self._tokens.append(token)
 
-    def reset(self) -> None:
-        self._tokens.clear()
+    def reset(self, section: str = "") -> None:
+        if section:
+            self._section_tokens.pop(section, None)
+        else:
+            self._tokens.clear()
+            self._section_tokens.clear()
 
     def set_done(self, response: str) -> None:
         self._done_response = response or ""
@@ -27,12 +35,27 @@ class StreamResponseBuffer:
         event_type = _event_type_value(event.get("event", ""))
         data = event.get("data") or {}
         if event_type == "token":
-            self.append_token(data.get("token", ""))
+            self.append_token(data.get("token", ""), str(data.get("section") or ""))
         elif event_type == "response_reset":
-            self.reset()
+            self.reset(str(data.get("section") or ""))
         elif event_type == "done":
             self.set_done(data.get("response", ""))
 
     @property
     def text(self) -> str:
-        return self._done_response or "".join(self._tokens)
+        if self._done_response:
+            return self._done_response
+        parts: List[str] = []
+        plain = "".join(self._tokens)
+        if plain:
+            parts.append(plain)
+        for section, title in (("shopping", "购物推荐"), ("travel", "旅行计划")):
+            body = "".join(self._section_tokens.get(section, []))
+            if body:
+                parts.append(f"【{title}】\n{body}")
+        for section, tokens in self._section_tokens.items():
+            if section not in {"shopping", "travel"}:
+                body = "".join(tokens)
+                if body:
+                    parts.append(body)
+        return "\n\n".join(parts)

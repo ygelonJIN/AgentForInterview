@@ -64,6 +64,9 @@ class EventQueue:
     def __init__(self, trace_id: Optional[str] = None):
         self._queue: asyncio.Queue[Optional[StreamEvent]] = asyncio.Queue()
         self._start_time = time.time()
+        self._start_monotonic = time.monotonic()
+        self._first_token_monotonic: Optional[float] = None
+        self._response_ready_monotonic: Optional[float] = None
         self.trace_id = trace_id or new_trace_id()
 
     async def emit(self, event_type: str, data: Dict[str, Any], step: str = ""):
@@ -83,13 +86,19 @@ class EventQueue:
             data["model"] = model
         await self.emit(EventType.THINKING, data, step)
 
-    async def emit_token(self, token: str, step: str = ""):
+    async def emit_token(self, token: str, step: str = "", section: str = ""):
         """推送流式 token"""
-        await self.emit(EventType.TOKEN, {"token": token}, step)
+        if self._first_token_monotonic is None:
+            self._first_token_monotonic = time.monotonic()
+        data = {"token": token}
+        if section:
+            data["section"] = section
+        await self.emit(EventType.TOKEN, data, step)
 
-    async def emit_response_reset(self, step: str = ""):
+    async def emit_response_reset(self, step: str = "", section: str = ""):
         """通知 UI 清空当前流式正文，后续 token 是替换版本。"""
-        await self.emit(EventType.RESPONSE_RESET, {}, step)
+        data = {"section": section} if section else {}
+        await self.emit(EventType.RESPONSE_RESET, data, step)
 
     async def emit_tool_call(self, tool_name: str, tool_input: Any = None, step: str = ""):
         """推送工具调用"""
@@ -119,11 +128,44 @@ class EventQueue:
         await self.emit(EventType.ERROR, {"message": message}, step)
 
     async def emit_done(self, extra: Dict[str, Any] = None):
-        """推送完成"""
-        data = {"total_time": f"{time.time() - self._start_time:.1f}s"}
+        """推送用户可见回答完成事件，并附带可比较的阶段耗时。"""
+        self._response_ready_monotonic = time.monotonic()
+        timing = self.timing_metrics()
+        data = {
+            "total_time": f"{timing['response_ready_ms'] / 1000:.1f}s",
+            "timing_ms": timing,
+        }
         if extra:
             data.update(extra)
         await self.emit(EventType.DONE, data)
+
+    def timing_metrics(self) -> Dict[str, Any]:
+        """返回基于 monotonic clock 的当前链路耗时。
+
+        ``response_ready_ms`` 表示用户已经拿到完整回答；``pipeline_ms``
+        继续包含回答之后的记忆提取等后处理，避免把两种体验混为一个延迟。
+        """
+        now = time.monotonic()
+        response_ready = self._response_ready_monotonic
+        first_token = self._first_token_monotonic
+        return {
+            "pipeline_ms": round((now - self._start_monotonic) * 1000, 3),
+            "time_to_first_token_ms": (
+                round((first_token - self._start_monotonic) * 1000, 3)
+                if first_token is not None
+                else None
+            ),
+            "response_ready_ms": (
+                round((response_ready - self._start_monotonic) * 1000, 3)
+                if response_ready is not None
+                else None
+            ),
+            "post_response_ms": (
+                round((now - response_ready) * 1000, 3)
+                if response_ready is not None
+                else None
+            ),
+        }
 
     async def finish(self):
         """标记队列结束"""

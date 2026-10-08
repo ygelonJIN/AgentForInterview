@@ -90,7 +90,11 @@ def test_travel_graph_logs_branch_revision_and_step_iterations():
             "tool_calls": [{
                 "tool": "get_weather",
                 "ok": True,
-                "result": {"cache_status": "stale_fallback", "stale": True},
+                "result": {
+                    "cache_status": "stale_fallback",
+                    "stale": True,
+                    "error": "ProviderUnavailable: route timeout",
+                },
             }],
         }
 
@@ -130,6 +134,8 @@ def test_travel_graph_logs_branch_revision_and_step_iterations():
     fallback_logs = [item for item in logs if item["kind"] == "tool_fallback"]
     assert fallback_logs
     assert fallback_logs[0]["details"]["cache_status"] == "stale_fallback"
+    assert fallback_logs[0]["details"]["error"] == "ProviderUnavailable: route timeout"
+    assert "ProviderUnavailable: route timeout" in fallback_logs[0]["message"]
 
 
 def test_execution_log_redacts_sensitive_details():
@@ -181,6 +187,49 @@ def test_streamlit_assistant_message_displays_execution_log_panel():
     assert "执行日志" in rendered
     assert "显示日志测试" in rendered
     assert "shopping:generate" in rendered
+
+
+def test_streamlit_assistant_message_displays_response_and_pipeline_timing():
+    app = AppTest.from_file(
+        Path(__file__).parents[1] / "app" / "main.py",
+        default_timeout=20,
+    ).run()
+    app.session_state["assistant_msgs"] = [{
+        "role": "assistant",
+        "response": "测试正文",
+        "process_events": [
+            {
+                "event": "done",
+                "data": {
+                    "response": "测试正文",
+                    "timing_ms": {
+                        "time_to_first_token_ms": 120.0,
+                        "response_ready_ms": 850.0,
+                        "pipeline_ms": 850.0,
+                    },
+                },
+            },
+            {
+                "event": "memory_extraction",
+                "data": {
+                    "status": "no_content",
+                    "timing_ms": {
+                        "pipeline_ms": 1234.0,
+                        "post_response_ms": 384.0,
+                    },
+                },
+            },
+        ],
+    }]
+    app.run()
+
+    rendered = "\n".join(item.value for item in app.markdown)
+    assert not app.exception
+    assert "链路耗时" in rendered
+    assert "首 Token 120.0ms" in rendered
+    assert "回答完成 850.0ms" in rendered
+    assert "回答后处理 384.0ms" in rendered
+    assert "完整链路 1234.0ms" in rendered
 
 
 def test_shopping_graph_logs_retrieval_degradation_and_single_repair():

@@ -18,7 +18,7 @@ from typing import Any, Dict, Mapping
 
 from app.evaluation.e2e_benchmark import BenchmarkRunner, parse_workload_jsonl, write_report
 from app.observability import get_trace_recorder
-from app.tools.providers import get_provider_health
+from app.tools.providers import get_provider_status
 
 
 def _event_payloads(sse: str):
@@ -43,10 +43,41 @@ async def _run_chat_turn(orchestrator, workload: Mapping[str, Any]) -> Dict[str,
         events.extend(_event_payloads(line))
     errors = [event for event in events if event.get("event") == "error"]
     done = [event for event in events if event.get("event") == "done"]
+    memory_events = [
+        event for event in events if event.get("event") == "memory_extraction"
+    ]
+    node_durations_ms: Dict[str, list[float]] = {}
+    for event in events:
+        if event.get("event") != "execution_log":
+            continue
+        data = event.get("data") or {}
+        if data.get("kind") not in {"node_succeeded", "node_failed"}:
+            continue
+        duration = data.get("duration_ms")
+        if not isinstance(duration, (int, float)):
+            continue
+        node = f"{data.get('graph', '')}:{data.get('node', '')}"
+        node_durations_ms.setdefault(node, []).append(float(duration))
+
+    done_data = (done[-1].get("data") or {}) if done else {}
+    memory_data = (memory_events[-1].get("data") or {}) if memory_events else {}
+    timing_ms = dict(done_data.get("timing_ms") or {})
+    pipeline_timing_ms = dict(memory_data.get("timing_ms") or {})
+    if pipeline_timing_ms:
+        timing_ms.update({
+            "pipeline_complete_ms": pipeline_timing_ms.get("pipeline_ms"),
+            "post_response_ms": pipeline_timing_ms.get("post_response_ms"),
+        })
     return {
         "ok": bool(done) and not errors,
         "error": errors[-1].get("data", {}).get("message", "") if errors else "",
-        "metadata": {"event_count": len(events), "done_count": len(done)},
+        "metadata": {
+            "event_count": len(events),
+            "done_count": len(done),
+            "memory_extraction_count": len(memory_events),
+            "timing_ms": timing_ms,
+            "node_durations_ms": node_durations_ms,
+        },
     }
 
 
@@ -98,7 +129,7 @@ async def run(args) -> Dict[str, Any]:
             "python": sys.version.split()[0],
             "platform": platform.platform(),
         },
-        "provider_health": get_provider_health(),
+        "provider_health": get_provider_status(),
         "trace_summary": trace_summary,
         "baseline_requirements": {
             "production_workload": all(

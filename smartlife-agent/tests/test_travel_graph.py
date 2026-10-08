@@ -183,6 +183,60 @@ def test_deterministic_budget_overrun_forces_revision():
     assert any("预算超支" in issue for issue in state["reflection"]["issues"])
 
 
+def test_deterministic_hard_error_skips_llm_reflection():
+    class _CountingReflector:
+        def __init__(self):
+            self.calls = 0
+
+        async def __call__(self, request, plan):
+            self.calls += 1
+            return {"is_satisfactory": True}
+
+    class _OverBudgetPlanner:
+        async def __call__(self, request, context, previous_plan=None, feedback=None, on_token=None):
+            return "第一天：A\n总费用：1200元"
+
+    reflector = _CountingReflector()
+    state = _run(
+        TravelPlanGraph(
+            planner=_OverBudgetPlanner(),
+            reflector=reflector,
+            executor=_Executor(),
+            max_revisions=0,
+        ),
+        "上海2天预算800元",
+    )
+
+    assert reflector.calls == 0
+    assert state["reflection"]["source"] == "deterministic"
+    assert any("预算超支" in issue for issue in state["reflection"]["issues"])
+
+
+def test_single_clean_step_skips_llm_reflection():
+    class _CountingReflector:
+        def __init__(self):
+            self.calls = 0
+
+        async def __call__(self, request, plan):
+            self.calls += 1
+            return {"is_satisfactory": True}
+
+    reflector = _CountingReflector()
+    state = _run(
+        TravelPlanGraph(
+            planner=_Planner(),
+            reflector=reflector,
+            executor=_Executor(),
+            max_revisions=1,
+        ),
+        "上海1天预算500元",
+    )
+
+    assert reflector.calls == 0
+    assert state["reflection"]["source"] == "deterministic_fast_path"
+    assert state["status"] == "approved"
+
+
 def test_invalid_reflection_format_does_not_silently_pass():
     state = _run(
         TravelPlanGraph(

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -122,9 +123,7 @@ def test_graph_routes_each_intent_to_its_scene_node():
 
         events = _events(_collect(wrapper))
 
-        assert [event["event"] for event in _business_events(events)] == [
-            "step", "done", "memory_extraction"
-        ]
+        assert [event["event"] for event in _business_events(events)] == ["step", "done"]
         assert legacy.scene_calls[0][0] == expected
         branches = [
             event["data"]["branch"]
@@ -161,6 +160,101 @@ def test_graph_runs_both_shopping_and_travel_for_explicit_composite_intent():
     done = next(event for event in events if event["event"] == "done")
     assert "【购物推荐】" in done["data"]["response"]
     assert "【旅行计划】" in done["data"]["response"]
+
+
+def test_graph_runs_composite_scenes_in_parallel():
+    both_started = asyncio.Event()
+    started = set()
+
+    class ParallelLegacy(_FakeLegacy):
+        async def _scene(self, name, user_message, user_id, thread_id, classification, queue):
+            self.scene_calls.append((name, user_message, user_id, thread_id))
+            started.add(name)
+            if len(started) == 2:
+                both_started.set()
+            await asyncio.wait_for(both_started.wait(), timeout=0.2)
+            return f"{name}-ok"
+
+    legacy = ParallelLegacy(intent="travel", route="plan_and_execute", intents=["shopping", "travel"])
+    wrapper = LangGraphOrchestrator(legacy)
+
+    events = _events(_collect(
+        wrapper,
+        message="给我推荐一双800元的跑鞋，再给我一份杭州玩两天的计划",
+    ))
+
+    assert started == {"shopping", "travel"}
+    done = next(event for event in events if event["event"] == "done")
+    assert "【购物推荐】" in done["data"]["response"]
+    assert "【旅行计划】" in done["data"]["response"]
+
+
+def test_composite_sections_stream_before_done():
+    class StreamingLegacy(_FakeLegacy):
+        async def run_shopping_turn(self, *args):
+            queue = args[-1]
+            await queue.emit_token("真实跑鞋", step="generate")
+            return "真实跑鞋"
+
+        async def run_travel_turn(self, *args):
+            queue = args[-1]
+            await queue.emit_token("杭州两日游", step="plan")
+            return "杭州两日游"
+
+    legacy = StreamingLegacy(
+        intent="travel",
+        route="plan_and_execute",
+        intents=["shopping", "travel"],
+    )
+    wrapper = LangGraphOrchestrator(legacy)
+
+    events = _events(_collect(
+        wrapper,
+        message="推荐跑鞋并规划杭州两日游",
+    ))
+    event_types = [event["event"] for event in events]
+    tokens = [event for event in events if event["event"] == "token"]
+
+    assert event_types.index("token") < event_types.index("done")
+    assert {(token["data"]["token"], token["data"]["section"]) for token in tokens} == {
+        ("真实跑鞋", "shopping"),
+        ("杭州两日游", "travel"),
+    }
+
+
+def test_memory_extraction_runs_after_response_without_blocking_stream():
+    started = threading.Event()
+    release = threading.Event()
+
+    class BackgroundMemoryLegacy(_FakeLegacy):
+        def extract_candidate_memories_result(
+            self, user_id, session_id, scene, excluded_contents=None
+        ):
+            started.set()
+            release.wait(1)
+            return SimpleNamespace(
+                as_dict=lambda: {
+                    "candidates": [{"content": "喜欢跑步", "category": "shopping"}],
+                    "diagnostic": "",
+                    "status": "ok",
+                    "has_error": False,
+                    "should_display": True,
+                }
+            )
+
+    legacy = BackgroundMemoryLegacy()
+    wrapper = LangGraphOrchestrator(legacy)
+
+    events = _events(_collect(wrapper))
+
+    assert _business_events(events)[-1]["event"] == "done"
+    assert wrapper.is_memory_extraction_pending("user-1", "browser-1", "shopping")
+    assert started.wait(0.5)
+    release.set()
+    result = wrapper.wait_for_memory_extraction(
+        "user-1", "browser-1", "shopping", timeout=1
+    )
+    assert result["candidates"][0]["content"] == "喜欢跑步"
 
 
 def test_graph_state_does_not_store_runtime_event_queue():
@@ -232,7 +326,7 @@ def test_graph_node_policy_retries_transient_classification_failures():
     events = _events(_collect(wrapper))
 
     assert legacy.calls == 2
-    assert _business_events(events)[-1]["event"] in {"done", "memory_extraction"}
+    assert _business_events(events)[-1]["event"] == "done"
     retry_logs = [
         event["data"] for event in events
         if event["event"] == "execution_log"

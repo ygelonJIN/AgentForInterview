@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional
@@ -51,6 +52,11 @@ class TravelToolExecutor:
         tool_name: str,
     ) -> Dict[str, Any]:
         """只接受真实 provider 结果；失败结果不进入计划证据。"""
+        started = time.perf_counter()
+
+        def elapsed_ms() -> float:
+            return round((time.perf_counter() - started) * 1000, 3)
+
         try:
             result = await cls._invoke(tool, payload)
         except Exception as exc:
@@ -58,6 +64,7 @@ class TravelToolExecutor:
                 "ok": False,
                 "accepted": False,
                 "error": f"{tool_name} 不可用: {type(exc).__name__}: {str(exc)[:200]}",
+                "duration_ms": elapsed_ms(),
             }
         if result.get("simulated") or result.get("stale"):
             return {
@@ -65,10 +72,11 @@ class TravelToolExecutor:
                 "ok": False,
                 "accepted": False,
                 "error": f"{tool_name} 未返回可验证的当前真实数据",
+                "duration_ms": elapsed_ms(),
             }
         if result.get("error"):
-            return {**result, "ok": False, "accepted": False}
-        return {**result, "ok": True, "accepted": True}
+            return {**result, "ok": False, "accepted": False, "duration_ms": elapsed_ms()}
+        return {**result, "ok": True, "accepted": True, "duration_ms": elapsed_ms()}
 
     async def get_weather_evidence(
         self,
@@ -131,11 +139,27 @@ class TravelToolExecutor:
         simulated = False
         summaries: List[str] = []
 
-        weather = await self._invoke_real(
+        route_pair = self._route_pair(text)
+        weather_task = asyncio.create_task(self._invoke_real(
             self.weather_tool,
             {"city": destination, "date": travel_date.isoformat()},
             "get_weather",
+        ))
+        route_task = (
+            asyncio.create_task(self._invoke_real(
+                self.route_tool,
+                {
+                    "origin": route_pair[0],
+                    "destination": route_pair[1],
+                    "mode": "driving",
+                    "city": destination,
+                },
+                "get_route",
+            ))
+            if route_pair
+            else None
         )
+        weather = await weather_task
         tool_calls.append({
             "tool": "get_weather",
             "ok": bool(weather.get("accepted")),
@@ -151,18 +175,8 @@ class TravelToolExecutor:
         else:
             warnings.append(str(weather.get("error") or "天气数据不可用"))
 
-        route_pair = self._route_pair(text)
-        if route_pair:
-            route = await self._invoke_real(
-                self.route_tool,
-                {
-                    "origin": route_pair[0],
-                    "destination": route_pair[1],
-                    "mode": "driving",
-                    "city": destination,
-                },
-                "get_route",
-            )
+        if route_task is not None and route_pair:
+            route = await route_task
             tool_calls.append({
                 "tool": "get_route",
                 "ok": bool(route.get("accepted")),

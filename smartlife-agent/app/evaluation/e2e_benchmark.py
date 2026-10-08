@@ -33,6 +33,7 @@ class BenchmarkReport:
     throughput_per_second: float
     latency_ms: Dict[str, float]
     samples: List[BenchmarkSample]
+    metric_latency_ms: Dict[str, Dict[str, float]] = field(default_factory=dict)
 
     def to_dict(self, *, include_samples: bool = True) -> Dict[str, Any]:
         payload = asdict(self)
@@ -47,6 +48,42 @@ def percentile(values: Sequence[float], value: float) -> float:
     ordered = sorted(values)
     index = max(0, math.ceil((value / 100) * len(ordered)) - 1)
     return ordered[index]
+
+
+def _metric_summary(values: Sequence[float]) -> Dict[str, float]:
+    if not values:
+        return {}
+    return {
+        "count": len(values),
+        "avg_ms": sum(values) / len(values),
+        "min_ms": min(values),
+        "p50_ms": percentile(values, 50),
+        "p95_ms": percentile(values, 95),
+        "p99_ms": percentile(values, 99),
+        "max_ms": max(values),
+    }
+
+
+def _collect_metric_summaries(
+    samples: Sequence[BenchmarkSample],
+) -> Dict[str, Dict[str, float]]:
+    """聚合每轮 timing 和节点耗时，保留比单一总延迟更细的性能证据。"""
+    values: Dict[str, List[float]] = {}
+    for sample in samples:
+        timing = sample.metadata.get("timing_ms") or {}
+        for name, value in timing.items():
+            if isinstance(value, (int, float)):
+                values.setdefault(f"timing.{name}", []).append(float(value))
+        node_durations = sample.metadata.get("node_durations_ms") or {}
+        for node, value in node_durations.items():
+            items = value if isinstance(value, (list, tuple)) else [value]
+            for item in items:
+                if isinstance(item, (int, float)):
+                    values.setdefault(f"node.{node}", []).append(float(item))
+    return {
+        name: _metric_summary(metric_values)
+        for name, metric_values in sorted(values.items())
+    }
 
 
 def parse_workload_jsonl(path: Path) -> List[Dict[str, Any]]:
@@ -120,6 +157,7 @@ class BenchmarkRunner:
         total_duration_ms = (time.perf_counter() - started) * 1000
         latencies = [sample.latency_ms for sample in samples]
         success_count = sum(1 for sample in samples if sample.ok)
+        metric_latency_ms = _collect_metric_summaries(samples)
         return BenchmarkReport(
             count=len(samples),
             success_count=success_count,
@@ -137,7 +175,8 @@ class BenchmarkRunner:
                 "p99_ms": percentile(latencies, 99),
                 "max_ms": max(latencies),
             },
-                samples=samples,
+            samples=samples,
+            metric_latency_ms=metric_latency_ms,
         )
 
 

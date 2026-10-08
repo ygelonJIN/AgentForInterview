@@ -1,0 +1,338 @@
+{
+  "count": 4,
+  "success_count": 0,
+  "error_count": 4,
+  "success_rate": 0.0,
+  "total_duration_ms": 1486.8777920019056,
+  "throughput_per_second": 2.690200917329239,
+  "latency_ms": {
+    "avg_ms": 1381.719000249177,
+    "min_ms": 1322.8700420004316,
+    "p50_ms": 1349.5382920009433,
+    "p95_ms": 1486.6836249966582,
+    "p99_ms": 1486.6836249966582,
+    "max_ms": 1486.6836249966582
+  },
+  "samples": [
+    {
+      "workload_id": "shopping-price-1",
+      "latency_ms": 1349.5382920009433,
+      "ok": false,
+      "error": "处理失败: OpenAIConnectionError: Connection error.",
+      "metadata": {
+        "event_count": 35,
+        "done_count": 0,
+        "memory_extraction_count": 0,
+        "timing_ms": {},
+        "node_durations_ms": {
+          "langgraph:prepare": [
+            2.489
+          ],
+          "langgraph:classify": [
+            0.248
+          ],
+          "shopping:plan_retrieval": [
+            0.088
+          ],
+          "shopping:retrieve": [
+            30.075
+          ],
+          "shopping:generate": [
+            1290.559
+          ],
+          "langgraph:shopping": [
+            1330.539
+          ]
+        }
+      }
+    },
+    {
+      "workload_id": "shopping-review-1",
+      "latency_ms": 1367.784041998675,
+      "ok": false,
+      "error": "处理失败: OpenAIConnectionError: Connection error.",
+      "metadata": {
+        "event_count": 35,
+        "done_count": 0,
+        "memory_extraction_count": 0,
+        "timing_ms": {},
+        "node_durations_ms": {
+          "langgraph:prepare": [
+            1.668
+          ],
+          "langgraph:classify": [
+            0.076
+          ],
+          "shopping:plan_retrieval": [
+            0.05
+          ],
+          "shopping:retrieve": [
+            14.588
+          ],
+          "shopping:generate": [
+            1313.861
+          ],
+          "langgraph:shopping": [
+            1346.87
+          ]
+        }
+      }
+    },
+    {
+      "workload_id": "shopping-mixed-1",
+      "latency_ms": 1322.8700420004316,
+      "ok": false,
+      "error": "处理失败: OpenAIConnectionError: Connection error.",
+      "metadata": {
+        "event_count": 36,
+        "done_count": 0,
+        "memory_extraction_count": 0,
+        "timing_ms": {},
+        "node_durations_ms": {
+          "langgraph:prepare": [
+            1.341
+          ],
+          "langgraph:classify": [
+            0.056
+          ],
+          "shopping:plan_retrieval": [
+            0.045
+          ],
+          "shopping:retrieve": [
+            14.145
+          ],
+          "shopping:generate": [
+            1262.946
+          ],
+          "langgraph:shopping": [
+            1301.513
+          ]
+        }
+      }
+    },
+    {
+      "workload_id": "general-1",
+      "latency_ms": 1486.6836249966582,
+      "ok": false,
+      "error": "处理失败: OpenAIConnectionError: Connection error.",
+      "metadata": {
+        "event_count": 23,
+        "done_count": 0,
+        "memory_extraction_count": 0,
+        "timing_ms": {},
+        "node_durations_ms": {
+          "langgraph:prepare": [
+            1.548
+          ],
+          "langgraph:classify": [
+            61.801
+          ],
+          "react:agent": [
+            1399.846
+          ],
+          "langgraph:react": [
+            1410.23
+          ]
+        }
+      }
+    }
+  ],
+  "metric_latency_ms": {
+    "node.langgraph:classify": {
+      "count": 4,
+      "avg_ms": 15.545250000000001,
+      "min_ms": 0.056,
+      "p50_ms": 0.076,
+      "p95_ms": 61.801,
+      "p99_ms": 61.801,
+      "max_ms": 61.801
+    },
+    "node.langgraph:prepare": {
+      "count": 4,
+      "avg_ms": 1.7614999999999998,
+      "min_ms": 1.341,
+      "p50_ms": 1.548,
+      "p95_ms": 2.489,
+      "p99_ms": 2.489,
+      "max_ms": 2.489
+    },
+    "node.langgraph:react": {
+      "count": 1,
+      "avg_ms": 1410.23,
+      "min_ms": 1410.23,
+      "p50_ms": 1410.23,
+      "p95_ms": 1410.23,
+      "p99_ms": 1410.23,
+      "max_ms": 1410.23
+    },
+    "node.langgraph:shopping": {
+      "count": 3,
+      "avg_ms": 1326.3073333333332,
+      "min_ms": 1301.513,
+      "p50_ms": 1330.539,
+      "p95_ms": 1346.87,
+      "p99_ms": 1346.87,
+      "max_ms": 1346.87
+    },
+    "node.react:agent": {
+      "count": 1,
+      "avg_ms": 1399.846,
+      "min_ms": 1399.846,
+      "p50_ms": 1399.846,
+      "p95_ms": 1399.846,
+      "p99_ms": 1399.846,
+      "max_ms": 1399.846
+    },
+    "node.shopping:generate": {
+      "count": 3,
+      "avg_ms": 1289.122,
+      "min_ms": 1262.946,
+      "p50_ms": 1290.559,
+      "p95_ms": 1313.861,
+      "p99_ms": 1313.861,
+      "max_ms": 1313.861
+    },
+    "node.shopping:plan_retrieval": {
+      "count": 3,
+      "avg_ms": 0.061,
+      "min_ms": 0.045,
+      "p50_ms": 0.05,
+      "p95_ms": 0.088,
+      "p99_ms": 0.088,
+      "max_ms": 0.088
+    },
+    "node.shopping:retrieve": {
+      "count": 3,
+      "avg_ms": 19.602666666666668,
+      "min_ms": 14.145,
+      "p50_ms": 14.588,
+      "p95_ms": 30.075,
+      "p99_ms": 30.075,
+      "max_ms": 30.075
+    }
+  },
+  "mode": "chat",
+  "concurrency": 4,
+  "workload": "data/evaluation/e2e.workload.example.jsonl",
+  "runtime": {
+    "python": "3.12.15",
+    "platform": "macOS-27.0-arm64-arm-64bit"
+  },
+  "provider_health": {
+    "weather": true,
+    "route": true
+  },
+  "trace_summary": {
+    "count": 20,
+    "errors": 13,
+    "spans": {
+      "classify.turn": {
+        "count": 4,
+        "avg_ms": 15.46,
+        "max_ms": 61.717,
+        "p50_ms": 0.019,
+        "p95_ms": 61.717,
+        "p99_ms": 61.717,
+        "prompt_tokens": 0.0,
+        "completion_tokens": 0.0,
+        "total_tokens": 0.0,
+        "cached_prompt_tokens": 0,
+        "uncached_prompt_tokens": 0
+      },
+      "graph.turn": {
+        "count": 4,
+        "avg_ms": 1380.434,
+        "max_ms": 1484.669,
+        "p50_ms": 1349.33,
+        "p95_ms": 1484.669,
+        "p99_ms": 1484.669,
+        "prompt_tokens": 0.0,
+        "completion_tokens": 0.0,
+        "total_tokens": 0.0,
+        "cached_prompt_tokens": 0,
+        "uncached_prompt_tokens": 0
+      },
+      "model.classify_small": {
+        "count": 1,
+        "avg_ms": 49.732,
+        "max_ms": 49.732,
+        "p50_ms": 49.732,
+        "p95_ms": 49.732,
+        "p99_ms": 49.732,
+        "prompt_tokens": 0.0,
+        "completion_tokens": 0.0,
+        "total_tokens": 0.0,
+        "cached_prompt_tokens": 0,
+        "uncached_prompt_tokens": 0
+      },
+      "model.react_agent": {
+        "count": 1,
+        "avg_ms": 1399.655,
+        "max_ms": 1399.655,
+        "p50_ms": 1399.655,
+        "p95_ms": 1399.655,
+        "p99_ms": 1399.655,
+        "prompt_tokens": 0.0,
+        "completion_tokens": 0.0,
+        "total_tokens": 0.0,
+        "cached_prompt_tokens": 0,
+        "uncached_prompt_tokens": 0
+      },
+      "model.shopping_generate": {
+        "count": 3,
+        "avg_ms": 1286.942,
+        "max_ms": 1308.946,
+        "p50_ms": 1289.617,
+        "p95_ms": 1308.946,
+        "p99_ms": 1308.946,
+        "prompt_tokens": 0.0,
+        "completion_tokens": 0.0,
+        "total_tokens": 0.0,
+        "cached_prompt_tokens": 0,
+        "uncached_prompt_tokens": 0
+      },
+      "retrieval.rag": {
+        "count": 2,
+        "avg_ms": 2.827,
+        "max_ms": 3.021,
+        "p50_ms": 2.632,
+        "p95_ms": 3.021,
+        "p99_ms": 3.021,
+        "prompt_tokens": 0.0,
+        "completion_tokens": 0.0,
+        "total_tokens": 0.0,
+        "cached_prompt_tokens": 0,
+        "uncached_prompt_tokens": 0
+      },
+      "retrieval.sql": {
+        "count": 2,
+        "avg_ms": 8.395,
+        "max_ms": 8.739,
+        "p50_ms": 8.051,
+        "p95_ms": 8.739,
+        "p99_ms": 8.739,
+        "prompt_tokens": 0.0,
+        "completion_tokens": 0.0,
+        "total_tokens": 0.0,
+        "cached_prompt_tokens": 0,
+        "uncached_prompt_tokens": 0
+      },
+      "retrieval.total": {
+        "count": 3,
+        "avg_ms": 7.822,
+        "max_ms": 9.18,
+        "p50_ms": 8.322,
+        "p95_ms": 9.18,
+        "p99_ms": 9.18,
+        "prompt_tokens": 0.0,
+        "completion_tokens": 0.0,
+        "total_tokens": 0.0,
+        "cached_prompt_tokens": 0,
+        "uncached_prompt_tokens": 0
+      }
+    }
+  },
+  "baseline_requirements": {
+    "production_workload": false
+  }
+}

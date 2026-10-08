@@ -209,7 +209,10 @@ venv312/bin/python scripts/run_e2e_benchmark.py \
   --output data/evaluation/e2e.baseline.json
 ```
 
-报告会包含 P50/P95/P99、吞吐、成功率、Token、Provider 熔断/缓存状态和 Trace 汇总。
+报告会包含 P50/P95/P99、吞吐、成功率、Token、Provider 状态和 Trace 汇总。
+`samples[].metadata.timing_ms` 区分首 Token、回答完成、回答后处理和完整链路耗时；
+`metric_latency_ms` 按 `timing.*` 与 `node.<graph>:<node>` 聚合每一步的
+P50/P95/P99，便于定位慢在检索、生成、校验还是后处理。
 
 ### 4. 启动真实 MCP Server
 

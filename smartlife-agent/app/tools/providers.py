@@ -6,13 +6,15 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import requests
 
@@ -34,6 +36,7 @@ class ProviderResponse:
 
 _CIRCUIT_BREAKERS: Dict[str, CircuitBreaker] = {}
 _RESPONSE_CACHES: Dict[str, TTLCache[Dict[str, Any]]] = {}
+_GEOCODE_CACHE: TTLCache[Dict[str, Any]] = TTLCache(max_entries=256, ttl_seconds=24 * 60 * 60)
 
 
 def _epoch_from_monotonic(created_at: float) -> float:
@@ -72,14 +75,17 @@ def _breaker(name: str, url: str) -> CircuitBreaker:
 
 
 def reset_provider_runtime_state() -> None:
+    global _GEOCODE_CACHE
     _CIRCUIT_BREAKERS.clear()
     _RESPONSE_CACHES.clear()
+    _GEOCODE_CACHE = TTLCache(max_entries=256, ttl_seconds=24 * 60 * 60)
 
 
 def get_provider_diagnostics() -> Dict[str, Any]:
     return {
         "breakers": [breaker.snapshot() for breaker in _CIRCUIT_BREAKERS.values()],
         "caches": {key: cache.stats() for key, cache in _RESPONSE_CACHES.items()},
+        "geocode_cache": _GEOCODE_CACHE.stats(),
     }
 
 
@@ -199,29 +205,53 @@ def _request_json(
     raise RuntimeError(f"外部服务重试后仍失败: {last_error}") from last_error
 
 
+def _geocode_candidates(query: str) -> List[str]:
+    normalized = " ".join(str(query).replace("，", ",").split())
+    candidates = [normalized, normalized.replace(",", " ")]
+    if "," in normalized:
+        place, _, city = normalized.partition(",")
+        place = place.strip()
+        city = city.strip()
+        if place and city:
+            candidates.extend((f"{city}{place}", f"{place} {city}"))
+    return list(dict.fromkeys(item for item in candidates if item.strip()))
+
+
 def _geocode(query: str) -> Dict[str, Any]:
+    cache_key = " ".join(str(query).split()).casefold()
+    cached = _GEOCODE_CACHE.get(cache_key)
+    if cached is not None:
+        return copy.deepcopy(cached.value)
+
     results: list[Dict[str, Any]] = []
-    try:
-        payload = _request_json(
-            OPEN_METEO_GEOCODING_URL,
-            {"name": query, "count": 1, "language": "zh", "format": "json"},
-            attempts=2,
-        )
-        results = payload.get("results") or []
-    except Exception:
-        results = []
-    if not results:
-        payload = _request_json(
-            NOMINATIM_GEOCODING_URL,
-            {
-                "q": query,
-                "countrycodes": "cn",
-                "format": "jsonv2",
-                "limit": 1,
-            },
-            attempts=2,
-        )
-        results = payload.get("results") or payload or []
+    for candidate in _geocode_candidates(query):
+        try:
+            payload = _request_json(
+                OPEN_METEO_GEOCODING_URL,
+                {"name": candidate, "count": 1, "language": "zh", "format": "json"},
+                attempts=1,
+            )
+            results = payload.get("results") or []
+        except Exception:
+            results = []
+        if results:
+            break
+        try:
+            payload = _request_json(
+                NOMINATIM_GEOCODING_URL,
+                {
+                    "q": candidate,
+                    "countrycodes": "cn",
+                    "format": "jsonv2",
+                    "limit": 1,
+                },
+                attempts=1,
+            )
+            results = payload.get("results") or payload or []
+        except Exception:
+            results = []
+        if results:
+            break
     if not results:
         raise ValueError(f"无法定位地点: {query}")
     result = results[0]
@@ -229,12 +259,14 @@ def _geocode(query: str) -> Dict[str, Any]:
     longitude = result.get("longitude", result.get("lon"))
     if latitude is None or longitude is None:
         raise ValueError(f"地理编码结果缺少坐标: {query}")
-    return {
+    normalized_result = {
         "name": result.get("name") or str(result.get("display_name", query)).split(",")[0],
         "latitude": float(latitude),
         "longitude": float(longitude),
         "timezone": result.get("timezone", "auto"),
     }
+    _GEOCODE_CACHE.put(cache_key, normalized_result)
+    return copy.deepcopy(normalized_result)
 
 
 def _location_query(query: str, city: Optional[str] = None) -> str:
@@ -376,8 +408,11 @@ class OpenStreetMapRouteProvider(JsonHttpProvider):
         if mode not in self._PROFILES:
             raise ValueError("公共 OpenStreetMap 路线仅支持 driving 和 walking")
         profile, osrm_mode = self._PROFILES[mode]
-        start = _geocode(origin)
-        end = _geocode(destination)
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="route-geocode") as executor:
+            start_future = executor.submit(_geocode, origin)
+            end_future = executor.submit(_geocode, destination)
+            start = start_future.result()
+            end = end_future.result()
         coordinates = (
             f"{start['longitude']:.6f},{start['latitude']:.6f};"
             f"{end['longitude']:.6f},{end['latitude']:.6f}"

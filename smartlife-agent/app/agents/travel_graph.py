@@ -388,6 +388,7 @@ class TravelPlanGraph:
                         or tool_result.get("cache_status") == "stale_fallback"
                         or rejected_simulation
                     )
+                    tool_error = str(tool_result.get("error") or "").strip()
                     await self._log(
                         "execute_steps",
                         "tool_fallback" if fallback else "tool_completed",
@@ -395,7 +396,11 @@ class TravelPlanGraph:
                             (
                                 f"{tool_call.get('tool', '工具')} 返回模拟结果，已拒绝纳入计划"
                                 if rejected_simulation
-                                else f"{tool_call.get('tool', '工具')} 数据不可用"
+                                else (
+                                    f"{tool_call.get('tool', '工具')} 数据不可用：{tool_error[:160]}"
+                                    if tool_error
+                                    else f"{tool_call.get('tool', '工具')} 数据不可用"
+                                )
                             )
                             if fallback else f"{tool_call.get('tool', '工具')} 执行成功"
                         ),
@@ -410,6 +415,8 @@ class TravelPlanGraph:
                             "cache_status": tool_result.get("cache_status"),
                             "stale": tool_result.get("stale"),
                             "simulated": tool_result.get("simulated"),
+                            "duration_ms": tool_result.get("duration_ms"),
+                            "error": tool_error[:500],
                             "warnings": tool_result.get("warnings", []),
                         },
                     )
@@ -431,25 +438,35 @@ class TravelPlanGraph:
         }
 
     async def _reflect(self, state: TravelPlanState) -> Dict[str, Any]:
-        with timed_span(
-            "model.travel_reflect",
-            trace_id=state.get("trace_id", ""),
-            attributes={"revision": state.get("revision_count", 0)},
-        ):
-            reflection = self._normalize_reflection(await _resolve(self.reflector(
-                state["original_request"],
-                state["current_plan"],
-            )))
         deterministic_issues = self._deterministic_plan_issues(state)
         if deterministic_issues:
-            reflection["issues"] = list(dict.fromkeys(
-                reflection.get("issues", []) + deterministic_issues
-            ))
-            reflection["suggestions"] = list(dict.fromkeys(
-                reflection.get("suggestions", []) + deterministic_issues
-            ))
-            reflection["is_satisfactory"] = False
-            reflection["severity"] = "critical"
+            # 预算超支、天数不一致等硬错误已经足以触发修订，
+            # 不再等待一次完整的 LLM 审核来得到相同结论。
+            reflection = {
+                "is_satisfactory": False,
+                "severity": "critical",
+                "issues": list(deterministic_issues),
+                "suggestions": list(deterministic_issues),
+                "source": "deterministic",
+            }
+        elif self._can_use_deterministic_reflection(state):
+            reflection = {
+                "is_satisfactory": True,
+                "severity": "pass",
+                "issues": [],
+                "suggestions": [],
+                "source": "deterministic_fast_path",
+            }
+        else:
+            with timed_span(
+                "model.travel_reflect",
+                trace_id=state.get("trace_id", ""),
+                attributes={"revision": state.get("revision_count", 0)},
+            ):
+                reflection = self._normalize_reflection(await _resolve(self.reflector(
+                    state["original_request"],
+                    state["current_plan"],
+                )))
         await self._emit("reflection", reflection)
         await self._log(
             "reflect",
@@ -464,6 +481,23 @@ class TravelPlanGraph:
             },
         )
         return {"reflection": reflection, "status": "reflected"}
+
+    @staticmethod
+    def _can_use_deterministic_reflection(state: TravelPlanState) -> bool:
+        """简单且工具证据完整的单步计划不再重复调用 LLM 审核。"""
+        steps = state.get("steps") or []
+        step_results = state.get("step_results") or []
+        if len(steps) != 1 or len(step_results) != 1:
+            return False
+        result = step_results[0]
+        if result.get("status") != "completed" or result.get("error"):
+            return False
+        if result.get("warnings") or result.get("simulated"):
+            return False
+        return all(
+            tool.get("ok") and not (tool.get("result") or {}).get("stale")
+            for tool in result.get("tool_calls") or []
+        )
 
     def _should_continue(self, state: TravelPlanState) -> str:
         reflection = state.get("reflection", {})

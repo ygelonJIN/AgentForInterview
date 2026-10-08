@@ -1,6 +1,7 @@
 """旅游步骤真实工具执行测试。"""
 
 import asyncio
+import threading
 
 from app.tools.travel_executor import TravelToolExecutor
 
@@ -50,6 +51,7 @@ def test_travel_executor_calls_weather_and_route_tools():
     assert result["source"] == "travel_tool_registry"
     assert result["simulated"] is False
     assert [item["tool"] for item in result["tool_calls"]] == ["get_weather", "get_route"]
+    assert all(item["result"]["duration_ms"] >= 0 for item in result["tool_calls"])
     assert weather.calls == [{"city": "杭州", "date": "2026-10-10"}]
     assert route.calls == [{
         "origin": "西湖",
@@ -78,3 +80,41 @@ def test_travel_executor_rejects_non_current_provider_results():
     assert "20°C" not in result["result"]
     assert "1公里" not in result["result"]
     assert any("未返回可验证" in warning for warning in result["warnings"])
+
+
+def test_travel_executor_runs_weather_and_route_in_parallel():
+    barrier = threading.Barrier(2)
+
+    class _ParallelTool:
+        def __init__(self, name, result):
+            self.name = name
+            self.result = result
+
+        def invoke(self, payload):
+            barrier.wait(timeout=0.5)
+            return self.result
+
+    executor = TravelToolExecutor(
+        weather_tool=_ParallelTool("weather", {
+            "temperature": "21°C",
+            "condition": "晴",
+            "simulated": False,
+        }),
+        route_tool=_ParallelTool("route", {
+            "distance": "3公里",
+            "duration": "10分钟",
+            "simulated": False,
+        }),
+        activities_dir="/tmp/no-activities",
+    )
+
+    result = asyncio.run(executor.execute(
+        {
+            "id": "day-1",
+            "title": "第1天：西湖到灵隐寺",
+            "description": "从西湖到灵隐寺",
+        },
+        {"requirements": {"destination": "杭州", "days": 1}},
+    ))
+
+    assert [item["ok"] for item in result["tool_calls"]] == [True, True]

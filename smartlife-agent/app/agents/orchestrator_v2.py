@@ -435,14 +435,18 @@ class OrchestratorV2:
     ) -> None:
         """保存助手回复并发送统一完成事件。"""
         self.short_term_memory.add_message(thread_id, "assistant", response_text)
-        await queue.emit(EventType.DONE, {
+        payload = {
             "response": response_text,
             "classification": classification.model_dump(),
             "agent_used": getattr(classification, "agent_label", classification.intent),
             "memories": {
                 "short_term_count": len(self.short_term_memory.get_history(thread_id)),
             }
-        }, step="done")
+        }
+        if hasattr(queue, "emit_done"):
+            await queue.emit_done(payload)
+        else:
+            await queue.emit(EventType.DONE, payload, step="done")
 
     async def _do_process(
         self,

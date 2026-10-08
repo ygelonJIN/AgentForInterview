@@ -6,6 +6,7 @@ LangGraph 顶层编排器。
 """
 import asyncio
 import inspect
+import threading
 from typing import Any, AsyncGenerator, Dict, List, Optional, TypedDict
 
 from langchain_core.runnables import RunnableConfig
@@ -22,10 +23,11 @@ from app.streaming import EventQueue
 
 
 class _CompositeEventQueue:
-    """复合场景内部屏蔽 token/reset，最后统一发布合并后的正文。"""
+    """把并行子图的正文隔离到固定分区，实时输出且不互相插队。"""
 
-    def __init__(self, delegate: EventQueue):
+    def __init__(self, delegate: EventQueue, section: str):
         self._delegate = delegate
+        self.section = section
         self.filtered_tokens: List[str] = []
 
     def __getattr__(self, name: str):
@@ -38,17 +40,21 @@ class _CompositeEventQueue:
     async def emit(self, event_type: Any, data: Dict[str, Any], step: str = ""):
         event_name = self._event_name(event_type)
         if event_name == "response_reset":
+            await self.emit_response_reset(step=step)
             return
         if event_name == "token":
-            self.filtered_tokens.append(str((data or {}).get("token", "")))
+            await self.emit_token(str((data or {}).get("token", "")), step=step)
             return
         await self._delegate.emit(event_type, data, step)
 
     async def emit_token(self, token: str, step: str = ""):
-        self.filtered_tokens.append(str(token or ""))
+        token = str(token or "")
+        self.filtered_tokens.append(token)
+        await self._delegate.emit_token(token, step=step, section=self.section)
 
     async def emit_response_reset(self, step: str = ""):
-        return
+        self.filtered_tokens.clear()
+        await self._delegate.emit_response_reset(step=step, section=self.section)
 
 
 class OrchestratorState(TypedDict, total=False):
@@ -78,6 +84,9 @@ class LangGraphOrchestrator:
         self.legacy = legacy_orchestrator or OrchestratorV2()
         self.checkpointer = checkpointer or create_checkpointer("memory")
         self.node_policies = node_policies or self._default_node_policies()
+        self._memory_results: Dict[tuple[str, str, str], Dict[str, Any]] = {}
+        self._memory_result_events: Dict[tuple[str, str, str], threading.Event] = {}
+        self._memory_lock = threading.RLock()
         self.graph = self._build_graph()
 
     @staticmethod
@@ -158,7 +167,6 @@ class LangGraphOrchestrator:
         graph.add_node("react", self._policy_node("react", self._react))
         graph.add_node("general", self._policy_node("general", self._general))
         graph.add_node("finalize", self._policy_node("finalize", self._finalize))
-        graph.add_node("extract_memory", self._policy_node("extract_memory", self._extract_memory))
 
         graph.add_edge(START, "prepare")
         graph.add_edge("prepare", "classify")
@@ -176,8 +184,7 @@ class LangGraphOrchestrator:
         )
         for scene_node in ("shopping", "travel", "shopping_travel", "negotiation", "react", "general"):
             graph.add_edge(scene_node, "finalize")
-        graph.add_edge("finalize", "extract_memory")
-        graph.add_edge("extract_memory", END)
+        graph.add_edge("finalize", END)
         return graph.compile(checkpointer=self.checkpointer)
 
     @staticmethod
@@ -321,20 +328,23 @@ class LangGraphOrchestrator:
             "intent_scores": {"travel": classification.intent_scores.get("travel", 1.0)},
         })
 
-        composite_queue = _CompositeEventQueue(queue)
-        shopping_response = await self.legacy.run_shopping_turn(
-            state["user_message"],
-            state["user_id"],
-            state["thread_id"],
-            shopping_classification,
-            composite_queue,
-        )
-        travel_response = await self.legacy.run_travel_turn(
-            state["user_message"],
-            state["user_id"],
-            state["thread_id"],
-            travel_classification,
-            composite_queue,
+        shopping_queue = _CompositeEventQueue(queue, "shopping")
+        travel_queue = _CompositeEventQueue(queue, "travel")
+        shopping_response, travel_response = await asyncio.gather(
+            self.legacy.run_shopping_turn(
+                state["user_message"],
+                state["user_id"],
+                state["thread_id"],
+                shopping_classification,
+                shopping_queue,
+            ),
+            self.legacy.run_travel_turn(
+                state["user_message"],
+                state["user_id"],
+                state["thread_id"],
+                travel_classification,
+                travel_queue,
+            ),
         )
 
         shopping_response = (shopping_response or "").strip()
@@ -345,8 +355,6 @@ class LangGraphOrchestrator:
             "【旅行计划】\n"
             f"{travel_response}"
         ).strip()
-        await queue.emit_response_reset(step="generate")
-        await queue.emit_token(response, step="generate")
         return {
             "response": response,
             "agent_used": "shopping+travel",
@@ -374,7 +382,102 @@ class LangGraphOrchestrator:
             self._classification(state),
             queue,
         )
+        self._start_memory_extraction_background(state)
         return {"status": "completed"}
+
+    @staticmethod
+    def _memory_key(user_id: str, session_id: str, scene: str) -> tuple[str, str, str]:
+        return str(user_id), str(session_id), str(scene)
+
+    def _start_memory_extraction_background(self, state: OrchestratorState) -> None:
+        """回答完成后异步提取候选记忆，不再占用用户响应关键路径。"""
+        key = self._memory_key(
+            state.get("user_id", ""),
+            state.get("session_id", ""),
+            state.get("scene", "general"),
+        )
+        done_event = threading.Event()
+        with self._memory_lock:
+            self._memory_results.pop(key, None)
+            self._memory_result_events[key] = done_event
+
+        excluded_contents = list(state.get("excluded_memories") or [])
+
+        def extract() -> None:
+            try:
+                result = self.legacy.extract_candidate_memories_result(
+                    key[0],
+                    key[1],
+                    key[2],
+                    excluded_contents=excluded_contents,
+                )
+                payload = result.as_dict()
+            except Exception as exc:
+                payload = {
+                    "candidates": [],
+                    "diagnostic": f"记忆提取失败：{type(exc).__name__}: {exc}",
+                    "status": "error",
+                    "has_error": True,
+                    "should_display": True,
+                }
+            with self._memory_lock:
+                self._memory_results[key] = payload
+                done_event.set()
+
+        threading.Thread(
+            target=extract,
+            name=f"memory-extract:{key[0]}:{key[2]}",
+            daemon=True,
+        ).start()
+
+    def peek_memory_extraction_result(
+        self,
+        user_id: str,
+        session_id: str,
+        scene: str,
+    ) -> Optional[Dict[str, Any]]:
+        key = self._memory_key(user_id, session_id, scene)
+        with self._memory_lock:
+            return self._memory_results.get(key)
+
+    def pop_memory_extraction_result(
+        self,
+        user_id: str,
+        session_id: str,
+        scene: str,
+    ) -> Optional[Dict[str, Any]]:
+        key = self._memory_key(user_id, session_id, scene)
+        with self._memory_lock:
+            return self._memory_results.pop(key, None)
+
+    def is_memory_extraction_pending(
+        self,
+        user_id: str,
+        session_id: str,
+        scene: str,
+    ) -> bool:
+        key = self._memory_key(user_id, session_id, scene)
+        with self._memory_lock:
+            return (
+                key in self._memory_result_events
+                and not self._memory_result_events[key].is_set()
+            )
+
+    def wait_for_memory_extraction(
+        self,
+        user_id: str,
+        session_id: str,
+        scene: str,
+        timeout: Optional[float] = None,
+    ) -> Optional[Dict[str, Any]]:
+        key = self._memory_key(user_id, session_id, scene)
+        with self._memory_lock:
+            done_event = self._memory_result_events.get(key)
+        if done_event is None:
+            return self.peek_memory_extraction_result(user_id, session_id, scene)
+        if not done_event.wait(timeout):
+            return None
+        return self.peek_memory_extraction_result(user_id, session_id, scene)
 
     async def _extract_memory(
         self,
@@ -390,6 +493,8 @@ class LangGraphOrchestrator:
             excluded_contents=state.get("excluded_memories", []),
         )
         payload = result.as_dict()
+        if hasattr(queue, "timing_metrics"):
+            payload["timing_ms"] = queue.timing_metrics()
         await queue.emit(
             "memory_extraction",
             payload,

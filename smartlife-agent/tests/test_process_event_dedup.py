@@ -133,3 +133,32 @@ def test_done_response_is_authoritative_over_accumulated_tokens():
     response.handle_event({"event": EventType.DONE, "data": {"response": "最终正文"}})
 
     assert response.text == "最终正文"
+
+
+def test_composite_sections_stream_without_interleaving():
+    response = StreamResponseBuffer()
+
+    response.handle_event({
+        "event": EventType.TOKEN,
+        "data": {"token": "旅行", "section": "travel"},
+    })
+    response.handle_event({
+        "event": EventType.TOKEN,
+        "data": {"token": "商品", "section": "shopping"},
+    })
+    response.handle_event({
+        "event": EventType.TOKEN,
+        "data": {"token": "计划", "section": "travel"},
+    })
+    response.handle_event({
+        "event": EventType.RESPONSE_RESET,
+        "data": {"section": "travel"},
+    })
+    response.handle_event({
+        "event": EventType.TOKEN,
+        "data": {"token": "新版计划", "section": "travel"},
+    })
+
+    assert response.text == (
+        "【购物推荐】\n商品\n\n【旅行计划】\n新版计划"
+    )

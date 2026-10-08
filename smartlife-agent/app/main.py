@@ -15,6 +15,7 @@ import json
 import sys
 import os
 import threading
+import time
 import queue as thread_queue
 import uuid
 
@@ -268,11 +269,15 @@ def _clear_memory_extraction_state():
     st.session_state["memory_extraction_scene"] = ""
 
 
-def _memory_step_event(*, failed=False, no_content=False):
+def _memory_step_event(*, failed=False, no_content=False, background=False):
     if failed:
         name = "记忆提取失败"
         description = "提取未能完成，请查看下方失败诊断"
         status = "error"
+    elif background:
+        name = "候选记忆确认"
+        description = "回答已完成，候选记忆正在后台提取"
+        status = "active"
     elif no_content:
         name = "候选记忆确认"
         description = "检查完成，本轮没有需要写入长期记忆的内容"
@@ -294,6 +299,26 @@ def _memory_step_event(*, failed=False, no_content=False):
     }
 
 
+def _apply_memory_extraction_payload(orch, user_id, session_id, scene, payload):
+    candidates = list(payload.get("candidates", []))
+    diagnostic = payload.get("diagnostic", "")
+    has_error = bool(payload.get("has_error", payload.get("status") == "error"))
+
+    if not candidates and not has_error:
+        _clear_memory_extraction_state()
+        return [_memory_step_event(no_content=True)]
+
+    st.session_state["candidate_memories"] = candidates
+    st.session_state["memory_diag"] = diagnostic if has_error else ""
+    st.session_state["memory_extraction_error"] = has_error
+    st.session_state["show_memory_extraction"] = True
+    st.session_state["memory_extraction_scene"] = scene
+
+    if candidates:
+        _begin_memory_approval(orch, user_id, candidates, scene)
+    return [_memory_step_event(failed=has_error)]
+
+
 def _extract_memories_after_stream(
     orch,
     user_id,
@@ -313,34 +338,70 @@ def _extract_memories_after_stream(
             break
 
     if payload is not None:
-        candidates = list(payload.get("candidates", []))
-        diagnostic = payload.get("diagnostic", "")
-        has_error = bool(payload.get("has_error", payload.get("status") == "error"))
-    else:
+        return _apply_memory_extraction_payload(orch, user_id, session_id, scene, payload)
+
+    if hasattr(orch, "pop_memory_extraction_result"):
+        payload = orch.pop_memory_extraction_result(user_id, session_id, scene)
+        if payload is not None:
+            return _apply_memory_extraction_payload(orch, user_id, session_id, scene, payload)
+        if hasattr(orch, "is_memory_extraction_pending") and orch.is_memory_extraction_pending(
+            user_id, session_id, scene
+        ):
+            st.session_state["pending_background_memory"] = {
+                "user_id": user_id,
+                "session_id": session_id,
+                "scene": scene,
+            }
+            return [_memory_step_event(background=True)]
+        _clear_memory_extraction_state()
+        return [_memory_step_event(no_content=True)]
+
+    if hasattr(orch, "extract_candidate_memories_result"):
         result = orch.extract_candidate_memories_result(
             user_id,
             session_id,
             scene=scene,
             excluded_contents=st.session_state.get("rejected_memories", []),
         )
-        candidates = result.candidates
-        diagnostic = result.diagnostic
-        has_error = result.has_error
+        return _apply_memory_extraction_payload(
+            orch,
+            user_id,
+            session_id,
+            scene,
+            {
+                "candidates": result.candidates,
+                "diagnostic": result.diagnostic,
+                "has_error": result.has_error,
+                "status": "error" if result.has_error else "ok",
+            },
+        )
 
-    if not candidates and not has_error:
-        # Step 4 仍需展示实际完成状态，但不显示无价值诊断。
-        _clear_memory_extraction_state()
-        return [_memory_step_event(no_content=True)]
+    _clear_memory_extraction_state()
+    return [_memory_step_event(no_content=True)]
 
-    st.session_state["candidate_memories"] = candidates
-    st.session_state["memory_diag"] = diagnostic if has_error else ""
-    st.session_state["memory_extraction_error"] = has_error
-    st.session_state["show_memory_extraction"] = True
-    st.session_state["memory_extraction_scene"] = scene
 
-    if candidates:
-        _begin_memory_approval(orch, user_id, candidates, scene)
-    return [_memory_step_event(failed=has_error)]
+def _refresh_background_memory_extraction():
+    pending = st.session_state.get("pending_background_memory")
+    if not pending:
+        return
+    orch = get_orchestrator_v2()
+    if not orch or not hasattr(orch, "pop_memory_extraction_result"):
+        return
+    payload = orch.pop_memory_extraction_result(
+        pending["user_id"],
+        pending["session_id"],
+        pending["scene"],
+    )
+    if payload is None:
+        return
+    _apply_memory_extraction_payload(
+        orch,
+        pending["user_id"],
+        pending["session_id"],
+        pending["scene"],
+        payload,
+    )
+    st.session_state.pop("pending_background_memory", None)
 
 
 def render_memory_extraction_panel(scene, key_suffix):
@@ -471,6 +532,7 @@ def _execution_logs_html(events):
         iteration = data.get("iteration")
         max_iterations = data.get("max_iterations")
         duration = data.get("duration_ms")
+        source_timings = (data.get("details") or {}).get("source_timings_ms") or {}
         meta = [f"<code>{graph}:{node}</code>", kind]
         if branch:
             meta.append(f"分支 <code>{_esc(branch)}</code>")
@@ -480,6 +542,12 @@ def _execution_logs_html(events):
             meta.append(f"迭代 {_esc(iteration)}/{_esc(max_iterations or '?')}")
         if duration is not None:
             meta.append(f"{_esc(duration)}ms")
+        if source_timings:
+            timing_text = " · ".join(
+                f"{_esc(name)} {_esc(value)}ms"
+                for name, value in source_timings.items()
+            )
+            meta.append(f"数据源 {timing_text}")
         rows.append(
             f'<div class="execution-log-row execution-log-{_esc(status)}">'
             f'<span class="execution-log-icon">{icon}</span>'
@@ -491,6 +559,42 @@ def _execution_logs_html(events):
         f'<summary>执行日志 · {len(logs)} 条（分支、重试、循环、降级）</summary>'
         f'<div class="execution-log-list">{"".join(rows)}</div>'
         '</details>'
+    )
+
+
+def _timing_summary_html(events):
+    """展示用户可感知延迟与完整链路延迟，避免只看到单个节点耗时。"""
+    done_timing = {}
+    pipeline_timing = {}
+    for event in events or []:
+        data = event.get("data") or {}
+        if event.get("event") == "done":
+            done_timing = data.get("timing_ms") or {}
+        elif event.get("event") == "memory_extraction":
+            pipeline_timing = data.get("timing_ms") or {}
+
+    response_ready = done_timing.get("response_ready_ms")
+    if response_ready is None:
+        return ""
+    first_token = done_timing.get("time_to_first_token_ms")
+    post_response = pipeline_timing.get("post_response_ms")
+    pipeline = pipeline_timing.get("pipeline_ms") or done_timing.get("pipeline_ms")
+    metrics = [
+        ("首 Token", first_token),
+        ("回答完成", response_ready),
+        ("回答后处理", post_response),
+        ("完整链路", pipeline),
+    ]
+    rows = " · ".join(
+        f"{_esc(label)} {_esc(value)}ms"
+        for label, value in metrics
+        if isinstance(value, (int, float))
+    )
+    return (
+        '<div class="execution-log-row execution-log-ok">'
+        '<span class="execution-log-icon">⏱</span>'
+        f'<div><div class="execution-log-meta">链路耗时</div>'
+        f'<div class="execution-log-message">{rows}</div></div></div>'
     )
 
 
@@ -605,7 +709,11 @@ def _process_events_html(events, include_transient=False, active_step=None):
         h = _fmt_event_html(evt)
         if h:
             cards.append(h)
-    return "".join(cards) + _execution_logs_html(persistent)
+    return (
+        "".join(cards)
+        + _timing_summary_html(events)
+        + _execution_logs_html(persistent)
+    )
 
 
 def render_process_events(events, include_transient=False):
@@ -644,11 +752,10 @@ def _render_process_panel(panel, events, include_transient=False, active_step=No
 
 
 def _is_revision_signal(evt):
-    if evt.get("event") == "response_reset":
-        return True
-    data = evt.get("data", {}) or {}
-    text = " ".join(str(data.get(key, "")) for key in ("message", "input", "output"))
-    return any(marker in text for marker in ("优化计划", "修订", "改进版", "审核意见"))
+    return (
+        evt.get("event") == "response_reset"
+        and not (evt.get("data") or {}).get("section")
+    )
 
 
 def _run_streaming_impl(async_gen_factory, *, postprocess=None):
@@ -697,6 +804,7 @@ def _run_streaming_impl(async_gen_factory, *, postprocess=None):
     response_container = st.empty()
     first_event = True
     rendered_active_step = 1
+    last_response_render = 0.0
     _render_process_panel(
         process_panel,
         [],
@@ -725,13 +833,15 @@ def _run_streaming_impl(async_gen_factory, *, postprocess=None):
                 first_event = False
 
             if _is_revision_signal(evt):
-                response_buffer.reset()
                 response_container.empty()
 
             response_buffer.handle_event(evt)
 
             if event_type == "token":
-                response_container.markdown(response_buffer.text)
+                now = time.monotonic()
+                if now - last_response_render >= 0.05:
+                    response_container.markdown(response_buffer.text)
+                    last_response_render = now
                 current_active_step = infer_active_step(all_events)
                 if current_active_step != rendered_active_step:
                     _render_process_panel(
@@ -744,12 +854,17 @@ def _run_streaming_impl(async_gen_factory, *, postprocess=None):
                 continue
 
             if event_type == "response_reset":
-                response_container.empty()
+                if response_buffer.text:
+                    response_container.markdown(response_buffer.text)
+                else:
+                    response_container.empty()
+                last_response_render = 0.0
                 continue
 
             if event_type == "done":
                 if response_buffer.text:
                     response_container.markdown(response_buffer.text)
+                    last_response_render = time.monotonic()
                 continue
 
             current_active_step = infer_active_step(all_events)
@@ -887,6 +1002,8 @@ def render_assistant_page():
     if "assistant_msgs" not in st.session_state:
         st.session_state["assistant_msgs"] = []
 
+    _refresh_background_memory_extraction()
+
     for msg in st.session_state["assistant_msgs"]:
         with st.chat_message(msg["role"]):
             render_assistant_message(msg)
@@ -918,7 +1035,7 @@ def render_assistant_page():
                         orch,
                         uid,
                         browser_session_id,
-                        "auto",
+                        "general",
                         stream_events,
                     )
 
