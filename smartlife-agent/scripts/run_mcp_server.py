@@ -19,6 +19,7 @@ def main() -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--include-write-tools", action="store_true")
+    parser.add_argument("--actor-id", default=os.environ.get("SMARTLIFE_MCP_ACTOR_ID", ""))
     args = parser.parse_args()
 
     auth_token = os.environ.get("SMARTLIFE_MCP_AUTH_TOKEN", "") if args.transport != "stdio" else ""
@@ -28,6 +29,7 @@ def main() -> int:
     )
     server = build_mcp_server(
         include_write_tools=args.include_write_tools,
+        actor_id=args.actor_id or None,
         auth_token=auth_token or None,
         public_url=public_url,
     )

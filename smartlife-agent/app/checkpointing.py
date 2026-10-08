@@ -1,29 +1,30 @@
 """LangGraph checkpoint 工厂。"""
+import os
 from typing import Any, Optional
 
 
-def create_checkpointer(backend: str = "memory", connection: Optional[str] = None) -> Any:
+def create_checkpointer(backend: Optional[str] = None, connection: Optional[str] = None) -> Any:
     """创建 checkpointer。
 
     ``memory`` 用于开发和测试；``sqlite``、``postgres`` 依赖相应的独立
     langgraph checkpoint 包。业务图只依赖返回的 checkpointer 接口。
     """
-    normalized = (backend or "memory").lower()
+    normalized = (backend or os.environ.get("SMARTLIFE_CHECKPOINTER_BACKEND") or "sqlite").lower()
     if normalized == "memory":
         from langgraph.checkpoint.memory import InMemorySaver
         return InMemorySaver()
 
     if normalized == "sqlite":
-        try:
-            from langgraph.checkpoint.sqlite import SqliteSaver
-        except ImportError as exc:
-            raise RuntimeError(
-                "SQLite checkpointer 需要安装 langgraph-checkpoint-sqlite"
-            ) from exc
-        saver = SqliteSaver
-        if hasattr(saver, "from_conn_string"):
-            return saver.from_conn_string(connection or ":memory:")
-        return saver(connection or ":memory:")
+        from app.checkpoint_sqlite import SQLiteCheckpointSaver
+        return SQLiteCheckpointSaver(
+            connection
+            or os.environ.get("SMARTLIFE_CHECKPOINTER_SQLITE_PATH")
+            or os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "data",
+                "checkpoints.db",
+            )
+        )
 
     if normalized in {"postgres", "postgresql"}:
         try:

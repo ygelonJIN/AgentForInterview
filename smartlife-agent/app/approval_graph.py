@@ -3,7 +3,7 @@ import asyncio
 from app.reliability import NodePolicy, RetryPolicy
 from typing import Any, Awaitable, Callable, Dict, Iterable, Optional, TypedDict
 
-from langgraph.checkpoint.memory import InMemorySaver
+from app.checkpointing import create_checkpointer
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
@@ -38,7 +38,7 @@ class ActionApprovalGraph:
         self.approved_actions = set(approved_actions or ())
         if not self.approved_actions:
             raise ValueError("approved_actions 不能为空")
-        self.checkpointer = checkpointer or InMemorySaver()
+        self.checkpointer = checkpointer or create_checkpointer()
         self.interrupt_payload = interrupt_payload
         self.execute_policy = NodePolicy(
             timeout_seconds=execute_timeout_seconds,

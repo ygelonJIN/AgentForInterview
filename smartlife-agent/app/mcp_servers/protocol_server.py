@@ -57,9 +57,10 @@ def build_mcp_server(
     include_write_tools: bool = False,
     auth_token: str | None = None,
     public_url: str = "http://127.0.0.1:8765",
+    actor_id: str | None = None,
 ) -> MCPServer:
     """构建协议级 MCP Server。默认只发布只读工具。"""
-    registry = get_registry(include_write_tools=include_write_tools)
+    registry = get_registry(actor_id=actor_id, include_write_tools=include_write_tools)
     server = MCPServer(
         name="smartlife-agent",
         title="SmartLife Agent Tools",

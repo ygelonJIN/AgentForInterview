@@ -117,15 +117,14 @@ def test_explicit_keyword_queries_database_even_when_nl2sql_model_fails():
 
     result = chain.query("我要买帐篷，预算3000块玩5天", max_retries=1)
 
-    assert chain.chain.calls == 1
+    assert chain.chain.calls == 0
     assert result["results"][0]["name"] == "双人防水帐篷"
     assert result["authoritative"] is True
     assert result["fallback"] is False
     assert result["keyword_count"] == 1
-    assert result["query_sources"] == ["keyword_sql", "nl2sql"]
+    assert result["query_sources"] == ["keyword_sql"]
     assert result["failure_stage"] == ""
     assert "error" not in result
-    assert any("NL2SQL 增强未完成" in item for item in result["warnings"])
 
 
 def test_keyword_results_are_returned_before_slow_nl2sql_blocks_query():
@@ -158,45 +157,40 @@ def test_keyword_results_are_returned_before_slow_nl2sql_blocks_query():
     assert result["authoritative"] is True
     assert result["results"][0]["name"] == "针织修身上衣"
     assert "error" not in result
-    assert result["warnings"]
+    assert result["query_sources"] == ["keyword_sql"]
 
 
-def test_keyword_and_nl2sql_results_are_deduplicated_by_product_id():
-    from app.retrieval.nl2sql import NL2SQLChain, SQLQuery
+def test_typed_keyword_query_skips_nl2sql_for_ordinary_product_search():
+    from app.retrieval.nl2sql import NL2SQLChain
 
-    class ExactChain:
+    class UnexpectedChain:
         def __init__(self):
             self.calls = 0
 
         def invoke(self, _payload):
             self.calls += 1
-            return SQLQuery(
-                sql="SELECT * FROM products WHERE name LIKE '%帐篷%'",
-                explanation="模型补充查询",
-                needs_rag=["耐用"],
-            )
+            raise AssertionError("普通商品过滤不应调用 NL2SQL")
 
     class Executor:
         def execute(self, sql, params=()):
+            assert "price <= ?" in sql
+            assert 800 in params
             return {
-                "rows": [{"id": 13, "name": "双人防水帐篷", "price": 599}],
+                "rows": [{"id": 13, "name": "真实跑鞋", "price": 599}],
                 "row_count": 1,
             }
 
     chain = NL2SQLChain.__new__(NL2SQLChain)
-    chain.chain = ExactChain()
+    chain.chain = UnexpectedChain()
     chain.sql_executor = Executor()
 
-    result = chain.query("买一个帐篷", max_retries=0)
+    result = chain.query("买一双800元以内的跑鞋", max_retries=0)
 
-    assert chain.chain.calls == 1
+    assert chain.chain.calls == 0
     assert result["count"] == 1
-    assert result["duplicate_count"] == 1
     assert result["keyword_count"] == 1
-    assert result["model_count"] == 1
-    assert result["query_sources"] == ["keyword_sql", "nl2sql"]
-    assert result["needs_rag"] == ["耐用"]
-    assert result["error"] if "error" in result else True
+    assert result["model_count"] == 0
+    assert result["query_sources"] == ["keyword_sql"]
 
 
 def test_nl2sql_is_still_required_when_no_keyword_hits():

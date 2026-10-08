@@ -56,6 +56,7 @@ class RetrievalService:
         needs: Optional[Dict[str, Any]],
         owner: Optional[str],
         plan: Optional[Dict[str, Any]] = None,
+        rerank_variant: Optional[str] = None,
     ) -> str:
         normalized_query = re.sub(r"\s+", " ", query or "").strip().casefold()
         payload = {
@@ -65,6 +66,7 @@ class RetrievalService:
             "needs": needs or {},
             "owner": owner,
             "plan": plan or {},
+            "rerank_variant": rerank_variant,
         }
         return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
@@ -404,6 +406,7 @@ class RetrievalService:
             needs,
             owner,
             plan.to_dict(),
+            rerank_variant,
         )
         cached = self._cache_get(cache_key)
         if cached is not None:
@@ -687,29 +690,3 @@ class RetrievalService:
             },
         )
         return result
-
-    def search(
-        self,
-        user_query: str,
-        top_k: int = 5,
-        owner: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """兼容 HybridRetriever.search 的旧返回结构。"""
-        result = self.retrieve(user_query, strategy="mixed", top_k=top_k, owner=owner)
-        products = result["products"]
-        if not products and result["documents"]:
-            products = [{
-                "rag_content": document["content"],
-                "metadata": document.get("metadata", {}),
-            } for document in result["documents"]]
-        return {
-            "sql": result["sql"],
-            "explanation": result["explanation"],
-            "products": products,
-            "rag_results": result["documents"],
-            "total_sql_results": result["total_sql_results"],
-            "total_rag_results": result["total_rag_results"],
-            "rag_ok": result["rag_ok"],
-            "rag_error": result["rag_error"],
-            "sql_error": result["sql_error"],
-        }

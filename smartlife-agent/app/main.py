@@ -21,6 +21,7 @@ import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.config import set_main_config, set_small_config, set_embedding_config, get_embedding_status
+from app.identity import ActorContext
 from app.observability import log_exception, log_warning
 from app.async_runner import SharedAsyncRunner
 from app.stream_response import StreamResponseBuffer
@@ -67,9 +68,14 @@ inject_theme()
 if "messages" not in st.session_state:
     st.session_state["messages"] = []
 if "user_id" not in st.session_state:
-    st.session_state["user_id"] = "user_001"
+    st.session_state["user_id"] = os.environ.get("SMARTLIFE_ACTOR_ID", "user_001").strip() or "user_001"
 if "browser_session_id" not in st.session_state:
     st.session_state["browser_session_id"] = uuid.uuid4().hex
+if "actor_context" not in st.session_state:
+    st.session_state["actor_context"] = ActorContext.local(
+        st.session_state["user_id"],
+        st.session_state["browser_session_id"],
+    )
 if "orchestrator_v2" not in st.session_state:
     st.session_state["orchestrator_v2"] = None
 if "candidate_memories" not in st.session_state:
@@ -90,8 +96,6 @@ if "sensitive_action_service" not in st.session_state:
     st.session_state["sensitive_action_service"] = None
 if "assistant_msgs" not in st.session_state:
     st.session_state["assistant_msgs"] = []
-if "social_msgs" not in st.session_state:
-    st.session_state["social_msgs"] = []
 
 
 def _migrate_legacy_in_memory_conversations():
@@ -104,7 +108,6 @@ def _migrate_legacy_in_memory_conversations():
     for scene, key in (
         ("general", "assistant_msgs"),
         ("general", "messages"),
-        ("negotiation", "social_msgs"),
     ):
         messages = st.session_state.get(key) or []
         if not isinstance(messages, list) or not messages:
@@ -988,17 +991,6 @@ def render_assistant_page():
         render_quick_prompt("制定出行清单", "准备去露营三天，帮我列一份装备清单", "quick_list")
 
     render_section_header("智能对话", "购物、旅行、通用问题都可以从这里开始")
-    mode = render_option_group(
-        ["智能对话", "多人协商"],
-        key="assistant_mode",
-        default="智能对话",
-        columns=2,
-    )
-
-    if mode == "多人协商":
-        render_negotiation_workspace()
-        return
-
     if "assistant_msgs" not in st.session_state:
         st.session_state["assistant_msgs"] = []
 
@@ -1056,84 +1048,6 @@ def render_assistant_page():
         key="assistant_input",
     ):
         st.session_state["pending_assistant"] = user_input
-        st.rerun()
-
-
-def render_negotiation_workspace():
-    st.caption("用于多人旅行或购物决策。填写参与者与约束后，由协商 Agent 寻找共同方案。")
-    left, right = st.columns([1, 1])
-    with left:
-        participant_ids_text = st.text_input(
-            "参与者 ID",
-            value=st.session_state["user_id"],
-            key="negotiation_participant_ids",
-        )
-    with right:
-        participant_budgets_text = st.text_input(
-            "每人预算",
-            value="",
-            key="negotiation_budgets",
-            placeholder="例如：2000,3000",
-        )
-    participant_styles_text = st.text_area(
-        "偏好风格",
-        value=st.session_state.get("negotiation_styles", ""),
-        key="negotiation_styles_area",
-        placeholder="多人用 | 分隔，每人偏好用逗号分隔",
-        height=88,
-    )
-
-    participant_ids = [item.strip() for item in participant_ids_text.split(",") if item.strip()]
-    budget_values = [item.strip() for item in participant_budgets_text.split(",")]
-    style_groups = [item.strip() for item in participant_styles_text.split("|")]
-    participants = []
-    for index, participant_id in enumerate(participant_ids):
-        budget = 0.0
-        if index < len(budget_values):
-            try:
-                budget = float(budget_values[index])
-            except ValueError:
-                budget = 0.0
-        styles = [
-            item.strip()
-            for item in (style_groups[index] if index < len(style_groups) else "").split(",")
-            if item.strip()
-        ]
-        participants.append({
-            "user_id": participant_id,
-            "budget_constraint": budget,
-            "travel_preferences": {"preferred_styles": styles},
-        })
-
-    if "social_msgs" not in st.session_state:
-        st.session_state["social_msgs"] = []
-    for msg in st.session_state["social_msgs"][-8:]:
-        with st.chat_message(msg["role"]):
-            render_assistant_message(msg)
-
-    if prompt := st.chat_input("描述需要协商的场景…", key="social_input"):
-        st.session_state["social_msgs"].append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        with st.chat_message("assistant"):
-            orch = get_orchestrator_v2()
-            if orch:
-                async def _gen():
-                    async for line in orch.process_negotiation_streaming(
-                        participants,
-                        scenario="travel",
-                    ):
-                        yield line
-                response, events = run_streaming_realtime(_gen)
-            else:
-                response = "请先在个人中心配置主模型。"
-                events = []
-                st.warning(response)
-        st.session_state["social_msgs"].append({
-            "role": "assistant",
-            "content": response,
-            "process_events": events,
-        })
         st.rerun()
 
 
@@ -1861,16 +1775,9 @@ def render_profile_page():
         "查看个人资料、订单记录和模型连接设置。",
         "Profile & Settings",
     )
-    user_id_col, save_col = st.columns([2, 1])
-    with user_id_col:
-        user_id = st.text_input("用户 ID", value=st.session_state["user_id"], key="profile_user_id")
-    with save_col:
-        st.markdown('<div class="form-action-spacer"></div>', unsafe_allow_html=True)
-        if st.button("切换用户", key="switch_user", use_container_width=True):
-            st.session_state["user_id"] = user_id.strip() or "user_001"
-            st.session_state["orchestrator_v2"] = None
-            st.rerun()
-    st.session_state["user_id"] = user_id.strip() or "user_001"
+    actor = st.session_state["actor_context"]
+    st.info(f"当前可信 Actor：{actor.user_id}")
+    st.caption("Actor 由服务端启动环境确定；页面和模型工具均不能切换到其他用户。")
 
     user = load_user(st.session_state["user_id"])
     orders = load_orders(st.session_state["user_id"])

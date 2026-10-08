@@ -73,11 +73,11 @@ def test_travel_graph_executes_steps_and_revises_until_approved():
     assert state["chat_history"] == [{"role": "user", "content": "从上海出发"}]
     assert state["revision_count"] == 1
     assert len(state["plan_versions"]) == 2
-    assert len(state["steps"]) == 3
-    assert [step["status"] for step in state["steps"]] == ["completed"] * 3
+    assert len(state["evidence_steps"]) == 2
+    assert [step["status"] for step in state["evidence_results"]] == ["completed"] * 2
     assert state["status"] == "approved"
     assert len(planner.calls) == 2
-    assert len(executor.calls) == 6
+    assert len(executor.calls) == 2
 
 
 def test_travel_graph_stops_at_max_revisions_with_best_effort_status():
@@ -126,8 +126,8 @@ def test_travel_graph_records_executor_failure_without_crashing():
 
     state = _run(graph, "上海2天预算500元")
 
-    failed = [step for step in state["step_results"] if step["status"] == "failed"]
-    completed = [step for step in state["step_results"] if step["status"] == "completed"]
+    failed = [step for step in state["evidence_results"] if step["status"] == "failed"]
+    completed = [step for step in state["evidence_results"] if step["status"] == "completed"]
     assert failed
     assert completed
     assert failed[0]["error"]
@@ -273,5 +273,5 @@ def test_travel_graph_records_model_and_execution_trace_spans():
 
     spans = recorder.summary()["spans"]
     assert spans["model.travel_plan"]["count"] == 1
-    assert spans["travel.execute_steps"]["count"] == 1
+    assert spans["travel.execute_evidence"]["count"] == 1
     assert spans["model.travel_reflect"]["count"] == 1

@@ -171,7 +171,7 @@ def test_small_model_schema_accepts_two_intents_and_keeps_primary():
 def test_small_model_schema_rejects_more_than_two_intents():
     classifier = _classifier([])
     payload = _payload()
-    payload["intents"] = ["shopping", "travel", "negotiation"]
+    payload["intents"] = ["shopping", "travel", "customer_service"]
 
     with pytest.raises(ClassificationResponseError):
         classifier._from_data(payload)

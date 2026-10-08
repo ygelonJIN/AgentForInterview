@@ -183,22 +183,57 @@ SQL: SELECT * FROM products WHERE name LIKE '%背包%' AND price <= 300"""),
         """兼容旧接口：返回参数化 SQL 文本。"""
         return self._build_fuzzy_query(user_query)[0]
     
-    def _build_keyword_query(self, user_query: str) -> tuple[str, List[Any]]:
-        """为明确商品词构建权威参数化查询。
+    @staticmethod
+    def _parse_product_constraints(user_query: str) -> Dict[str, Any]:
+        text = user_query or ""
+        max_price = None
+        min_price = None
+        for match in re.finditer(r"(\d+(?:\.\d+)?)\s*(?:元|块|¥)", text):
+            value = float(match.group(1))
+            window = text[max(0, match.start() - 12):match.end() + 12]
+            if "以上" in window:
+                min_price = value
+            elif any(word in window for word in ("以内", "以下", "不超过", "预算", "最高", "低于")):
+                max_price = value
+            else:
+                max_price = value
+            break
+        brands = [
+            brand for brand in ("iPhone", "小米", "华为", "苹果", "Nike", "Adidas", "安踏", "李宁", "迪卡侬", "Salomon")
+            if brand.lower() in text.lower()
+        ]
+        return {
+            "max_price": max_price,
+            "min_price": min_price,
+            "brand": brands[0] if brands else None,
+            "typed_complete": any(term in text for term in NL2SQLChain.TERM_MAPPING),
+        }
 
-        只使用商品词映射，不把价格数字自动当成商品价格，避免把旅行预算误判为
-        商品筛选条件。命中关键词时必须直接查询数据库。
-        """
+    def _build_keyword_query(self, user_query: str) -> tuple[str, List[Any]]:
+        """为明确商品词构建权威参数化过滤查询。"""
         terms = list(dict.fromkeys(self._expand_terms(user_query)))
         if not terms:
             return "", []
+        constraints = self._parse_product_constraints(user_query)
         clauses = []
         params: List[Any] = []
+        term_clauses = []
         for term in terms:
-            clauses.append("(name LIKE ? OR subcategory LIKE ?)")
+            term_clauses.append("(name LIKE ? OR subcategory LIKE ?)")
             params.extend((f"%{term}%", f"%{term}%"))
+        clauses.append(f"({' OR '.join(term_clauses)})")
+        if constraints.get("min_price") is not None:
+            clauses.append("price >= ?")
+            params.append(constraints["min_price"])
+        if constraints.get("max_price") is not None:
+            clauses.append("price <= ?")
+            params.append(constraints["max_price"])
+        if constraints.get("brand"):
+            clauses.append("brand = ?")
+            params.append(constraints["brand"])
+        params.append(200)
         return (
-            f"SELECT * FROM products WHERE {' OR '.join(clauses)} LIMIT 200",
+            f"SELECT * FROM products WHERE {' AND '.join(clauses)} ORDER BY rating DESC, price ASC LIMIT ?",
             params,
         )
 
@@ -265,9 +300,15 @@ SQL: SELECT * FROM products WHERE name LIKE '%背包%' AND price <= 300"""),
         model_error = ""
         failure_stage = "nl2sql_model"
         model_execution_succeeded = False
+        model_attempted = False
         last_error: Optional[Exception] = None
 
         for attempt in range(max_retries + 1):
+            if keyword_results and self._parse_product_constraints(user_query).get("typed_complete"):
+                model_execution_succeeded = True
+                model_explanation = "确定性商品词与结构化约束查询"
+                break
+            model_attempted = True
             try:
                 if keyword_results:
                     sql_result = self._invoke_model_enrichment({"user_query": user_query})
@@ -320,8 +361,8 @@ SQL: SELECT * FROM products WHERE name LIKE '%背包%' AND price <= 300"""),
         query_sources = []
         if keyword_sql:
             query_sources.append("keyword_sql")
-        # 小模型路径每次都强制尝试；失败也属于已执行的查询来源。
-        query_sources.append("nl2sql")
+        if model_attempted:
+            query_sources.append("nl2sql")
 
         warnings: List[str] = []
         if merged_results and errors:

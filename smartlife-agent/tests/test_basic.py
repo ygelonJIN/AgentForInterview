@@ -12,7 +12,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 def test_imports():
     """测试导入"""
     try:
-        from app.router import TaskRouter, TaskRoute
         from app.tools.tool_bundle import ToolBundle
         from app.tools.shopping_tools import ShoppingToolProvider
         from app.tools.travel_tools import TravelToolProvider
@@ -20,22 +19,6 @@ def test_imports():
         assert True
     except ImportError as e:
         pytest.fail(f"导入失败: {e}")
-
-def test_task_route_model():
-    """测试TaskRoute模型"""
-    from app.router import TaskRoute
-    
-    # 测试有效数据
-    route = TaskRoute(
-        route="react",
-        reason="简单查询任务",
-        complexity="simple",
-        estimated_steps=1
-    )
-    assert route.route == "react"
-    assert route.reason == "简单查询任务"
-    assert route.complexity == "simple"
-    assert route.estimated_steps == 1
 
 def test_shopping_tool_provider():
     """测试 ShoppingToolProvider"""

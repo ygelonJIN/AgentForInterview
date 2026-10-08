@@ -15,6 +15,32 @@ from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence
 
 
 logger = logging.getLogger("smartlife")
+
+try:
+    from opentelemetry import trace as _otel_trace
+    from opentelemetry.sdk.trace import TracerProvider as _OTelTracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor as _OTelBatchSpanProcessor
+except Exception:
+    _otel_trace = None
+    _OTelTracerProvider = None
+    _OTelBatchSpanProcessor = None
+
+
+def _init_otel_tracer():
+    if _otel_trace is None:
+        return None
+    if os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") and _OTelTracerProvider is not None:
+        try:
+            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+            provider = _OTelTracerProvider()
+            provider.add_span_processor(_OTelBatchSpanProcessor(OTLPSpanExporter()))
+            _otel_trace.set_tracer_provider(provider)
+        except Exception as exc:
+            logger.warning("OTEL exporter initialization failed: %s", exc)
+    return _otel_trace.get_tracer("smartlife.agent")
+
+
+_otel_tracer = _init_otel_tracer()
 _REDACTED_FIELDS = {"api_key", "authorization", "password", "token"}
 
 
@@ -219,6 +245,7 @@ def timed_span(
 ) -> Iterator[SpanMeasurement]:
     measurement = SpanMeasurement()
     started = time.perf_counter()
+    otel_span = _otel_tracer.start_span(span) if _otel_tracer else None
     try:
         yield measurement
     except Exception as exc:
@@ -226,6 +253,10 @@ def timed_span(
             "error_type": type(exc).__name__,
             "error": str(exc),
         })
+        if otel_span is not None:
+            otel_span.set_attribute("error.type", type(exc).__name__)
+            otel_span.set_status(_otel_trace.Status(_otel_trace.StatusCode.ERROR, str(exc)))
+            otel_span.end()
         record_trace(
             span,
             (time.perf_counter() - started) * 1000,
@@ -235,6 +266,12 @@ def timed_span(
         )
         raise
     else:
+        if otel_span is not None:
+            otel_span.set_attribute("trace_id", trace_id)
+            for key, value in measurement.attributes.items():
+                if isinstance(value, (bool, int, float, str)):
+                    otel_span.set_attribute(key, value)
+            otel_span.end()
         record_trace(
             span,
             (time.perf_counter() - started) * 1000,

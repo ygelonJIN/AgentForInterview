@@ -13,6 +13,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
 from app.agents.orchestrator_v2 import OrchestratorV2
+from app.agents.task_models import build_composite_plan, branch_outcome
 from app.checkpointing import create_checkpointer
 from app.classifier import ClassificationResult, UnifiedClassifier
 from app.observability import timed_span
@@ -103,7 +104,8 @@ class LangGraphOrchestrator:
             "shopping": NodePolicy(timeout_seconds=300, retry_policy=RetryPolicy(max_attempts=1)),
             "travel": NodePolicy(timeout_seconds=180, retry_policy=RetryPolicy(max_attempts=1)),
             "shopping_travel": NodePolicy(timeout_seconds=480, retry_policy=RetryPolicy(max_attempts=1)),
-            "negotiation": NodePolicy(timeout_seconds=120, retry_policy=RetryPolicy(max_attempts=1)),
+            "customer_service": NodePolicy(timeout_seconds=60, retry_policy=RetryPolicy(max_attempts=1)),
+            "general_plan": NodePolicy(timeout_seconds=180, retry_policy=RetryPolicy(max_attempts=1)),
             "react": NodePolicy(timeout_seconds=120, retry_policy=RetryPolicy(max_attempts=1)),
             "general": NodePolicy(timeout_seconds=120, retry_policy=RetryPolicy(max_attempts=1)),
             "finalize": NodePolicy(timeout_seconds=10, retry_policy=RetryPolicy(max_attempts=1)),
@@ -130,7 +132,7 @@ class LangGraphOrchestrator:
                 graph="langgraph",
                 node=name,
                 step=self._step_for_node(name),
-                branch=name if name in {"shopping", "travel", "shopping_travel", "negotiation", "react", "general"} else None,
+                branch=name if name in {"shopping", "travel", "shopping_travel", "customer_service", "general_plan", "react", "general"} else None,
                 details={
                     "state_status": state.get("status", ""),
                     "intent": classification.get("intent", ""),
@@ -149,7 +151,8 @@ class LangGraphOrchestrator:
             "shopping": "shopping",
             "travel": "travel",
             "shopping_travel": "shopping",
-            "negotiation": "negotiation",
+            "customer_service": "retrieval",
+            "general_plan": "plan",
             "react": "react",
             "general": "general",
             "finalize": "done",
@@ -163,7 +166,8 @@ class LangGraphOrchestrator:
         graph.add_node("shopping", self._policy_node("shopping", self._shopping))
         graph.add_node("travel", self._policy_node("travel", self._travel))
         graph.add_node("shopping_travel", self._policy_node("shopping_travel", self._shopping_travel))
-        graph.add_node("negotiation", self._policy_node("negotiation", self._negotiation))
+        graph.add_node("customer_service", self._policy_node("customer_service", self._customer_service))
+        graph.add_node("general_plan", self._policy_node("general_plan", self._general_plan))
         graph.add_node("react", self._policy_node("react", self._react))
         graph.add_node("general", self._policy_node("general", self._general))
         graph.add_node("finalize", self._policy_node("finalize", self._finalize))
@@ -177,12 +181,13 @@ class LangGraphOrchestrator:
                 "shopping": "shopping",
                 "travel": "travel",
                 "shopping_travel": "shopping_travel",
-                "negotiation": "negotiation",
+                "customer_service": "customer_service",
+                "general_plan": "general_plan",
                 "react": "react",
                 "general": "general",
             },
         )
-        for scene_node in ("shopping", "travel", "shopping_travel", "negotiation", "react", "general"):
+        for scene_node in ("shopping", "travel", "shopping_travel", "customer_service", "general_plan", "react", "general"):
             graph.add_edge(scene_node, "finalize")
         graph.add_edge("finalize", END)
         return graph.compile(checkpointer=self.checkpointer)
@@ -229,14 +234,14 @@ class LangGraphOrchestrator:
         intents = set(classification.get("intents") or [intent])
         if {"shopping", "travel"}.issubset(intents):
             return "shopping_travel"
-        if intent in {"shopping", "customer_service"}:
+        if intent == "shopping":
             return "shopping"
+        if intent == "customer_service":
+            return "customer_service"
         if intent == "travel":
             return "travel"
-        if intent == "negotiation":
-            return "negotiation"
-        if intent == "general" and route == "react":
-            return "react"
+        if intent == "general":
+            return "react" if route == "react" else "general_plan"
         return "general"
 
     @staticmethod
@@ -269,17 +274,28 @@ class LangGraphOrchestrator:
         runner = {
             "shopping": self.legacy.run_shopping_turn,
             "travel": self.legacy.run_travel_turn,
-            "negotiation": self.legacy.run_negotiation_turn,
+            "customer_service": self.legacy.run_customer_service_turn,
+            "general_plan": self.legacy.run_general_plan_turn,
             "react": self.legacy.run_react_turn,
             "general": self.legacy.run_general_turn,
         }[scene]
-        response = await runner(
-            state["user_message"],
-            state["user_id"],
-            state["thread_id"],
-            classification,
-            queue,
-        )
+        if scene in {"shopping", "travel"}:
+            response = await runner(
+                state["user_message"],
+                state["user_id"],
+                state["thread_id"],
+                classification,
+                queue,
+                constraints=build_composite_plan(state["user_message"]).constraints,
+            )
+        else:
+            response = await runner(
+                state["user_message"],
+                state["user_id"],
+                state["thread_id"],
+                classification,
+                queue,
+            )
         return {"response": response, "agent_used": getattr(classification, "agent_label", classification.intent), "status": "generated"}
 
     async def _shopping(self, state: OrchestratorState, config: Optional[RunnableConfig] = None):
@@ -287,6 +303,12 @@ class LangGraphOrchestrator:
 
     async def _travel(self, state: OrchestratorState, config: Optional[RunnableConfig] = None):
         return await self._run_scene(state, config, "travel")
+
+    async def _customer_service(self, state: OrchestratorState, config: Optional[RunnableConfig] = None):
+        return await self._run_scene(state, config, "customer_service")
+
+    async def _general_plan(self, state: OrchestratorState, config: Optional[RunnableConfig] = None):
+        return await self._run_scene(state, config, "general_plan")
 
     async def _shopping_travel(
         self,
@@ -328,15 +350,18 @@ class LangGraphOrchestrator:
             "intent_scores": {"travel": classification.intent_scores.get("travel", 1.0)},
         })
 
+        composite_plan = build_composite_plan(state["user_message"])
+        constraints = composite_plan.constraints
         shopping_queue = _CompositeEventQueue(queue, "shopping")
         travel_queue = _CompositeEventQueue(queue, "travel")
-        shopping_response, travel_response = await asyncio.gather(
+        results = await asyncio.gather(
             self.legacy.run_shopping_turn(
                 state["user_message"],
                 state["user_id"],
                 state["thread_id"],
                 shopping_classification,
                 shopping_queue,
+                constraints=constraints,
             ),
             self.legacy.run_travel_turn(
                 state["user_message"],
@@ -344,25 +369,34 @@ class LangGraphOrchestrator:
                 state["thread_id"],
                 travel_classification,
                 travel_queue,
+                constraints=constraints,
             ),
+            return_exceptions=True,
         )
-
-        shopping_response = (shopping_response or "").strip()
-        travel_response = (travel_response or "").strip()
-        response = (
-            "【购物推荐】\n"
-            f"{shopping_response}\n\n"
-            "【旅行计划】\n"
-            f"{travel_response}"
-        ).strip()
+        shopping_result, travel_result = results
+        shopping_branch = (
+            branch_outcome("shopping", str(shopping_result or "").strip())
+            if not isinstance(shopping_result, BaseException)
+            else branch_outcome("shopping", error=f"{type(shopping_result).__name__}: {shopping_result}")
+        )
+        travel_branch = (
+            branch_outcome("travel", str(travel_result or "").strip())
+            if not isinstance(travel_result, BaseException)
+            else branch_outcome("travel", error=f"{type(travel_result).__name__}: {travel_result}")
+        )
+        response = await self.legacy.synthesize_composite_response(
+            state["user_message"],
+            shopping_branch.model_dump(),
+            travel_branch.model_dump(),
+            constraints,
+            queue,
+        )
+        status = "generated" if shopping_branch.ok or travel_branch.ok else "failed"
         return {
             "response": response,
             "agent_used": "shopping+travel",
-            "status": "generated",
+            "status": status,
         }
-
-    async def _negotiation(self, state: OrchestratorState, config: Optional[RunnableConfig] = None):
-        return await self._run_scene(state, config, "negotiation")
 
     async def _react(self, state: OrchestratorState, config: Optional[RunnableConfig] = None):
         return await self._run_scene(state, config, "react")

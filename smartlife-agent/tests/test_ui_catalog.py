@@ -115,12 +115,6 @@ def test_whole_card_selection_switches_assistant_and_catalog_views():
     app = AppTest.from_file(Path(__file__).parents[1] / "app" / "main.py", default_timeout=20).run()
     assert not app.exception
 
-    negotiation_button = next(
-        button for button in app.main.button if button.label == "多人协商"
-    )
-    negotiation_button.click().run()
-    assert not app.exception
-    assert any(item.label == "参与者 ID" for item in app.text_input)
 
     nav_labels = {button.label for button in app.sidebar.button}
     assert nav_labels == {"智能助手", "生活目录", "记忆中心", "数据导入", "个人中心"}

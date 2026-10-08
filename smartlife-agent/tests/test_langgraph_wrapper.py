@@ -45,18 +45,24 @@ class _FakeLegacy:
             },
         )
 
-    async def _scene(self, name, user_message, user_id, thread_id, classification, queue):
+    async def _scene(self, name, user_message, user_id, thread_id, classification, queue, **kwargs):
         self.scene_calls.append((name, user_message, user_id, thread_id))
         return f"{name}-ok"
 
-    async def run_shopping_turn(self, *args):
-        return await self._scene("shopping", *args)
+    async def run_shopping_turn(self, *args, **kwargs):
+        return await self._scene("shopping", *args, **kwargs)
 
-    async def run_travel_turn(self, *args):
-        return await self._scene("travel", *args)
+    async def run_travel_turn(self, *args, **kwargs):
+        return await self._scene("travel", *args, **kwargs)
 
-    async def run_negotiation_turn(self, *args):
-        return await self._scene("negotiation", *args)
+    async def run_customer_service_turn(self, *args, **kwargs):
+        return await self._scene("customer_service", *args, **kwargs)
+
+    async def run_general_plan_turn(self, *args, **kwargs):
+        return await self._scene("general_plan", *args, **kwargs)
+
+    async def synthesize_composite_response(self, user_message, shopping, travel, constraints, queue):
+        return "【购物推荐】\n" + shopping.get("response", "") + "\n\n【旅行计划】\n" + travel.get("response", "")
 
     async def run_react_turn(self, *args):
         return await self._scene("react", *args)
@@ -111,11 +117,10 @@ def test_travel_scene_never_routes_budget_trip_to_product_agent():
 def test_graph_routes_each_intent_to_its_scene_node():
     cases = {
         ("shopping", "react"): "shopping",
-        ("customer_service", "react"): "shopping",
+        ("customer_service", "react"): "customer_service",
         ("travel", "plan_and_execute"): "travel",
-        ("negotiation", "react"): "negotiation",
         ("general", "react"): "react",
-        ("general", "plan_and_execute"): "general",
+        ("general", "plan_and_execute"): "general_plan",
     }
     for (intent, route), expected in cases.items():
         legacy = _FakeLegacy(intent=intent, route=route)
@@ -149,7 +154,7 @@ def test_graph_runs_both_shopping_and_travel_for_explicit_composite_intent():
         message="给我推荐一双800元的跑鞋，再给我一份杭州玩两天的计划",
     ))
 
-    assert [name for name, *_ in legacy.scene_calls] == ["shopping", "travel"]
+    assert {name for name, *_ in legacy.scene_calls} == {"shopping", "travel"}
     branches = [
         event["data"]["branch"]
         for event in events
@@ -167,7 +172,7 @@ def test_graph_runs_composite_scenes_in_parallel():
     started = set()
 
     class ParallelLegacy(_FakeLegacy):
-        async def _scene(self, name, user_message, user_id, thread_id, classification, queue):
+        async def _scene(self, name, user_message, user_id, thread_id, classification, queue, **kwargs):
             self.scene_calls.append((name, user_message, user_id, thread_id))
             started.add(name)
             if len(started) == 2:
@@ -191,12 +196,12 @@ def test_graph_runs_composite_scenes_in_parallel():
 
 def test_composite_sections_stream_before_done():
     class StreamingLegacy(_FakeLegacy):
-        async def run_shopping_turn(self, *args):
+        async def run_shopping_turn(self, *args, **kwargs):
             queue = args[-1]
             await queue.emit_token("真实跑鞋", step="generate")
             return "真实跑鞋"
 
-        async def run_travel_turn(self, *args):
+        async def run_travel_turn(self, *args, **kwargs):
             queue = args[-1]
             await queue.emit_token("杭州两日游", step="plan")
             return "杭州两日游"
@@ -265,7 +270,7 @@ def test_graph_state_does_not_store_runtime_event_queue():
 
     state_fields = set(wrapper.graph.get_graph().nodes)
     assert "queue" not in wrapper.graph.builder.schemas.get("state", {})
-    assert {"prepare", "classify", "shopping", "travel", "negotiation", "react", "general", "finalize"} <= state_fields
+    assert {"prepare", "classify", "shopping", "travel", "customer_service", "general_plan", "react", "general", "finalize"} <= state_fields
 
 
 def test_graph_wrapper_preserves_thread_scope_and_delegation():

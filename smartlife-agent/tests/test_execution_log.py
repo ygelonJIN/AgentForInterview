@@ -116,16 +116,16 @@ def test_travel_graph_logs_branch_revision_and_step_iterations():
     logs = [data for event, data in events if event == "execution_log"]
     assert state["status"] == "approved"
     assert any(
-        item["kind"] == "branch_selected" and item["branch"] == "make_plan"
+        item["kind"] == "branch_selected" and item["branch"] == "build_steps"
         for item in logs
     )
     step_iterations = [
         item for item in logs
         if item["kind"] == "loop_iteration" and item["node"] == "execute_steps"
     ]
-    assert [item["iteration"] for item in step_iterations] == [1, 2, 1, 2]
+    assert [item["iteration"] for item in step_iterations] == [1, 2]
     assert all(item["max_iterations"] == 2 for item in step_iterations)
-    assert [item["details"]["revision"] for item in step_iterations] == [0, 0, 1, 1]
+    assert [item["details"]["revision"] for item in step_iterations] == [0, 0]
     assert any(
         item["kind"] == "loop_iteration" and item["node"] == "revise"
         and item["iteration"] == 1 and item["max_iterations"] == 1

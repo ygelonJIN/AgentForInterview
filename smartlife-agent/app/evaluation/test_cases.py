@@ -61,17 +61,6 @@ TEST_CASES = {
             "category": "memory",
         },
     ],
-    "negotiation": [
-        {
-            "participants": [
-                {"user_id": "A", "preferences": {"style": "户外", "budget": 2000}},
-                {"user_id": "B", "preferences": {"style": "美食", "budget": 1500}},
-                {"user_id": "C", "preferences": {"style": "拍照", "budget": 3000}},
-            ],
-            "expected_conflicts": ["budget", "style"],
-            "category": "negotiation",
-        },
-    ],
 }
 
 

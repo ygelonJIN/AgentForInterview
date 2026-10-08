@@ -17,24 +17,21 @@ from app.tools.tool_bundle import ToolBundle
 
 
 class GetUserProfileInput(BaseModel):
-    user_id: str = Field(description="用户ID")
+    include_recent: bool = Field(default=True, description="是否包含最近记忆")
 
 
 class SavePreferenceInput(BaseModel):
-    user_id: str = Field(description="用户ID")
     preference_type: str = Field(description="偏好类型：shopping/travel/general")
     preference_data: Dict[str, Any] = Field(description="偏好数据")
 
 
 class GetCrossSceneMemoriesInput(BaseModel):
-    user_id: str = Field(description="用户ID")
     current_scene: str = Field(description="当前场景：shopping/travel")
     limit: int = Field(default=5, ge=1, le=50, description="返回记忆数量")
     query: str = Field(default="", description="当前问题，用于语义召回")
 
 
 class SaveEventInput(BaseModel):
-    user_id: str = Field(description="用户ID")
     event_type: str = Field(description="事件类型：purchase/travel/review")
     event_data: Dict[str, Any] = Field(description="事件数据")
 
@@ -50,7 +47,9 @@ class MemoryToolProvider(ToolBundle):
         memory_repository: Optional[MemoryRepository] = None,
         approval_graph: Optional[MemoryApprovalGraph] = None,
         persist: Optional[Callable[..., Any]] = None,
+        actor_id: Optional[str] = None,
     ):
+        self.actor_id = str(actor_id or "").strip()
         self.md_memory = md_memory or MDMemory()
         self._long_term_memory = long_term_memory
         self._memory_repository = memory_repository
@@ -60,6 +59,11 @@ class MemoryToolProvider(ToolBundle):
             name="memory-agent",
             description="记忆服务：用户画像、偏好、跨场景召回和审批写入",
         )
+
+    def _require_actor(self) -> str:
+        if not self.actor_id:
+            raise PermissionError("记忆工具未绑定用户身份")
+        return self.actor_id
 
     @property
     def long_term_memory(self):
@@ -119,21 +123,22 @@ class MemoryToolProvider(ToolBundle):
         server = self
 
         @tool("get_user_profile", args_schema=GetUserProfileInput)
-        def get_user_profile(user_id: str) -> Dict[str, Any]:
-            """读取当前用户画像和最近记忆。"""
-            profile = server.md_memory.get_user_profile(user_id)
-            return {**profile, "source": "md_memory"}
+        def get_user_profile(include_recent: bool = True) -> Dict[str, Any]:
+            """读取当前 Actor 的用户画像和最近记忆。"""
+            actor_id = server._require_actor()
+            profile = server.md_memory.get_user_profile(actor_id)
+            return {**profile, "source": "md_memory", "include_recent": include_recent}
 
         @tool("save_preference", args_schema=SavePreferenceInput)
         def save_preference(
-            user_id: str,
             preference_type: str,
             preference_data: Dict[str, Any],
         ) -> Dict[str, Any]:
             """创建偏好写入审批，不在审批前直接修改记忆。"""
+            actor_id = server._require_actor()
             content = json.dumps(preference_data, ensure_ascii=False, sort_keys=True)
             return server._start_approval(
-                user_id,
+                actor_id,
                 {
                     "type": "preference",
                     "category": preference_type,
@@ -145,32 +150,28 @@ class MemoryToolProvider(ToolBundle):
 
         @tool("get_cross_scene_memories", args_schema=GetCrossSceneMemoriesInput)
         def get_cross_scene_memories(
-            user_id: str,
             current_scene: str,
             limit: int = 5,
             query: str = "",
         ) -> List[Dict[str, Any]]:
-            """按当前问题召回跨场景记忆，结果只包含当前用户。"""
+            """按当前问题召回当前 Actor 的跨场景记忆。"""
+            actor_id = server._require_actor()
             memory = server.long_term_memory
             if memory is None:
                 return []
-            rows = memory.get_cross_scene_memories(
-                user_id,
-                current_scene,
-                query=query,
-            )
+            rows = memory.get_cross_scene_memories(actor_id, current_scene, query=query)
             return rows[:limit]
 
         @tool("save_event", args_schema=SaveEventInput)
         def save_event(
-            user_id: str,
             event_type: str,
             event_data: Dict[str, Any],
         ) -> Dict[str, Any]:
             """创建事件写入审批，不在审批前直接修改记忆。"""
+            actor_id = server._require_actor()
             content = json.dumps(event_data, ensure_ascii=False, sort_keys=True)
             return server._start_approval(
-                user_id,
+                actor_id,
                 {
                     "type": "event",
                     "category": event_type,
@@ -181,11 +182,12 @@ class MemoryToolProvider(ToolBundle):
             )
 
         @tool("get_user_context")
-        def get_user_context(user_id: str) -> Dict[str, Any]:
-            """读取用户画像和最近记忆摘要。"""
-            profile = server.md_memory.get_user_profile(user_id)
+        def get_user_context() -> Dict[str, Any]:
+            """读取当前 Actor 的用户画像和最近记忆摘要。"""
+            actor_id = server._require_actor()
+            profile = server.md_memory.get_user_profile(actor_id)
             return {
-                "user_id": user_id,
+                "user_id": actor_id,
                 "profile": profile,
                 "source": "md_memory",
             }

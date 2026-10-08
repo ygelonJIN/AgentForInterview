@@ -1,4 +1,4 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
@@ -494,6 +494,117 @@
       white-space: nowrap;
     }
 
+    .parallel-graph {
+      width: min(920px, 100%);
+      margin: 0 auto;
+    }
+
+    .parallel-entry {
+      width: min(720px, 100%);
+      margin: 0 auto;
+    }
+
+    .fanout-label,
+    .join-label {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      width: min(720px, 100%);
+      min-height: 58px;
+      margin: 0 auto;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    .fanout-label::before,
+    .join-label::before {
+      content: "";
+      position: absolute;
+      left: 50%;
+      width: 2px;
+      height: 100%;
+      background: var(--line);
+      transform: translateX(-50%);
+    }
+
+    .fanout-label strong,
+    .join-label strong,
+    .fanout-label span,
+    .join-label span {
+      position: relative;
+      z-index: 2;
+      padding: 4px 8px;
+      border: 1px solid #d7dfe9;
+      border-radius: 999px;
+      background: #fff;
+    }
+
+    .fanout-label strong,
+    .join-label strong {
+      color: var(--blue);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 11px;
+    }
+
+    .fanout-label span,
+    .join-label span {
+      font-size: 11px;
+      font-weight: 750;
+    }
+
+    .parallel-branches {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+      margin-top: 22px;
+    }
+
+    .parallel-branches::before {
+      content: "";
+      position: absolute;
+      left: 25%;
+      right: 25%;
+      top: -22px;
+      height: 22px;
+      border-top: 2px solid var(--line);
+    }
+
+    .parallel-branch {
+      width: 100%;
+    }
+
+    .parallel-branch::before {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: -22px;
+      width: 2px;
+      height: 22px;
+      background: var(--line);
+    }
+
+    .join-label {
+      margin-top: 0;
+    }
+
+    .join-label::after {
+      content: "";
+      position: absolute;
+      left: 25%;
+      right: 25%;
+      top: 50%;
+      height: 2px;
+      background: var(--line);
+    }
+
+    .join-label::before {
+      top: 50%;
+      height: 50%;
+    }
+
     .tree-block {
       position: relative;
       min-width: 0;
@@ -836,6 +947,19 @@
       .branch-node {
         padding: 39px 11px 13px;
       }
+      .parallel-branches {
+        grid-template-columns: 1fr;
+      }
+      .parallel-branches::before,
+      .parallel-branch::before,
+      .join-label::after {
+        display: none;
+      }
+      .fanout-label,
+      .join-label {
+        flex-direction: column;
+        gap: 5px;
+      }
       .edge-label {
         top: -37px;
         max-width: calc(100% - 2px);
@@ -879,7 +1003,7 @@
       </div>
       <div class="key-points">
         <article class="key-point"><strong>分支 1：统一分类</strong><span>关键词、指代沿用、小模型、主模型仲裁按顺序尝试，最后产出 intent/route/retrieval。</span></article>
-        <article class="key-point"><strong>分支 2：顶层场景</strong><span>主要按 intent 分成购物客服、旅行、协商、通用 ReAct、通用生成。</span></article>
+        <article class="key-point"><strong>分支 2：顶层场景</strong><span>单意图按 intent 分流；shopping+travel 双意图进入复合节点，ShoppingGraph 与 TravelPlanGraph 并行执行。</span></article>
         <article class="key-point"><strong>分支 3：SQL / RAG</strong><span>在 ShoppingGraph 的 plan_retrieval 中按事实需求派生 none/sql_only/rag_only/mixed。</span></article>
       </div>
     </section>
@@ -930,7 +1054,7 @@ Python async generator → Streamlit background thread → st.empty()</div>
           <p>它不只判断 Intent。它把过去分离的任务路由和意图识别合并为一次输出：</p>
           <div class="formula">ClassificationResult {
   route,       // react / plan_and_execute
-  intent,      // shopping / travel / negotiation / customer_service / general
+  intent,      // shopping / travel / customer_service / general
   sub_intent,  // search / recommend / order_status / plan_trip / qa / chat ...
   retrieval,   // sql_only / rag_only / mixed / none
   confidence,  // 0.0 - 1.0
@@ -944,12 +1068,14 @@ Python async generator → Streamlit background thread → st.empty()</div>
           <span class="term-name">conditional edge function: LangGraphOrchestrator._route(state)</span>
           <p><strong>中文：</strong>LangGraph 条件路由函数，或“顶层场景路由”。</p>
           <p>它不是再次调用分类模型，而是读取 <code>ClassificationResult</code>，按固定优先级返回一个字符串边名：</p>
-          <div class="formula">shopping/customer_service → "shopping"
-travel                   → "travel"
-negotiation              → "negotiation"
-general + react          → "react"
-其他                     → "general"</div>
-          <p>LangGraph 的条件边映射再把这些字符串连接到 Shopping、Travel、Negotiation、ReAct、General 节点。</p>
+          <div class="formula">intents 包含 shopping + travel → "shopping_travel"
+shopping                        → "shopping"
+customer_service                → "customer_service"
+travel                          → "travel"
+general + react                 → "react"
+general + plan_and_execute      → "general_plan"
+其他                            → "general"</div>
+          <p>复合意图条件最先判断；LangGraph 的条件边映射再把这些字符串连接到 ShoppingTravel、Shopping、Travel、CustomerService、GeneralPlan、ReAct、General 节点。</p>
         </article>
       </div>
 
@@ -1003,12 +1129,6 @@ general + react          → "react"
   <div class="keyword-group-head"><h3>Travel</h3><span>38 个</span></div>
   <code>classifier._INTENT_KEYWORDS[travel]</code>
   <div class="keywords"><span class="keyword">旅行</span><span class="keyword">旅游</span><span class="keyword">酒店</span><span class="keyword">景点</span><span class="keyword">机票</span><span class="keyword">出行</span><span class="keyword">度假</span><span class="keyword">目的地</span><span class="keyword">行程</span><span class="keyword">攻略</span><span class="keyword">好玩</span><span class="keyword">风景</span><span class="keyword">景区</span><span class="keyword">民宿</span><span class="keyword">住宿</span><span class="keyword">路线</span><span class="keyword">几天</span><span class="keyword">天游</span><span class="keyword">杭州</span><span class="keyword">北京</span><span class="keyword">上海</span><span class="keyword">成都</span><span class="keyword">西安</span><span class="keyword">云南</span><span class="keyword">大理</span><span class="keyword">丽江</span><span class="keyword">三亚</span><span class="keyword">厦门</span><span class="keyword">桂林</span><span class="keyword">张家界</span><span class="keyword">西藏</span><span class="keyword">新疆</span><span class="keyword">规划</span><span class="keyword">两天</span><span class="keyword">三天</span><span class="keyword">一日游</span><span class="keyword">自驾游</span><span class="keyword">周边游</span></div>
-  
-</article>
-        <article class="keyword-group">
-  <div class="keyword-group-head"><h3>Negotiation</h3><span>6 个</span></div>
-  <code>classifier._INTENT_KEYWORDS[negotiation]</code>
-  <div class="keywords"><span class="keyword">一起</span><span class="keyword">朋友</span><span class="keyword">大家</span><span class="keyword">协商</span><span class="keyword">都同意</span><span class="keyword">投票</span></div>
   
 </article>
         <article class="keyword-group">
@@ -1099,7 +1219,7 @@ general + react          → "react"
     <section class="section">
       <div class="section-head">
         <div>
-          <h2>01 · 全景主干：共同入口 → 统一分类 → 五个场景出口</h2>
+          <h2>01 · 全景主干：共同入口 → 统一分类 → 六个场景出口</h2>
           <p>先走共同前置，再从 ClassificationResult 一次性展开场景分支。</p>
         </div>
         <div class="chapter">OVERVIEW</div>
@@ -1108,11 +1228,6 @@ general + react          → "react"
       <div class="diagram">
         <div class="diagram-title"><h3>共同前置</h3><span>所有智能对话消息都依次经过这四层</span></div>
         <div class="chain">
-          <article class="flow-node node-green">
-            <h3>用户输入</h3>
-            <p>智能对话或快捷提示词。多人协商是独立入口，不经过这里。</p>
-            <div class="meta"><span class="tag">scene=general</span><span class="tag">pending_assistant</span></div>
-          </article>
           <div class="chain-link"><span class="link-label">st.rerun()</span></div>
           <article class="flow-node node-gray">
             <h3>Streamlit UI + 本地 SSE 格式事件消费</h3>
@@ -1143,30 +1258,34 @@ general + react          → "react"
           </div>
           <div class="tree-children" style="--cols:5">
             <article class="branch-node node-green">
-              <div class="edge-label">intent ∈<br>shopping / customer_service</div>
+              <div class="edge-label">intent == shopping</div>
               <h3>Shopping 分支</h3>
               <p>ShoppingGraph：规划检索 → 检索 → 生成 → 校验。</p>
-              <div class="meta"><span class="tag green">route 不再分流</span></div>
+            </article>
+            <article class="branch-node node-cyan">
+              <div class="edge-label">intent == customer_service</div>
+              <h3>Customer Service</h3>
+              <p>只从 Actor 绑定的 OrderRepository 读取真实订单，再生成只读客服回答。</p>
             </article>
             <article class="branch-node node-green">
               <div class="edge-label">intent == travel</div>
               <h3>Travel 分支</h3>
               <p>内部再按 route 选择普通旅游问答或 Plan &amp; Execute。</p>
             </article>
-            <article class="branch-node node-orange">
-              <div class="edge-label">intent == negotiation</div>
-              <h3>协商提示分支</h3>
-              <p>主聊天只提示进入社交协商标签页。</p>
-            </article>
             <article class="branch-node node-purple">
               <div class="edge-label">general + route=react</div>
               <h3>通用 ReAct</h3>
               <p>进入 Agent ↔ Tools 受控循环。</p>
             </article>
+            <article class="branch-node node-blue">
+              <div class="edge-label">general +<br>route=plan_and_execute</div>
+              <h3>GeneralPlanGraph</h3>
+              <p>结构化拆解 → 工具执行 → 硬校验 → 一次修订 → 综合回答。</p>
+            </article>
             <article class="branch-node node-gray">
               <div class="edge-label">其他 general</div>
               <h3>普通流式生成</h3>
-              <p>general + plan_and_execute 也落到这里。</p>
+              <p>简单通用对话使用最近历史直接生成。</p>
             </article>
           </div>
         </div>
@@ -1174,7 +1293,7 @@ general + react          → "react"
 
       <div class="callout warning">
         <strong>route 的实际作用范围</strong>
-        shopping/customer_service/travel/negotiation 在顶层不使用 route 再分流；route 真正决定执行方式的只有 travel 内部的 Chat/Plan，以及 general 的 ReAct/普通生成。
+        shopping/customer_service/travel 在顶层不再用 route 二次分流；route 决定 travel 的 Chat/Plan，以及 general 的 ReAct/GeneralPlan/普通生成。
       </div>
     </section>
 
@@ -1198,10 +1317,10 @@ general + react          → "react"
             <article class="branch-node node-purple">
               <div class="edge-label">关键词条件命中</div>
               <h3>A. 关键词快速分类</h3>
-              <p>判断 route 和 intent。统计 shopping、travel、negotiation、customer_service 的“命中关键词条目数”；Travel 天数正则算 1 个 travel 信号，Shopping 弱价格词加到 shopping 分数。</p>
+              <p>判断 route 和 intent。统计 shopping、travel、customer_service 的“命中关键词条目数”；Travel 天数正则算 1 个 travel 信号，Shopping 弱价格词加到 shopping 分数。</p>
               <ul>
                 <li>Travel 分数 ≥ 2 且没有强购物词 → travel。</li>
-                <li>否则四类取最大分数；Shopping 还必须至少有一个强购物词。</li>
+                <li>否则三类取最大分数；Shopping 还必须至少有一个强购物词。</li>
                 <li>只有 <code>max_match ≥ 2</code> 才返回；confidence 固定 0.85。</li>
               </ul>
               <div class="meta"><span class="tag purple">零延迟</span><span class="tag">分类 route + intent</span><span class="tag">命中即结束</span></div>
@@ -1230,8 +1349,8 @@ general + react          → "react"
   否则 → react
 
 intent:
-  shopping/travel/negotiation/customer_service 的关键词条目数比较最大值
-  travel_score >= 2 且无强购物词时优先 travel
+  shopping/travel/customer_service 的关键词条目数比较最大值
+  travel_score &gt;= 2 且无强购物词时优先 travel
   shopping 只靠价格弱词不能成立，至少需要一个强购物词
 
 sub_intent:
@@ -1245,7 +1364,7 @@ retrieval:
   travel   → rag_only
   其他     → none
 
-confidence = 0.85；只有 max_match >= 2 才返回，否则进入 B/C 层</div>
+confidence = 0.85；只有 max_match &gt;= 2 才返回，否则进入 B/C 层</div>
       </div>
 
       <div class="callout success">
@@ -1280,12 +1399,11 @@ travel_score =
         <div class="tree-block">
           <svg class="tree-lines"></svg>
           <div class="root-node node-purple">
-            <h3>计算四类关键词分数</h3>
-            <p>Shopping 分数 = 强购物词 + 弱价格词；Travel 分数 = Travel 关键词 + 天数正则；Negotiation / Customer Service 各自计数。</p>
+            <h3>计算三类关键词分数</h3>
+            <p>Shopping 分数 = 强购物词 + 弱价格词；Travel 分数 = Travel 关键词 + 天数正则；Customer Service 独立计数。</p>
             <div class="score-line">
               <span class="score-chip">shopping_score</span>
               <span class="score-chip">travel_score</span>
-              <span class="score-chip">negotiation_score</span>
               <span class="score-chip">customer_service_score</span>
             </div>
           </div>
@@ -1353,28 +1471,29 @@ travel_score =
 
       <div class="diagram">
         <div class="diagram-title">
-          <h3>“旅行 + 购物两个都要”的复合执行流程 <span class="status-current">基础能力已接入</span></h3>
-          <span>当前按顺序执行 ShoppingGraph 和 TravelPlanGraph，再合并稳定正文；共享预算联动仍是后续增强</span>
+          <h3>当前 Shopping + Travel 并行执行链 <span class="status-current">fan-out / join 已接入</span></h3>
+          <span><code>_shopping_travel()</code> 用 <code>asyncio.gather()</code> 同时启动两个子图，并按独立正文分区流式输出</span>
         </div>
-        <div class="chain">
-          <article class="flow-node node-purple">
-            <h3>多意图分类结果</h3>
-            <p><code>intents: ["shopping","travel"]</code>、<code>primary_intent</code>、<code>intent_scores</code>；旧 <code>intent</code> 保留为主意图。</p>
+        <div class="parallel-graph">
+          <article class="parallel-entry flow-node node-purple">
+            <h3>多意图分类 → Composite Route</h3>
+            <p><code>intents: ["shopping","travel"]</code> 命中后，<code>_route()</code> 返回 <code>shopping_travel</code>，两个场景分别接收裁剪后的场景化分类。</p>
           </article>
-          <div class="chain-link"><span class="link-label">多意图</span></div>
-          <article class="flow-node node-blue">
-            <h3>Composite Route / 复合路由</h3>
-            <p><code>_route()</code> 检测到 shopping+travel 后返回 <code>shopping_travel</code>，进入复合节点。</p>
-          </article>
-          <div class="chain-link"><span class="link-label">并行或顺序执行</span></div>
-          <article class="flow-node node-green">
-            <h3>ShoppingGraph + TravelPlanGraph</h3>
-            <p>购物子图查 SQL/RAG，旅行子图生成行程；当前顺序执行两个子图，分别传递场景化分类。</p>
-          </article>
-          <div class="chain-link"><span class="link-label">merge</span></div>
-          <article class="flow-node node-cyan">
-            <h3>跨场景合并</h3>
-            <p>输出同时包含商品推荐和旅行计划的最终回答；共享预算统一计算属于下一步增强。</p>
+          <div class="fanout-label"><strong>fan-out</strong><span><code>asyncio.gather(shopping_turn, travel_turn)</code> · 两个子图同时开始</span></div>
+          <div class="parallel-branches">
+            <article class="parallel-branch flow-node node-green">
+              <h3>ShoppingGraph</h3>
+              <p>plan_retrieval → SQL/RAG → generate → validate；流式 token 写入 <code>section=shopping</code>。</p>
+            </article>
+            <article class="parallel-branch flow-node node-blue">
+              <h3>TravelPlanGraph</h3>
+              <p>extract → plan → tools → reflect → revise/finalize；流式 token 写入 <code>section=travel</code>。</p>
+            </article>
+          </div>
+          <div class="join-label"><strong>join</strong><span>等待 Shopping 与 Travel 两个并发任务都返回稳定正文</span></div>
+          <article class="parallel-entry flow-node node-cyan">
+            <h3>跨场景 Merge</h3>
+            <p>先用共享预算/日期/人数做一致性综合，再按固定顺序输出两个稳定分区；单分支失败会保留另一分支并明确披露。</p>
           </article>
         </div>
       </div>
@@ -1392,28 +1511,28 @@ travel_score =
               </tr>
               <tr>
                 <td><code>langgraph_orchestrator.py</code></td>
-                <td>已增加 <code>shopping_travel</code> composite 节点。</td>
-                <td>继续支持真正 fan-out/并行执行、共享预算和更多复合组合。</td>
+                <td><code>shopping_travel</code> composite 节点已用 <code>asyncio.gather()</code> 并行 fan-out。</td>
+                <td>补充共享预算、部分失败恢复和更多复合组合。</td>
               </tr>
               <tr>
                 <td><code>orchestrator_v2.py</code></td>
-                <td>复合节点分别给购物/旅行场景传入各自分类。</td>
+                <td>复合节点分别传入场景化分类，并并发调用购物/旅行执行器。</td>
                 <td>把 EvidencePlanner 扩展为跨意图证据并集，支持共享 facts/sources。</td>
               </tr>
               <tr>
                 <td><code>shopping_graph.py</code> / <code>travel_graph.py</code></td>
-                <td>两个子图都会执行，但暂未共享预算状态。</td>
+                <td>两个子图并发执行，但暂未共享预算状态。</td>
                 <td>增加预算、日期、人数和装备需求的跨场景共享状态。</td>
               </tr>
               <tr>
                 <td><code>streaming.py</code> / <code>process_timeline.py</code></td>
-                <td>复合正文已稳定合并，token/reset 冲突已屏蔽。</td>
-                <td>增加真正的并行子图进度分组和分支标签。</td>
+                <td>并行子图正文按 shopping/travel section 隔离，token/reset 冲突已屏蔽。</td>
+                <td>补充统一的并行分支进度分组、完成状态和失败标记。</td>
               </tr>
               <tr>
                 <td><code>tests/</code></td>
-                <td>已加入 shopping+travel 样例和 composite 路由测试。</td>
-                <td>补充同分、不同分、预算合并、检索并集和失败恢复测试。</td>
+                <td>已有 composite 路由、双子图并发、分区流式和合并正文测试。</td>
+                <td>补充预算合并、检索并集、单分支失败和部分结果恢复测试。</td>
               </tr>
             </tbody>
           </table>
@@ -1474,7 +1593,6 @@ combined.strategy 由最终 Product/Review 派生，但工具/攻略/记忆需�
               <tr><td><code>shopping</code></td><td>购物</td><td>找商品、推荐、比较、价格/品牌/库存筛选</td><td>Shopping 分支</td></tr>
               <tr><td><code>customer_service</code></td><td>客户服务</td><td>订单、物流、退换、退款、投诉、售后</td><td>Shopping 分支</td></tr>
               <tr><td><code>travel</code></td><td>旅行</td><td>目的地、酒店、景点、攻略、路线、行程规划</td><td>Travel 分支</td></tr>
-              <tr><td><code>negotiation</code></td><td>多人协商</td><td>朋友/大家一起决定、偏好协调、投票</td><td>协商提示分支</td></tr>
               <tr><td><code>general</code></td><td>通用对话</td><td>闲聊、一般问答、通用工具请求</td><td>ReAct 或普通生成</td></tr>
             </tbody>
           </table>
@@ -1482,7 +1600,7 @@ combined.strategy 由最终 Product/Review 派生，但工具/攻略/记忆需�
         <div class="formula">小模型输出 Intent 的方法：
 输入 = 当前消息 + 最近对话上下文 + 上一轮分类（仅作为连续指代线索）
 输出 = 一个严格 JSON，其中 intent 只能是上述 5 个枚举值
-若 confidence < 0.55 → 主模型仲裁
+若 confidence &lt; 0.55 → 主模型仲裁
 若 JSON/字段非法 → 主模型修复
 若都失败 → general / react / chat / none</div>
       </div>
@@ -1531,7 +1649,7 @@ combined.strategy 由最终 Product/Review 派生，但工具/攻略/记忆需�
           </div>
         </div>
         <div class="formula">计数规则：sum(1 for kw in list if kw in q)
-同一关键词重复出现只算 1；任意一个计数 > 0 就算命中，没有“至少两个词”的阈值。</div>
+同一关键词重复出现只算 1；任意一个计数 &gt; 0 就算命中，没有“至少两个词”的阈值。</div>
       </div>
 
       <div class="diagram">
@@ -1608,7 +1726,7 @@ attribute_signals = 命中的属性/约束关键词条目数
 product_action_signals = 命中的商品动作关键词条目数
 
 计数方式：for kw in keyword_list: if kw in q，计 +1
-同一个关键词重复出现仍只算 1；任何一个计数 > 0 就算命中，没有“至少 2 个”阈值。</div>
+同一个关键词重复出现仍只算 1；任何一个计数 &gt; 0 就算命中，没有“至少 2 个”阈值。</div>
         <div class="table-wrap">
           <table class="name-table">
             <thead><tr><th>classification.intent</th><th>needs_product（Product）</th><th>needs_review（Review）</th></tr></thead>
@@ -1636,7 +1754,7 @@ product_action_signals = 命中的商品动作关键词条目数
             </tbody>
           </table>
         </div>
-        <div class="formula">needs_product && needs_review → mixed
+        <div class="formula">needs_product &amp;&amp; needs_review → mixed
 needs_product only         → sql_only
 needs_review only          → rag_only
 neither                    → none</div>
@@ -1827,12 +1945,12 @@ EvidencePlanner 再把布尔值映射为 SQL、RAG、mixed、none</div>
             <article class="branch-node node-green">
               <div class="edge-label">route=react</div>
               <h3>旅游问答</h3>
-              <p>拼接跨场景长期记忆，直接流式生成；不调用本地攻略和 RetrievalService。</p>
+              <p>拼接本地攻略 TXT 与跨场景长期记忆，再流式生成；不调用 SQL/RAG。</p>
             </article>
             <article class="branch-node node-blue">
               <div class="edge-label">route=plan_and_execute</div>
               <h3>旅游规划</h3>
-              <p>构建历史 + 本地攻略 TXT + 长期记忆上下文，进入 TravelPlanGraph。</p>
+              <p>构建共享约束 + 历史 + 本地攻略 + 长期记忆上下文，进入 TravelPlanGraph。</p>
             </article>
           </div>
         </div>
@@ -1853,31 +1971,31 @@ EvidencePlanner 再把布尔值映射为 SQL、RAG、mixed、none</div>
             </article>
             <article class="branch-node node-blue">
               <div class="edge-label">核心字段完整</div>
-              <h3>make_plan</h3>
-              <p>主模型生成完整行程。</p>
+              <h3>build_steps</h3>
+              <p>先构建天气、本地活动和可选路线的真实证据步骤。</p>
             </article>
           </div>
         </div>
       </div>
 
       <div class="diagram">
-        <div class="diagram-title"><h3>Plan &amp; Execute 闭环</h3><span>橙色虚线表示修订后重新进入步骤构建</span></div>
+        <div class="diagram-title"><h3>Evidence-first Plan &amp; Execute 闭环</h3><span>先取真实证据，再生成第一版行程</span></div>
         <div class="tree-block">
           <svg class="tree-lines"></svg>
           <div class="root-node node-blue">
-            <h3>计划正文</h3>
-            <p>按“第 N 天 / Day N”切成结构化步骤；没有天标题时整个计划作为单一步骤。</p>
+            <h3>真实工具证据</h3>
+            <p>天气、本地活动和请求中的 A→B 路线先执行；结果写入 evidence_context。</p>
           </div>
           <div class="tree-children" style="--cols:3">
             <article class="branch-node node-cyan">
-              <div class="edge-label">逐日执行</div>
+              <div class="edge-label">证据步骤执行</div>
               <h3>execute_steps</h3>
-              <p>天气、路线、酒店和本地活动；工具失败/模拟/过期会记录 warning。</p>
+              <p>调用天气、路线和本地活动；模拟、失败、过期结果不得冒充事实。</p>
             </article>
             <article class="branch-node node-purple">
-              <div class="edge-label">步骤执行后</div>
-              <h3>reflect</h3>
-              <p>模型宽松审核 + 天数/预算/步骤状态硬校验。</p>
+              <div class="edge-label">证据注入后生成</div>
+              <h3>make_plan → reflect</h3>
+              <p>第一版行程已包含真实工具证据；再做预算、天数、证据状态硬校验与结构化 LLM 审核。</p>
             </article>
             <article class="branch-node node-green">
               <div class="edge-label">pass / minor / 修订达 3 次</div>
@@ -1893,18 +2011,18 @@ EvidencePlanner 再把布尔值映射为 SQL、RAG、mixed、none</div>
           <h3>revise 分支</h3>
           <p>只有 critical 硬错误且修订次数 &lt; 3 才进入 revise。</p>
           <ul>
-            <li>用审核 suggestions 重写完整计划。</li>
-            <li>回到 build_steps → execute_steps → reflect。</li>
+            <li>把 evidence_context 和审核 suggestions 一起传给重写模型。</li>
+            <li>回到 make_plan → reflect；已获取证据不重复执行。</li>
             <li>最多 3 次，达到上限强制保留当前版本。</li>
           </ul>
         </article>
         <article class="panel">
           <h3>工具执行条件</h3>
           <ul>
-            <li>天气：每一步都按目的地 + 日期调用。</li>
-            <li>路线：步骤文本识别“从 A 到 B”才调用。</li>
-            <li>酒店：含住宿词，或第 1 天；预算均摊每晚。</li>
-            <li>活动：本地 destination/outdoor activities TXT。</li>
+            <li>天气：按目的地 + 开始日期 + 证据步骤日期调用。</li>
+            <li>路线：原始请求识别“从 A 到 B”才调用。</li>
+            <li>活动：读取 destination/outdoor activities TXT。</li>
+            <li>工具结果写入 evidence_context，再进入模型生成。</li>
           </ul>
         </article>
       </div>
@@ -1918,7 +2036,7 @@ EvidencePlanner 再把布尔值映射为 SQL、RAG、mixed、none</div>
     <section class="section">
       <div class="section-head">
         <div>
-          <h2>05 · General：ReAct 与普通生成</h2>
+          <h2>05 · General：ReAct 与 GeneralPlanGraph</h2>
           <p>这里能直观看到 route 的第二个明确作用点。</p>
         </div>
         <div class="chapter">GENERAL</div>
@@ -1939,10 +2057,10 @@ EvidencePlanner 再把布尔值映射为 SQL、RAG、mixed、none</div>
               <div class="meta"><span class="tag purple">agent ↔ tools</span><span class="tag">工具 10s 超时</span></div>
             </article>
             <article class="branch-node node-gray">
-              <div class="edge-label">route=plan_and_execute / 其他</div>
-              <h3>普通 LLM 流式生成</h3>
-              <p>最近 5 条历史 + 当前消息；没有计划分解、SQL/RAG、工具执行或反思。</p>
-              <div class="meta"><span class="tag">命名与实际不一致</span></div>
+              <div class="edge-label">route=plan_and_execute</div>
+              <h3>GeneralPlanGraph</h3>
+              <p>结构化计划、并发工具执行、失败硬校验、一次修订和最终综合。</p>
+              <div class="meta"><span class="tag green">Plan-Execute 已闭合</span></div>
             </article>
           </div>
         </div>
@@ -1952,8 +2070,8 @@ EvidencePlanner 再把布尔值映射为 SQL、RAG、mixed、none</div>
         <article class="panel">
           <h3>ReAct 可用只读工具</h3>
           <ul>
-            <li>天气、路线、酒店、当前时间。</li>
-            <li>商品搜索、商品评价、订单状态。</li>
+            <li>天气、路线、当前时间。</li>
+            <li>商品搜索、商品评价、Actor 绑定订单状态。</li>
             <li>安全的记忆读取工具。</li>
             <li>写入工具默认不注册。</li>
           </ul>
@@ -2053,10 +2171,6 @@ EvidencePlanner 再把布尔值映射为 SQL、RAG、mixed、none</div>
       </div>
       <div class="aux-grid">
         <article class="aux-card">
-          <h3>多人协商工作台</h3>
-          <p>参与者配置 → 偏好分析 → 共同点 → 冲突识别 → [冲突解决] → 生成协商计划。</p>
-        </article>
-        <article class="aux-card">
           <h3>记忆中心</h3>
           <p>向量/Markdown 浏览、编辑、删除、更新和清理；敏感写操作必须审批。</p>
         </article>
@@ -2120,8 +2234,7 @@ r"(?:玩|游|待|停留)\s*\d+\s*(?:天|日)|\d+\s*(?:天|日)\s*(?:游|行程|�
             <span class="keyword">西藏</span><span class="keyword">新疆</span><span class="keyword">规划</span><span class="keyword">两天</span><span class="keyword">三天</span>
             <span class="keyword">一日游</span><span class="keyword">自驾游</span><span class="keyword">周边游</span>
           </div>
-          <b>negotiation</b>
-          <div class="keywords"><span class="keyword">一起</span><span class="keyword">朋友</span><span class="keyword">大家</span><span class="keyword">协商</span><span class="keyword">都同意</span><span class="keyword">投票</span></div>
+
           <b>customer_service</b>
           <div class="keywords"><span class="keyword">退</span><span class="keyword">换</span><span class="keyword">订单</span><span class="keyword">物流</span><span class="keyword">投诉</span><span class="keyword">退款</span><span class="keyword">售后</span><span class="keyword">查订单</span><span class="keyword">订单状态</span></div>
           <b>shopping 弱信号</b>
@@ -2148,13 +2261,13 @@ r"(?:玩|游|待|停留)\s*\d+\s*(?:天|日)|\d+\s*(?:天|日)\s*(?:游|行程|�
         <summary>关键词快速分类的精确顺序</summary>
         <div class="details-body">
           <div class="code-block">1. route=plan_and_execute if route关键词或旅游天数正则命中
-2. 统计 shopping/travel/negotiation/customer_service 强命中
+2. 统计 shopping/travel/customer_service 强命中
 3. travel_score = travel强命中 + 旅游天数正则
 4. shopping_score += shopping弱信号
-5. travel_score >= 2 且无强购物信号 → travel
-6. 否则取四类 score 最大值
+5. travel_score &gt;= 2 且无强购物信号 → travel
+6. 否则取三类 score 最大值
 7. shopping 无强信号时，不能只靠弱价格词成立
-8. 只有 max_match >= 2 才返回；否则进入下一层</div>
+8. 只有 max_match &gt;= 2 才返回；否则进入下一层</div>
         </div>
       </details>
 
@@ -2166,7 +2279,7 @@ r"(?:玩|游|待|停留)\s*\d+\s*(?:天|日)|\d+\s*(?:天|日)\s*(?:游|行程|�
             <span class="keyword">刚才</span><span class="keyword">之前</span><span class="keyword">上面</span><span class="keyword">继续</span><span class="keyword">还是</span>
             <span class="keyword">改成</span><span class="keyword">按刚才</span><span class="keyword">就按</span><span class="keyword">同上</span><span class="keyword">那个方案</span>
           </div>
-          <p>沿用上一轮需要：有 previous + 当前消息含指代词 + 没有强购物/travel/customer_service/negotiation 新任务信号。</p>
+          <p>沿用上一轮需要：有 previous + 当前消息含指代词 + 没有强购物/travel/customer_service 新任务信号。</p>
         </div>
       </details>
 
@@ -2204,7 +2317,7 @@ people ← (\d+)\s*人，默认 1
 
 缺 destination/days → clarify
 计划天数不一致 → critical
-总费用 > budget × 1.05 → critical
+总费用 &gt; budget × 1.05 → critical
 任何步骤非 completed → critical</div>
         </div>
       </details>
@@ -2226,27 +2339,24 @@ orders/users 只能走带用户权限的 Repository
     <section class="section">
       <div class="section-head">
         <div>
-          <h2>09 · 当前实现偏差与风险</h2>
-          <p>把“当前代码事实”“兼容层”和“目标能力”分开。</p>
+          <h2>09 · 整改验收与生产边界</h2>
+          <p>以下条目以当前代码和回归测试为依据，不再展示已删除的兼容层或已闭合的旧风险。</p>
         </div>
         <div class="chapter">AUDIT</div>
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>级别</th><th>问题</th><th>当前事实</th><th>影响</th></tr></thead>
+          <thead><tr><th>级别</th><th>能力</th><th>当前实现</th><th>验证边界</th></tr></thead>
           <tbody>
-            <tr>
-              <td><span class="priority-high">高</span></td>
-              <td>复合 Intent 基础执行已接入</td>
-              <td>A 可返回 shopping+travel，C 支持 intents 列表，_route() 进入 shopping_travel，两个子图都会执行。</td>
-              <td>共享预算、真正并行 fan-out、跨意图 EvidencePlanner 仍待增强。</td>
-            </tr>
-            <tr><td><span class="priority-high">高</span></td><td><code>classification.retrieval</code> 不是执行真值</td><td>购物链重新计算 needs/strategy，travel 完全不走 RetrievalService。</td><td>小模型检索判断可能被覆盖或忽略。</td></tr>
-            <tr><td><span class="priority-high">高</span></td><td>客服订单链未闭合</td><td>customer_service 进 ShoppingGraph，但 OrderRepository 未接入。</td><td>查订单可能不访问订单库。</td></tr>
-            <tr><td><span class="priority-high">高</span></td><td>general/plan_and_execute 无计划图</td><td>顶层直接走普通 LLM 流式生成。</td><td>采购/清单类任务缺计划、执行、反思。</td></tr>
-            <tr><td><span class="priority-medium">中</span></td><td>旅游场景约束不可达</td><td>UI 固定 scene=general。</td><td>旅游纠偏规则不会启用。</td></tr>
-            <tr><td><span class="priority-medium">中</span></td><td>旅行问答资料来源文案不一致</td><td>提示称读本地攻略，实际只拼长期记忆。</td><td>过程展示与真实证据不一致。</td></tr>
-            <tr><td><span class="priority-low">低</span></td><td>旧 Router/Reflection/HybridRetriever 是兼容层</td><td>当前主链用 UnifiedClassifier、TravelPlanGraph reflection、RetrievalService。</td><td>容易误读历史架构。</td></tr>
+            <tr><td><span class="priority-high">高</span></td><td>双意图并行</td><td>共享约束 → asyncio.gather fan-out → 分区流式 → 部分失败语义 → 跨场景综合。</td><td>覆盖并行、分区输出、单分支失败保留。</td></tr>
+            <tr><td><span class="priority-high">高</span></td><td>Actor 权限</td><td>订单和记忆工具 Schema 不含 user_id，Repository/MCP 使用服务端绑定 Actor。</td><td>覆盖订单隔离、无身份拒绝和 MCP Actor。</td></tr>
+            <tr><td><span class="priority-high">高</span></td><td>客服订单链</td><td>CustomerServiceGraph 只调用 OrderRepository，再生成只读客服回答。</td><td>退款、支付、订单写入仍明确禁用。</td></tr>
+            <tr><td><span class="priority-high">高</span></td><td>通用 Plan-Execute</td><td>GeneralPlanGraph 完成结构化拆解、工具执行、硬校验、一次修订和综合。</td><td>复杂行业工具仍按 Tool Registry 能力范围执行。</td></tr>
+            <tr><td><span class="priority-high">高</span></td><td>Travel 证据前置</td><td>天气/路线/活动先写 evidence_context，第一版行程生成后才进入 reflect/revise。</td><td>外部 Provider 不可用时拒绝模拟事实。</td></tr>
+            <tr><td><span class="priority-high">高</span></td><td>持久状态</td><td>SQLiteCheckpointSaver 持久化 LangGraph checkpoint、channel values、writes 和审批 interrupt。</td><td>生产多写节点建议迁移 Postgres checkpointer。</td></tr>
+            <tr><td><span class="priority-medium">中</span></td><td>结构化模型输出</td><td>分类、记忆候选、旅行审核、通用计划均使用 Pydantic + with_structured_output。</td><td>保留测试替身和异常降级路径。</td></tr>
+            <tr><td><span class="priority-medium">中</span></td><td>检索与评测</td><td>普通商品过滤走参数化 typed query；RAG 评测使用 LLM Judge，OTel span 可导出。</td><td>Chroma/BGE 适合当前本地规模，规模化可替换 Qdrant/pgvector 与远端 Reranker。</td></tr>
+            <tr><td><span class="priority-low">低</span></td><td>依赖与兼容层</td><td>已删除 Router、ShoppingAgent、Reflection、HybridRetriever、旧社交分支和未使用 LangChain 包。</td><td>Streamlit 保留为当前本地/内部工作台。</td></tr>
           </tbody>
         </table>
       </div>

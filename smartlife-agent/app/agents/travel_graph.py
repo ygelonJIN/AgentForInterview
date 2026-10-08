@@ -17,6 +17,13 @@ from app.observability import timed_span
 from app.reliability import NodePolicy, RetryPolicy
 
 
+class TravelToolExecutorRoute:
+    @staticmethod
+    def route_pair(text: str):
+        from app.tools.travel_executor import TravelToolExecutor
+        return TravelToolExecutor._route_pair(text or "")
+
+
 class TravelPlanState(TypedDict):
     original_request: str
     user_id: str
@@ -26,8 +33,9 @@ class TravelPlanState(TypedDict):
     clarifications: List[str]
     plan_versions: List[str]
     current_plan: str
-    steps: List[Dict[str, Any]]
-    step_results: List[Dict[str, Any]]
+    evidence_steps: List[Dict[str, Any]]
+    evidence_results: List[Dict[str, Any]]
+    evidence_context: str
     reflection: Dict[str, Any]
     revision_count: int
     final_plan: str
@@ -120,6 +128,13 @@ class TravelPlanGraph:
         await self._emit(payload["event"], {**payload["data"], "step": payload["step"]})
 
     @staticmethod
+    def _planner_context(state: TravelPlanState) -> str:
+        parts = [state.get("context") or ""]
+        if state.get("evidence_context"):
+            parts.append("【真实工具证据】\n" + state["evidence_context"])
+        return "\n\n".join(part for part in parts if part.strip())
+
+    @staticmethod
     async def _default_executor(step: Dict[str, Any], _state: TravelPlanState) -> Dict[str, Any]:
         return {
             "status": "completed",
@@ -182,7 +197,9 @@ class TravelPlanGraph:
 
     @staticmethod
     def _normalize_reflection(value: Any) -> Dict[str, Any]:
-        if isinstance(value, dict):
+        if hasattr(value, "model_dump"):
+            result = value.model_dump()
+        elif isinstance(value, dict):
             result = value
         else:
             content = str(value or "")
@@ -266,7 +283,7 @@ class TravelPlanGraph:
 
         failed_steps = [
             step
-            for step in state.get("steps") or []
+            for step in state.get("evidence_results") or []
             if step.get("status") != "completed"
         ]
         if failed_steps:
@@ -284,16 +301,16 @@ class TravelPlanGraph:
         await self._log(
             "extract_requirements",
             "branch_selected",
-            "缺少核心字段，进入澄清分支" if clarifications else "核心字段完整，进入生成计划分支",
+            "缺少核心字段，进入澄清分支" if clarifications else "核心字段完整，进入证据采集分支",
             status="warning" if clarifications else "ok",
             step="plan",
-            branch="clarify" if clarifications else "make_plan",
+            branch="clarify" if clarifications else "build_steps",
             details={"requirements": requirements, "clarifications": clarifications},
         )
         return {"requirements": requirements, "clarifications": clarifications, "status": status}
 
     def _should_plan(self, state: TravelPlanState) -> str:
-        return "clarify" if state.get("clarifications") else "make_plan"
+        return "clarify" if state.get("clarifications") else "build_steps"
 
     async def _clarify(self, state: TravelPlanState) -> Dict[str, Any]:
         missing = "、".join(state.get("clarifications", []))
@@ -308,46 +325,74 @@ class TravelPlanGraph:
             trace_id=state.get("trace_id", ""),
             attributes={"revision": state.get("revision_count", 0)},
         ):
+            revision_count = state.get("revision_count", 0)
+            feedback = "\n".join(state.get("reflection", {}).get("suggestions") or [])
             plan = await _resolve(self.planner(
                 state["original_request"],
-                state["context"],
-                previous_plan=None,
-                feedback=None,
+                self._planner_context(state),
+                previous_plan=state.get("current_plan") if revision_count else None,
+                feedback=feedback if revision_count else None,
                 on_token=self.on_token,
             ))
         return {
             "current_plan": plan,
-            "plan_versions": [plan],
+            "plan_versions": state.get("plan_versions", []) + [plan],
             "status": "planned",
         }
 
     async def _build_steps(self, state: TravelPlanState) -> Dict[str, Any]:
-        steps = self._parse_steps(state["current_plan"])
-        await self._emit("steps_built", {"count": len(steps)})
-        return {"steps": steps}
+        """先构建真实证据步骤，而不是从最终计划反解析执行步骤。"""
+        requirements = state.get("requirements") or {}
+        destination = str(requirements.get("destination") or "").strip()
+        request = state.get("original_request") or ""
+        evidence_steps = [{
+            "id": "evidence-weather",
+            "title": "天气证据",
+            "description": f"{destination} 天气查询",
+            "status": "pending",
+            "result": "",
+            "error": "",
+        }]
+        if requirements.get("days") != 1:
+            evidence_steps.append({
+                "id": "evidence-activities",
+                "title": "本地活动证据",
+                "description": f"{destination} 本地活动资料",
+                "status": "pending",
+                "result": "",
+                "error": "",
+            })
+        if TravelToolExecutorRoute.route_pair(request):
+            origin, target = TravelToolExecutorRoute.route_pair(request)
+            evidence_steps.append({
+                "id": "evidence-route",
+                "title": "路线证据",
+                "description": f"从{origin}到{target}",
+                "status": "pending",
+                "result": "",
+                "error": "",
+            })
+        await self._emit("steps_built", {"count": len(evidence_steps), "kind": "evidence"})
+        return {"evidence_steps": evidence_steps, "status": "evidence_planned"}
 
     async def _execute_steps(self, state: TravelPlanState) -> Dict[str, Any]:
         with timed_span(
-            "travel.execute_steps",
+            "travel.execute_evidence",
             trace_id=state.get("trace_id", ""),
-            attributes={"step_count": len(state.get("steps") or [])},
+            attributes={"step_count": len(state.get("evidence_steps") or [])},
         ):
             executed = []
-            steps = []
-            all_steps = state.get("steps", [])
+            all_steps = state.get("evidence_steps", [])
             for index, step in enumerate(all_steps, start=1):
                 await self._log(
                     "execute_steps",
                     "loop_iteration",
-                    f"执行行程步骤 {index}/{len(all_steps)}",
+                    f"执行证据步骤 {index}/{len(all_steps)}",
                     status="running",
                     step="execute",
                     iteration=index,
                     max_iterations=len(all_steps),
-                    details={
-                        "step_id": step.get("id", ""),
-                        "revision": state.get("revision_count", 0),
-                    },
+                    details={"step_id": step.get("id", ""), "revision": state.get("revision_count", 0)},
                 )
                 item = dict(step)
                 try:
@@ -369,40 +414,19 @@ class TravelPlanGraph:
                         "result": "",
                         "error": f"{type(exc).__name__}: {str(exc)[:300]}",
                     })
-                    await self._log(
-                        "execute_steps",
-                        "step_failed",
-                        f"行程步骤 {item.get('id', index)} 执行失败：{type(exc).__name__}",
-                        status="error",
-                        step="execute",
-                        iteration=index,
-                        max_iterations=len(all_steps),
-                        details={"step_id": item.get("id", ""), "error": str(exc)},
-                    )
                 for tool_call in item.get("tool_calls", []):
                     tool_result = tool_call.get("result") or {}
-                    rejected_simulation = bool(tool_result.get("simulated"))
                     fallback = bool(
                         tool_call.get("ok") is False
                         or tool_result.get("stale")
                         or tool_result.get("cache_status") == "stale_fallback"
-                        or rejected_simulation
+                        or tool_result.get("simulated")
                     )
-                    tool_error = str(tool_result.get("error") or "").strip()
                     await self._log(
                         "execute_steps",
                         "tool_fallback" if fallback else "tool_completed",
-                        (
-                            (
-                                f"{tool_call.get('tool', '工具')} 返回模拟结果，已拒绝纳入计划"
-                                if rejected_simulation
-                                else (
-                                    f"{tool_call.get('tool', '工具')} 数据不可用：{tool_error[:160]}"
-                                    if tool_error
-                                    else f"{tool_call.get('tool', '工具')} 数据不可用"
-                                )
-                            )
-                            if fallback else f"{tool_call.get('tool', '工具')} 执行成功"
+                        f"{tool_call.get('tool', '工具')} 数据" + (
+                            f"不可用：{str(tool_result.get('error') or '')[:120]}" if fallback else "执行成功"
                         ),
                         status="warning" if fallback else "ok",
                         step="execute",
@@ -411,31 +435,23 @@ class TravelPlanGraph:
                         details={
                             "step_id": item.get("id", ""),
                             "tool": tool_call.get("tool", ""),
-                            "ok": tool_call.get("ok"),
                             "cache_status": tool_result.get("cache_status"),
                             "stale": tool_result.get("stale"),
                             "simulated": tool_result.get("simulated"),
-                            "duration_ms": tool_result.get("duration_ms"),
-                            "error": tool_error[:500],
+                            "error": tool_result.get("error", ""),
                             "warnings": tool_result.get("warnings", []),
                         },
                     )
-                steps.append(item)
-                executed.append({
-                    "id": item["id"],
-                    "status": item["status"],
-                    "result": item["result"],
-                    "error": item["error"],
-                    "source": item.get("source", ""),
-                    "simulated": item.get("simulated", False),
-                    "tool_calls": item.get("tool_calls", []),
-                })
-        await self._emit("steps_executed", {"steps": executed})
-        return {
-            "steps": steps,
-            "step_results": state.get("step_results", []) + executed,
-            "status": "executed",
-        }
+                executed.append(item)
+            evidence_parts = [
+                f"【{item.get('title') or item.get('id')}】\n{item.get('result') or item.get('error') or '无可用证据'}"
+                for item in executed
+            ]
+            return {
+                "evidence_results": executed,
+                "evidence_context": "\n\n".join(evidence_parts),
+                "status": "evidence_executed",
+            }
 
     async def _reflect(self, state: TravelPlanState) -> Dict[str, Any]:
         deterministic_issues = self._deterministic_plan_issues(state)
@@ -485,8 +501,8 @@ class TravelPlanGraph:
     @staticmethod
     def _can_use_deterministic_reflection(state: TravelPlanState) -> bool:
         """简单且工具证据完整的单步计划不再重复调用 LLM 审核。"""
-        steps = state.get("steps") or []
-        step_results = state.get("step_results") or []
+        steps = state.get("evidence_steps") or []
+        step_results = state.get("evidence_results") or []
         if len(steps) != 1 or len(step_results) != 1:
             return False
         result = step_results[0]
@@ -508,7 +524,7 @@ class TravelPlanGraph:
         return "revise"
 
     async def _revise(self, state: TravelPlanState) -> Dict[str, Any]:
-        feedback = "\n".join(state.get("reflection", {}).get("suggestions", []))
+        feedback = "\n".join(state.get("reflection", {}).get("suggestions") or [])
         revision = state.get("revision_count", 0) + 1
         await self._emit("revision", {
             "revision_count": revision,
@@ -524,24 +540,7 @@ class TravelPlanGraph:
             max_iterations=self.max_revisions,
             details={"feedback": feedback},
         )
-        with timed_span(
-            "model.travel_revise",
-            trace_id=state.get("trace_id", ""),
-            attributes={"revision": state.get("revision_count", 0) + 1},
-        ):
-            plan = await _resolve(self.planner(
-                state["original_request"],
-                state["context"],
-                previous_plan=state["current_plan"],
-                feedback=feedback,
-                on_token=self.on_token,
-            ))
-        return {
-            "current_plan": plan,
-            "plan_versions": state.get("plan_versions", []) + [plan],
-            "revision_count": state.get("revision_count", 0) + 1,
-            "status": "revised",
-        }
+        return {"revision_count": revision, "status": "revise_requested"}
 
     async def _finalize(self, state: TravelPlanState) -> Dict[str, Any]:
         satisfactory = state.get("reflection", {}).get("is_satisfactory", True)
@@ -577,18 +576,18 @@ class TravelPlanGraph:
         graph.add_conditional_edges(
             "extract_requirements",
             self._should_plan,
-            {"clarify": "clarify", "make_plan": "make_plan"},
+            {"clarify": "clarify", "build_steps": "build_steps"},
         )
         graph.add_edge("clarify", END)
-        graph.add_edge("make_plan", "build_steps")
         graph.add_edge("build_steps", "execute_steps")
-        graph.add_edge("execute_steps", "reflect")
+        graph.add_edge("execute_steps", "make_plan")
+        graph.add_edge("make_plan", "reflect")
         graph.add_conditional_edges(
             "reflect",
             self._should_continue,
             {"revise": "revise", "finalize": "finalize"},
         )
-        graph.add_edge("revise", "build_steps")
+        graph.add_edge("revise", "make_plan")
         graph.add_edge("finalize", END)
         return graph.compile()
 
@@ -609,8 +608,9 @@ class TravelPlanGraph:
             "clarifications": [],
             "plan_versions": [],
             "current_plan": "",
-            "steps": [],
-            "step_results": [],
+            "evidence_steps": [],
+            "evidence_results": [],
+            "evidence_context": "",
             "reflection": {},
             "revision_count": 0,
             "final_plan": "",

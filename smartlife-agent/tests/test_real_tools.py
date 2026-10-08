@@ -4,7 +4,7 @@ from app.tools.shopping_tools import ShoppingToolProvider
 
 
 def test_shopping_tools_use_real_repositories_instead_of_mock_rows():
-    server = ShoppingToolProvider()
+    server = ShoppingToolProvider(actor_id="user_001")
     tools = {tool.name: tool for tool in server.get_tools()}
 
     products = tools["search_products"].invoke({
@@ -14,9 +14,7 @@ def test_shopping_tools_use_real_repositories_instead_of_mock_rows():
     reviews = tools["get_product_reviews"].invoke({
         "product_id": str(products[0]["id"]),
     })
-    orders = tools["get_order_status"].invoke({
-        "user_id": "user_001",
-    })
+    orders = tools["get_order_status"].invoke({})
 
     assert products
     assert all(row["price"] <= 600 for row in products)
@@ -61,12 +59,11 @@ def test_travel_tools_use_local_catalog_without_hotel_tool():
 def test_memory_tools_read_real_profile_and_require_approval_for_writes():
     from app.tools.memory_tools import MemoryToolProvider
 
-    server = MemoryToolProvider()
+    server = MemoryToolProvider(actor_id="user-missing")
     tools = {tool.name: tool for tool in server.get_tools()}
 
-    profile = tools["get_user_profile"].invoke({"user_id": "user-missing"})
+    profile = tools["get_user_profile"].invoke({})
     write = tools["save_preference"].invoke({
-        "user_id": "user-missing",
         "preference_type": "travel",
         "preference_data": {"likes": ["hiking"]},
     })
@@ -79,8 +76,8 @@ def test_memory_tools_read_real_profile_and_require_approval_for_writes():
 def test_current_registry_excludes_hotel_tool():
     from app.tools import get_all_tools, get_safe_tools
 
-    safe_names = [tool.name for tool in get_safe_tools()]
-    all_names = [tool.name for tool in get_all_tools()]
+    safe_names = [tool.name for tool in get_safe_tools(actor_id="user_001")]
+    all_names = [tool.name for tool in get_all_tools(actor_id="user_001")]
 
     assert {"search_products", "get_product_reviews", "get_order_status"} <= set(safe_names)
     assert {"search_destinations", "get_local_activities", "plan_itinerary"} <= set(safe_names)

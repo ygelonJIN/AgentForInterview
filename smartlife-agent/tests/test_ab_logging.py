@@ -39,7 +39,8 @@ def test_experiment_logger_records_outcomes_and_summary(tmp_path):
         assert row[0] != "user-1"
 
 
-def test_export_ab_ranking_cases_uses_clicked_documents(tmp_path):
+def test_export_ab_ranking_cases_uses_clicked_documents(tmp_path, monkeypatch):
+    monkeypatch.setenv("SMARTLIFE_AB_STORE_QUERY_TEXT", "true")
     path = Path(__file__).parents[1] / "scripts" / "export_ab_ranking_cases.py"
     spec = importlib.util.spec_from_file_location("export_ab", path)
     module = importlib.util.module_from_spec(spec)

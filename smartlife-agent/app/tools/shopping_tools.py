@@ -24,8 +24,7 @@ class GetProductReviewsInput(BaseModel):
 
 
 class GetOrderStatusInput(BaseModel):
-    user_id: str = Field(description="当前用户ID；服务端强制按该用户过滤")
-    order_id: Optional[str] = Field(default=None, description="订单ID，不填则查询所有订单")
+    order_id: Optional[str] = Field(default=None, description="订单ID，不填则查询当前用户全部订单")
 
 
 class ShoppingToolProvider(ToolBundle):
@@ -37,16 +36,19 @@ class ShoppingToolProvider(ToolBundle):
         product_repository: Optional[ProductRepository] = None,
         review_repository: Optional[ReviewRepository] = None,
         order_repository: Optional[OrderRepository] = None,
+        actor_id: Optional[str] = None,
     ):
         self.product_repository = product_repository or ProductRepository()
         self.review_repository = review_repository or ReviewRepository()
         self.order_repository = order_repository or OrderRepository()
+        self.actor_id = str(actor_id or "").strip()
         super().__init__(
             name="shopping-agent",
             description="购物服务：真实商品、评价和只读订单查询",
         )
 
     def _initialize_tools(self):
+        server = self
         product_repository = self.product_repository
         review_repository = self.review_repository
         order_repository = self.order_repository
@@ -80,11 +82,13 @@ class ShoppingToolProvider(ToolBundle):
 
         @tool("get_order_status", args_schema=GetOrderStatusInput)
         def get_order_status(
-            user_id: str,
             order_id: Optional[str] = None,
         ) -> List[Dict[str, Any]]:
-            """按当前用户身份查询订单；不能查询其他用户的订单。"""
-            rows = order_repository.get_order_status(user_id, order_id)
+            """查询服务端 Actor 对应用户的订单；模型不能指定其他用户。"""
+            actor_id = server.actor_id
+            if not actor_id:
+                raise PermissionError("订单工具未绑定用户身份")
+            rows = order_repository.get_order_status(actor_id, order_id)
             return [{**row, "source": "orders_db"} for row in rows]
 
         self.tools = [search_products, get_product_reviews, get_order_status]

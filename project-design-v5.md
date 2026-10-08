@@ -8,8 +8,7 @@
 
 ## 项目定位
 
-> 基于 LangChain 构建的 Multi-Agent 智能体系统，统一覆盖**电商购物**和**旅游出行**两大场景。
-> 核心卖点不是"两个场景拼在一起"，而是**共享记忆、跨场景推荐、社交协商**三个只有合并才能成立的能力。
+> 基于 LangChain Core 与 LangGraph 构建的 Multi-Agent 智能体系统，统一覆盖**电商购物**和**旅游出行**两大场景。
 
 ---
 
@@ -18,8 +17,7 @@
 | 理由 | 具体场景 | 为什么拆不开 |
 |------|---------|-------------|
 | **记忆驱动的跨场景推荐** | 用户上周买了帐篷和登山杖，这周问"周末去哪玩" | 记忆存在同一个向量库里，旅游 Agent 能直接召回购物场景的语义，推荐露营路线 |
-| **社交协商的跨域偏好** | 三个朋友一起出行，A 买了烧烤架，B 买了飞盘 | 协商 Agent 需要同时读取每个人的购物偏好和旅行偏好，才能找到交集 |
-| **统一预算与采购联动** | 用户说"我要露营，帮我列装备清单+行程" | 购物清单和行程规划需要同步预算，由同一个 Plan & Execute Agent 统筹 |
+| **统一预算与采购联动** | 用户说"我要露营，帮我列装备清单+行程" | 购物清单和行程规划需要同步预算，由共享约束协调器统筹，并由 Shopping/Travel Plan-Execute 子图并行执行 |
 
 ---
 
@@ -29,14 +27,13 @@
 |------|------------------|--------------|
 | **ReAct Agent** | 主推理引擎，处理大多数交互式对话和导购 | ReAct 的 Thought-Action-Observation 循环、与 CoT 的区别 |
 | **Plan & Execute Agent** | 多步复杂任务规划（行程规划、预算分配、采购清单） | Plan 的分解策略、Execute 的回退机制、与 ReAct 的选择标准 |
-| **Reflection Agent** | 复杂任务结果的自检和优化 | 生成行程/清单后自检合理性，不满意则重新规划 |
+| **结构化审核与硬校验** | 复杂任务结果的自检和优化 | 生成行程/清单后自检合理性，不满意则重新规划 |
 | **RAG + Rerank + Top K** | 非结构化内容检索（用户评价、攻略、FAQ） | 粗排 + 精排的设计、Cross-Encoder vs Bi-Encoder 的 trade-off |
 | **NL2SQL** | 结构化商品查询（价格、分类、库存） | 自然语言到 SQL 的准确性、与 RAG 的分工 |
 | **MCP** | 子 Agent 工具暴露，Orchestrator 动态发现 | MCP 协议设计、与直接 function calling 的区别、Server 注册机制 |
 | **Function Calling** | 天气、地图、支付、时间等外部工具调用 | 工具描述设计、参数约束、错误处理 |
 | **JSON Schema** | 工具参数定义、LLM 输出格式约束 | 保证输出结构化，减少解析错误，与 Pydantic 的配合 |
 | **长期记忆** | 用户画像 + 跨会话摘要记忆 + 跨场景推荐 | 摘要压缩策略、检索质量保证、记忆淘汰机制 |
-| **社交协商** | 多人出行/购物的偏好协调 | 状态机编排、偏好权重、冲突解决策略 |
 
 ---
 
@@ -45,7 +42,6 @@
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                     用户入口 (Streamlit)                              │
-│           购物场景 | 旅游场景 | 社交协商 | 个人中心                      │
 └──────────────────────────────┬──────────────────────────────────────┘
                                │
                     ┌──────────▼──────────┐
@@ -81,7 +77,6 @@
 │  │  ├─────────────┤ │  └──────────────────┘                     │  │
 │  │  │ RAG+Rerank  │ │                                           │  │
 │  │  │ (语义检索)   │ │  ┌──────────────────┐                     │  │
-│  │  ├─────────────┤ │  │  社交协商层        │                     │  │
 │  │  │ 结果融合     │ │  │  偏好分析          │                     │  │
 │  │  │ + Top K     │ │  │  冲突解决          │                     │  │
 │  │  └─────────────┘ │  │  妥协方案          │                     │  │
@@ -459,11 +454,11 @@ result = agent.invoke({"input": "我和女朋友周末去杭州玩两天，预�
 
 ---
 
-## 九、Reflection Agent：结果自检与优化
+## 九、结构化审核与结果自检
 
 ### 为什么需要 Reflection？
 
-Plan & Execute 生成的行程/清单可能有不合理的地方（行程太赶、预算超支、时间冲突）。Reflection Agent 负责自检和优化。
+Plan & Execute 生成的行程/清单可能有不合理的地方（行程太赶、预算超支、时间冲突）。TravelPlanGraph 与 GeneralPlanGraph 通过结构化审核和确定性硬校验完成自检。
 
 ### 实现
 
@@ -512,7 +507,7 @@ def reflect_and_improve(original_request: str, plan: str, max_iterations: int = 
 
 ### 面试话术
 
-"Plan & Execute 生成的计划可能有不合理的地方，比如行程太赶或预算超支。Reflection Agent 会自检这些问题，如果有问题就用改进建议重新生成计划，最多迭代3次。这样保证了最终输出的质量。"
+"Plan & Execute 生成的计划可能有不合理的地方，比如行程太赶或预算超支。结构化审核会检查这些问题，如果有问题就用改进建议重新生成计划，最多迭代3次。这样保证了最终输出的质量。"
 
 ---
 
@@ -633,76 +628,6 @@ class LongTermMemory:
 
 ---
 
-## 十二、社交协商系统
-
-### 场景
-
-三个朋友一起出行：
-- A：喜欢户外运动，买了帐篷
-- B：喜欢美食，预算有限
-- C：喜欢拍照打卡
-
-需要找到三人的交集。
-
-### 实现
-
-```python
-from langgraph.graph import StateGraph, END
-from typing import TypedDict
-
-class NegotiationState(TypedDict):
-    """协商状态"""
-    participants: list[dict]
-    preferences: dict
-    conflicts: list[dict]
-    compromise: dict
-    status: str
-
-def analyze_preferences(state: NegotiationState) -> NegotiationState:
-    """分析每个参与者的偏好"""
-    preferences = {}
-    for participant in state["participants"]:
-        for key, value in participant["preferences"].items():
-            if key not in preferences:
-                preferences[key] = []
-            preferences[key].append(value)
-    state["preferences"] = preferences
-    return state
-
-def detect_conflicts(state: NegotiationState) -> NegotiationState:
-    """检测冲突"""
-    conflicts = []
-    for key, values in state["preferences"].items():
-        if len(set(values)) > 1:
-            conflicts.append({"field": key, "options": list(set(values))})
-    state["conflicts"] = conflicts
-    return state
-
-def resolve_conflicts(state: NegotiationState) -> NegotiationState:
-    """解决冲突，生成妥协方案"""
-    compromise = {}
-    for conflict in state["conflicts"]:
-        resolution = llm.invoke(f"如何在{conflict['options']}之间找到折中？")
-        compromise[conflict["field"]] = resolution
-    state["compromise"] = compromise
-    state["status"] = "resolved"
-    return state
-
-# 构建协商状态机
-workflow = StateGraph(NegotiationState)
-workflow.add_node("analyze", analyze_preferences)
-workflow.add_node("detect", detect_conflicts)
-workflow.add_node("resolve", resolve_conflicts)
-
-workflow.add_edge("analyze", "detect")
-workflow.add_edge("detect", "resolve")
-workflow.add_edge("resolve", END)
-
-workflow.set_entry_point("analyze")
-negotiation_agent = workflow.compile()
-```
-
----
 
 ## 十三、商品筛选功能
 
@@ -762,8 +687,7 @@ smartlife-agent/
 │   │   ├── orchestrator.py        # 主 Orchestrator (ReAct)
 │   │   ├── shopping_agent.py      # 导购+客服 Agent
 │   │   ├── travel_agent.py        # 旅游 Agent (Plan & Execute)
-│   │   ├── negotiation_agent.py   # 社交协商 Agent
-│   │   └── reflection.py          # Reflection Agent
+│   │   └── travel_graph.py        # Travel 证据执行与结构化审核
 │   ├── mcp_servers/
 │   │   ├── shopping_server.py     # Shopping MCP Server
 │   │   ├── travel_server.py       # Travel MCP Server
@@ -782,12 +706,11 @@ smartlife-agent/
 │   │   ├── short_term.py          # 短期记忆（会话）
 │   │   ├── long_term.py           # 长期记忆（向量库）
 │   │   └── compressor.py          # 摘要压缩
-│   ├── negotiation/
 │   │   ├── graph.py               # LangGraph 状态机
 │   │   ├── preference.py          # 偏好分析
 │   │   └── conflict.py            # 冲突解决
 │   └── evaluation/
-│       ├── ragas_eval.py          # RAGAS 评测
+│       ├── rag_evaluator.py       # LLM Judge RAG 评测
 │       └── test_cases.py          # 测试用例
 ├── data/
 │   ├── products.db                # 商品数据库
@@ -798,7 +721,6 @@ smartlife-agent/
 │   ├── test_rag.py                # RAG 评测
 │   ├── test_nl2sql.py             # NL2SQL 测试
 │   ├── test_agents.py             # Agent 测试
-│   └── test_negotiation.py        # 协商测试
 ├── requirements.txt
 └── README.md
 ```
@@ -822,11 +744,11 @@ smartlife-agent/
 | ReAct 和 Plan & Execute 怎么选？ | 小模型判断任务复杂度，简单任务走 ReAct 省成本，复杂任务走 Plan & Execute 保证质量 |
 | MCP 和直接 function calling 有什么区别？ | MCP 支持动态发现和跨 Agent 共享，function calling 是静态绑定 |
 | RAG 的粗排和精排怎么配合？ | Bi-Encoder 召回 20 条（快），Cross-Encoder 精排取 Top 5（准） |
-| Reflection Agent 迭代几次？ | 最多 3 次，避免无限循环，每次用改进建议重新生成 |
+| 结构化审核迭代几次？ | Travel 最多 3 次，GeneralPlan 最多 1 次，避免无限循环 |
 
 ### 一定要做的事
 
-1. **跑通 RAGAS 评测**，有真实数字（Faithfulness、Answer Relevancy 等）
+1. **跑通 LLM Judge RAG 评测**，有真实数字（Groundedness、Answer Relevancy 等）
 2. **对比有 Rerank 和没有 Rerank 的效果**，用同一个评测集
 3. **录一个 demo 视频**，展示完整流程（购物 → 记忆 → 旅游推荐）
 4. **准备 3 个"我踩过的坑"**，比如 embedding 检索不准、LLM 输出格式不稳定、MCP 连接超时等
@@ -840,7 +762,7 @@ smartlife-agent/
 | **LangChain** | 框架 | 统一的 Agent 编排框架 |
 | **ReAct Agent** | 简单交互 | 快速响应，Thought-Action-Observation 循环 |
 | **Plan & Execute Agent** | 复杂任务 | 多步分解，可回退，用户可审计划 |
-| **Reflection Agent** | 结果自检 | 生成行程/清单后自检合理性，不满意则重新规划 |
+| **结构化审核** | 结果自检 | 生成行程/清单后检查预算、天数和证据状态，不满意则重新规划 |
 | **RAG** | 非结构化检索 | 用户评价、攻略、FAQ 的语义检索 |
 | **Rerank + Top K** | RAG 精排 | Cross-Encoder 粗排后精排，提高检索质量 |
 | **NL2SQL** | 结构化查询 | 自然语言到 SQL，精确筛选商品 |
@@ -848,4 +770,3 @@ smartlife-agent/
 | **Function Calling** | 外部工具 | 天气、地图、支付、时间等简单工具 |
 | **JSON Schema** | 工具参数定义 | 保证输出结构化，减少解析错误 |
 | **长期记忆** | 用户画像 | 跨会话偏好、跨场景推荐 |
-| **社交协商** | 多人协调 | 偏好分析、冲突解决、妥协方案 |

@@ -18,6 +18,13 @@ from app.streaming import EventType
 from app.tools.travel_executor import TravelToolExecutor
 
 
+class TravelReflection(BaseModel):
+    severity: str = "pass"
+    is_satisfactory: bool = True
+    issues: List[str] = Field(default_factory=list)
+    suggestions: List[str] = Field(default_factory=list)
+
+
 class TravelPlan(BaseModel):
     """旅行计划"""
     destination: str = Field(description="目的地")
@@ -181,6 +188,7 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
         user_input: str,
         user_id: str,
         chat_history: Optional[List[Any]] = None,
+        constraints: str = "",
     ) -> str:
         guide_context = self._read_local_guides(user_input)
         memory_context = self._get_memory_context(user_id, query=user_input)
@@ -192,6 +200,8 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
                 content = getattr(message, "content", str(message))
                 history_lines.append(f"{role}: {content}")
             parts.append("【本轮对话历史】\n" + "\n".join(history_lines))
+        if constraints:
+            parts.append(f"【共享约束】\n{constraints}")
         if guide_context:
             parts.append(f"【参考攻略】\n{guide_context}")
         if memory_context:
@@ -243,14 +253,14 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
         llm=None,
         trace_id: str = "",
     ):
-        chain = self.reflect_prompt | (llm or getattr(self, "reflect_llm", self.llm))
+        chain = self.reflect_prompt | (llm or getattr(self, "reflect_llm", self.llm)).with_structured_output(TravelReflection)
         with timed_span(
             "model.travel_reflect_usage",
             trace_id=trace_id,
         ) as measurement:
             result = await chain.ainvoke({"original_request": request, "plan": plan})
             measurement.add_attributes(extract_model_usage(result))
-        return result.content
+        return result
 
     async def _planner_sync_adapter(
         self,
@@ -272,8 +282,8 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
         return result.content
 
     async def _reflector_sync_adapter(self, request: str, plan: str):
-        messages = self.reflect_prompt.format_messages(original_request=request, plan=plan)
-        return getattr(self, "reflect_llm", self.llm).invoke(messages).content
+        chain = self.reflect_prompt | getattr(self, "reflect_llm", self.llm).with_structured_output(TravelReflection)
+        return chain.invoke({"original_request": request, "plan": plan})
 
     async def _execute_plan_step(self, step: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, Any]:
         """执行真实天气和路线工具。"""
@@ -298,14 +308,7 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
         chat_history: Optional[List[Any]] = None,
     ) -> Dict[str, Any]:
         """同步规划旅行 - 与流式入口共享 TravelPlanGraph。"""
-        context_parts = [self._build_plan_context(user_input, user_id, chat_history)]
-        try:
-            weather_context = asyncio.run(self.get_weather_context(user_input))
-        except RuntimeError:
-            weather_context = ""
-        if weather_context:
-            context_parts.append(weather_context)
-        context = "\n\n".join(part for part in context_parts if part.strip())
+        context = self._build_plan_context(user_input, user_id, chat_history)
         graph = TravelPlanGraph(
             planner=self._planner_sync_adapter,
             reflector=self._reflector_sync_adapter,
@@ -325,15 +328,21 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
             "memories_used": 1 if context else 0,
             "iterations": state["revision_count"] + 1,
             "plan_versions": state["plan_versions"],
-            "steps": state["steps"],
+            "evidence_steps": state.get("evidence_steps", []),
             "reflection": state["reflection"],
             "status": state["status"],
         }
 
     def chat(self, user_input: str, user_id: str = "user_001") -> Dict[str, Any]:
         """同步旅游问答（非规划类）"""
+        guide_context = self._read_local_guides(user_input)
         memory_context = self._get_memory_context(user_id, query=user_input)
-        full_input = user_input + memory_context
+        parts = [user_input]
+        if guide_context:
+            parts.append("【参考攻略】\n" + guide_context)
+        if memory_context:
+            parts.append(memory_context)
+        full_input = "\n\n".join(parts)
 
         messages = self.chat_prompt.format_messages(input=full_input)
         response = self.llm.invoke(messages)
@@ -352,6 +361,7 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
         user_id: str = "user_001",
         queue=None,
         chat_history: Optional[List[Any]] = None,
+        constraints: str = "",
     ) -> str:
         """
         异步流式规划旅行
@@ -372,11 +382,12 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
                 "description": "正在读取本地攻略、当前需求和长期跨场景 MD 记忆",
                 "status": "active",
             }, step="retrieval")
-        context_parts = [self._build_plan_context(user_input, user_id, chat_history)]
-        weather_context = await self.get_weather_context(user_input)
-        if weather_context:
-            context_parts.append(weather_context)
-        context = "\n\n".join(part for part in context_parts if part.strip())
+        context = self._build_plan_context(
+            user_input,
+            user_id,
+            chat_history,
+            constraints=constraints,
+        )
         request_llm = create_llm(getattr(self, "model_name", None))
         reflect_llm = getattr(self, "reflect_llm", request_llm)
 
@@ -474,8 +485,14 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
         Returns:
             str: 回复文本
         """
+        guide_context = self._read_local_guides(user_input)
         memory_context = self._get_memory_context(user_id, query=user_input)
-        full_input = user_input + memory_context
+        parts = [user_input]
+        if guide_context:
+            parts.append("【参考攻略】\n" + guide_context)
+        if memory_context:
+            parts.append(memory_context)
+        full_input = "\n\n".join(parts)
 
         if queue:
             await queue.emit(EventType.STEP, {

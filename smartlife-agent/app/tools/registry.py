@@ -1,8 +1,8 @@
-"""当前主链路使用的统一工具注册表。"""
+"""当前主链路使用的统一、Actor 绑定工具注册表。"""
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Iterable, List, Optional, Sequence
 
 from langchain_core.tools import BaseTool
 
@@ -11,7 +11,7 @@ class ToolRegistry:
     """去重并统一暴露 canonical 工具与领域 Tool Provider。"""
 
     def __init__(self, tools: Optional[Sequence[BaseTool]] = None):
-        self._tools: Dict[str, BaseTool] = {}
+        self._tools: dict[str, BaseTool] = {}
         for item in tools or []:
             self.register(item)
 
@@ -48,8 +48,12 @@ class ToolRegistry:
         ]
 
 
-def build_tool_registry(*, include_write_tools: bool = False) -> ToolRegistry:
-    """构建统一注册表，canonical 工具优先，领域工具补足业务能力。"""
+def build_tool_registry(
+    *,
+    actor_id: Optional[str] = None,
+    include_write_tools: bool = False,
+) -> ToolRegistry:
+    """构建注册表；用户数据工具只对已绑定 Actor 暴露。"""
     from app.tools.map import get_route
     from app.tools.time import get_current_time
     from app.tools.weather import get_weather
@@ -57,25 +61,35 @@ def build_tool_registry(*, include_write_tools: bool = False) -> ToolRegistry:
     from app.tools.shopping_tools import ShoppingToolProvider
     from app.tools.travel_tools import TravelToolProvider
 
+    actor = str(actor_id or "").strip()
     registry = ToolRegistry()
-    canonical = [get_weather, get_route, get_current_time]
-    for item in canonical:
+    for item in (get_weather, get_route, get_current_time):
         registry.register(item)
 
-    for item in ShoppingToolProvider().get_tools():
-        registry.register(item)
+    shopping_tools = ShoppingToolProvider(actor_id=actor or None).get_tools()
+    for item in shopping_tools:
+        if item.name != "get_order_status" or actor:
+            registry.register(item)
 
     for item in TravelToolProvider().get_tools():
         if registry.get_tool_by_name(item.name) is None:
             registry.register(item)
 
-    memory_tools = MemoryToolProvider().get_tools()
-    safe_memory_names = {"get_user_profile", "get_cross_scene_memories", "get_user_context"}
-    for item in memory_tools:
-        if (include_write_tools or item.name in safe_memory_names) and registry.get_tool_by_name(item.name) is None:
-            registry.register(item)
+    if actor:
+        safe_memory_names = {"get_user_profile", "get_cross_scene_memories", "get_user_context"}
+        for item in MemoryToolProvider(actor_id=actor).get_tools():
+            if include_write_tools or item.name in safe_memory_names:
+                if registry.get_tool_by_name(item.name) is None:
+                    registry.register(item)
     return registry
 
 
-def get_registry(*, include_write_tools: bool = False) -> ToolRegistry:
-    return build_tool_registry(include_write_tools=include_write_tools)
+def get_registry(
+    *,
+    actor_id: Optional[str] = None,
+    include_write_tools: bool = False,
+) -> ToolRegistry:
+    return build_tool_registry(
+        actor_id=actor_id,
+        include_write_tools=include_write_tools,
+    )

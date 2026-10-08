@@ -1,9 +1,6 @@
 # SmartLife Agent - 依赖清单
 # Core Framework
-langchain>=0.2.0
 langchain-core>=0.2.0
-langchain-community>=0.2.0
-langchain-experimental>=0.2.0
 langchain-openai>=0.1.0
 langchain-text-splitters>=0.2.0
 langchain-chroma>=1.1.0
@@ -18,7 +15,6 @@ chromadb>=0.5.0
 sentence-transformers>=3.0.0
 
 # Database
-sqlalchemy>=2.0.0
 
 # Web Framework
 streamlit>=1.35.0
@@ -28,6 +24,11 @@ langgraph>=0.1.0
 
 # MCP Protocol Server
 mcp>=2.3.0
+
+# Observability
+opentelemetry-api>=1.40.0
+opentelemetry-sdk>=1.40.0
+opentelemetry-exporter-otlp-proto-grpc>=1.40.0
 
 # Utilities
 pydantic>=2.7.0

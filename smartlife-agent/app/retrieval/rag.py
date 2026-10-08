@@ -58,9 +58,15 @@ class RAGRetriever:
         self.collection_name = collection_name
 
         self.embeddings = create_embeddings()
+        try:
+            chunk_size = max(100, int(os.environ.get("SMARTLIFE_RAG_CHUNK_SIZE", "500")))
+            chunk_overlap = max(0, int(os.environ.get("SMARTLIFE_RAG_CHUNK_OVERLAP", "50")))
+        except ValueError:
+            chunk_size, chunk_overlap = 500, 50
+        chunk_overlap = min(chunk_overlap, chunk_size - 1)
         self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=500,
-            chunk_overlap=50,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
             separators=["\n\n", "\n", "。", "！", "？", ".", " "]
         )
 

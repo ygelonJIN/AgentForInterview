@@ -17,6 +17,7 @@ class ShoppingState(TypedDict, total=False):
     needs: Dict[str, Any]
     planned_strategy: str
     retrieval: Dict[str, Any]
+    constraints: Dict[str, Any]
     response: str
     status: str
 
@@ -229,6 +230,8 @@ class ShoppingGraph:
                     f"购物回答校验未通过，正在一次修复：{exc}",
                     step="generate",
                 )
+            if hasattr(queue, "emit_response_reset"):
+                await queue.emit_response_reset(step="generate")
             response = await self.legacy.generate_shopping_response(
                 state["user_message"],
                 state["user_id"],
@@ -237,6 +240,7 @@ class ShoppingGraph:
                 state["retrieval"],
                 queue,
                 validation_feedback=str(exc),
+                constraints=state.get("constraints"),
             )
             self.legacy.validate_shopping_response(response, state.get("retrieval", {}))
             await emit_execution_log(
@@ -271,6 +275,7 @@ class ShoppingGraph:
         thread_id: str,
         classification: Dict[str, Any],
         queue: Any,
+        constraints: Optional[Dict[str, Any]] = None,
     ) -> str:
         result = await self.graph.ainvoke(
             {
@@ -278,6 +283,7 @@ class ShoppingGraph:
                 "user_id": user_id,
                 "thread_id": thread_id,
                 "classification": classification,
+                "constraints": dict(constraints or {}),
                 "status": "started",
             },
             config={"configurable": {"thread_id": thread_id, "event_queue": queue}},

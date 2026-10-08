@@ -95,7 +95,7 @@ class ExperimentLogger:
                     self._hash(user_id, self.salt),
                     self._hash(session_id, self.salt),
                     self._hash(query, self.salt),
-                    query,
+                    query if os.environ.get("SMARTLIFE_AB_STORE_QUERY_TEXT", "").lower() in {"1", "true", "yes", "on"} else "",
                     variant,
                     event_type,
                     rank,

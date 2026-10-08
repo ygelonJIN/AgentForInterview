@@ -12,6 +12,7 @@ smartlife-agent/.env
 smartlife-agent/.env.*
 *.pem
 *.key
+smartlife-agent/data/checkpoints.db
 smartlife-agent/data/conversations.db
 smartlife-agent/data/import_history.db
 smartlife-agent/data/imports/

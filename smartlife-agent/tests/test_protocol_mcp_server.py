@@ -7,7 +7,7 @@ from app.mcp_servers.protocol_server import build_mcp_server
 
 
 def test_mcp_server_discovers_current_read_only_tools():
-    server = build_mcp_server()
+    server = build_mcp_server(actor_id="user_001")
     tools = asyncio.run(server.list_tools())
     names = {tool.name for tool in tools}
 
@@ -26,7 +26,7 @@ def test_mcp_server_discovers_current_read_only_tools():
 
 
 def test_mcp_server_call_tool_uses_real_repository():
-    server = build_mcp_server()
+    server = build_mcp_server(actor_id="user_001")
     result = asyncio.run(server.call_tool("search_products", {
         "query": "跑步鞋",
         "max_price": 600,
@@ -52,16 +52,14 @@ def test_mcp_stdio_transport_end_to_end():
     async def run():
         params = StdioServerParameters(
             command=sys.executable,
-            args=["scripts/run_mcp_server.py", "--transport", "stdio"],
+            args=["scripts/run_mcp_server.py", "--transport", "stdio", "--actor-id", "user_001"],
             cwd=root,
         )
         async with stdio_client(params) as (read_stream, write_stream):
             async with ClientSession(read_stream, write_stream) as session:
                 await session.initialize()
                 tools = await session.list_tools()
-                result = await session.call_tool("get_order_status", {
-                    "user_id": "user_001",
-                })
+                result = await session.call_tool("get_order_status", {})
                 return tools, result
 
     tools, result = asyncio.run(run())
@@ -81,7 +79,7 @@ def test_mcp_http_auth_token_verifier_is_optional_and_strict():
     verifier = StaticBearerTokenVerifier("secret-token")
     accepted = asyncio.run(verifier.verify_token("secret-token"))
     rejected = asyncio.run(verifier.verify_token("wrong-token"))
-    server = build_mcp_server(auth_token="secret-token")
+    server = build_mcp_server(auth_token="secret-token", actor_id="user_001")
 
     assert accepted is not None
     assert accepted.scopes == ["tools"]
@@ -90,7 +88,7 @@ def test_mcp_http_auth_token_verifier_is_optional_and_strict():
 
 
 def test_mcp_server_builds_streamable_http_and_sse_apps():
-    server = build_mcp_server(auth_token="secret-token")
+    server = build_mcp_server(auth_token="secret-token", actor_id="user_001")
 
     streamable = server.streamable_http_app(host="127.0.0.1")
     sse = server.sse_app(host="127.0.0.1")

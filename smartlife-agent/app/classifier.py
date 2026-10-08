@@ -5,7 +5,7 @@
 输出结构：
 {
     "route": "react" | "plan_and_execute",
-    "intent": "shopping" | "travel" | "negotiation" | "customer_service" | "general",
+    "intent": "shopping" | "travel" | "customer_service" | "general",
     "intents": ["shopping", "travel"],  # 明确复合任务可保留 1-2 个意图
     "sub_intent": "search" | "recommend" | "order_status" | ...,
     "retrieval": "sql_only" | "rag_only" | "mixed" | "none",
@@ -36,15 +36,15 @@ class ClassificationResult(BaseModel):
         default="react",
         description="路由策略：react用于简单任务，plan_and_execute用于复杂多步任务"
     )
-    intent: Literal["shopping", "travel", "negotiation", "customer_service", "general"] = Field(
+    intent: Literal["shopping", "travel", "customer_service", "general"] = Field(
         default="general",
         description="主意图类别；兼容旧的单意图字段"
     )
-    intents: List[Literal["shopping", "travel", "negotiation", "customer_service", "general"]] = Field(
+    intents: List[Literal["shopping", "travel", "customer_service", "general"]] = Field(
         default_factory=list,
         description="明确的多意图集合；为空时等价于 [intent]"
     )
-    primary_intent: Optional[Literal["shopping", "travel", "negotiation", "customer_service", "general"]] = Field(
+    primary_intent: Optional[Literal["shopping", "travel", "customer_service", "general"]] = Field(
         default=None,
         description="主意图；与 intent 保持一致，便于多意图结果显式表达"
     )
@@ -127,7 +127,6 @@ _INTENT_KEYWORDS = {
         "三亚", "厦门", "桂林", "张家界", "西藏", "新疆",
         "规划", "两天", "三天", "一日游", "自驾游", "周边游",
     ],
-    "negotiation": ["一起", "朋友", "大家", "协商", "都同意", "投票"],
     "customer_service": ["退", "换", "订单", "物流", "投诉", "退款", "售后", "查订单", "订单状态"],
 }
 
@@ -193,12 +192,10 @@ def _keyword_classify(message: str) -> Optional[Dict[str, Any]]:
         candidate_scores["shopping"] = shopping_total_count
     if travel_match_count >= 2:
         candidate_scores["travel"] = travel_match_count
-    if strong_match_counts["negotiation"] >= 2:
-        candidate_scores["negotiation"] = strong_match_counts["negotiation"]
     if strong_match_counts["customer_service"] >= 2:
         candidate_scores["customer_service"] = strong_match_counts["customer_service"]
     if len(candidate_scores) >= 2:
-        priority = {"shopping": 0, "travel": 1, "negotiation": 2, "customer_service": 3}
+        priority = {"shopping": 0, "travel": 1, "customer_service": 2}
         ordered = sorted(
             candidate_scores,
             key=lambda item: (-candidate_scores[item], priority[item]),
@@ -287,7 +284,6 @@ _CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
 - "shopping": 购物相关（商品搜索、导购、评价）
 - "customer_service": 客服相关（订单查询、退换货、投诉）
 - "travel": 旅游相关（行程规划、目的地推荐、酒店查询）
-- "negotiation": 社交协商（多人出行、偏好协调）
 - "general": 通用对话
 
 多意图规则：
@@ -316,7 +312,7 @@ route、intent、intents、primary_intent、intent_scores、sub_intent、retriev
 
 枚举限制：
 - route: react / plan_and_execute
-- intent / intents / primary_intent: shopping / travel / negotiation / customer_service / general
+- intent / intents / primary_intent: shopping / travel / customer_service / general
 - intents 是 1-2 个明确意图；复合请求不能只保留一个
 - retrieval: sql_only / rag_only / mixed / none
 
@@ -385,7 +381,7 @@ class UnifiedClassifier:
     @property
     def chain(self):
         if self._chain is None:
-            self._chain = _CLASSIFY_PROMPT | self.llm
+            self._chain = _CLASSIFY_PROMPT | self.llm.with_structured_output(ClassificationResult)
         return self._chain
 
     @property
@@ -397,7 +393,7 @@ class UnifiedClassifier:
     @property
     def arbiter_chain(self):
         if self._arbiter_chain is None:
-            self._arbiter_chain = _CLASSIFY_ARBITER_PROMPT | self.arbiter_llm
+            self._arbiter_chain = _CLASSIFY_ARBITER_PROMPT | self.arbiter_llm.with_structured_output(ClassificationResult)
         return self._arbiter_chain
 
     @staticmethod
@@ -426,7 +422,6 @@ class UnifiedClassifier:
             _has_strong_shopping_signal(message)
             or _has_travel_signal(message)
             or any(keyword in message for keyword in _INTENT_KEYWORDS["customer_service"])
-            or any(keyword in message for keyword in _INTENT_KEYWORDS["negotiation"])
         )
 
     def _context_fallback(
@@ -508,6 +503,17 @@ class UnifiedClassifier:
         except Exception as exc:
             raise ClassificationResponseError(f"分类字段校验失败: {exc}") from exc
 
+    @staticmethod
+    def _result_data(result: Any) -> Dict[str, Any]:
+        if isinstance(result, ClassificationResult):
+            return result.model_dump()
+        if isinstance(result, dict):
+            return result
+        if hasattr(result, "model_dump"):
+            return result.model_dump()
+        content = getattr(result, "content", result)
+        return _parse_json_response(content)
+
     def _arbiter_values(
         self,
         message: str,
@@ -544,7 +550,7 @@ class UnifiedClassifier:
             )
             measurement.add_attributes(extract_model_usage(result))
         return self._from_data(
-            _parse_json_response(result.content),
+            self._result_data(result),
             reason_default="主模型分类仲裁",
         )
 
@@ -567,7 +573,7 @@ class UnifiedClassifier:
             )
             measurement.add_attributes(extract_model_usage(result))
         return self._from_data(
-            _parse_json_response(result.content),
+            self._result_data(result),
             reason_default="主模型分类仲裁",
         )
 
@@ -653,7 +659,7 @@ class UnifiedClassifier:
                 "message": message,
                 "context": self._format_context(history),
             })
-            data = _parse_json_response(result.content)
+            data = self._result_data(result)
             candidate = self._from_data(data)
             if candidate.confidence >= LOW_CONFIDENCE_THRESHOLD:
                 return candidate
@@ -717,7 +723,7 @@ class UnifiedClassifier:
                 "message": message,
                 "context": self._format_context(history),
             })
-            data = _parse_json_response(result.content)
+            data = self._result_data(result)
             candidate = self._from_data(data)
             if candidate.confidence >= LOW_CONFIDENCE_THRESHOLD:
                 return candidate
@@ -794,20 +800,18 @@ class UnifiedClassifier:
 
         candidate: Optional[ClassificationResult] = None
         try:
-            full_content = ""
             with timed_span(
                 "model.classify_small",
                 trace_id=getattr(queue, "trace_id", ""),
             ) as measurement:
-                async for chunk in self.chain.astream({
+                structured_result = await self.chain.ainvoke({
                     "message": message,
                     "context": self._format_context(history),
-                }):
-                    full_content += chunk.content
-                    measurement.add_attributes(extract_model_usage(chunk))
+                })
+                measurement.add_attributes(extract_model_usage(structured_result))
 
             try:
-                data = _parse_json_response(full_content)
+                data = self._result_data(structured_result)
                 candidate = self._from_data(data)
                 result = candidate
                 method = "llm"

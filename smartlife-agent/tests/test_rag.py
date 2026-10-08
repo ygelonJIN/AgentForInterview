@@ -76,8 +76,3 @@ def test_rag_retriever_class():
     assert hasattr(RAGRetriever, 'retrieve')
     assert hasattr(RAGRetriever, 'search')
     assert hasattr(RAGRetriever, 'search_with_score')
-
-def test_fusion_class():
-    """测试混合检索器类定义"""
-    from app.retrieval.fusion import HybridRetriever
-    assert hasattr(HybridRetriever, 'search')

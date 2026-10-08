@@ -29,6 +29,7 @@ class _FakeLegacy:
         retrieval,
         queue,
         validation_feedback="",
+        constraints=None,
     ):
         self.calls.append((
             "generate",
@@ -162,6 +163,7 @@ def test_shopping_graph_regenerates_once_after_validation_failure():
             retrieval,
             queue,
             validation_feedback="",
+            constraints=None,
         ):
             self.calls.append(("generate", validation_feedback))
             return "推荐虚构跑鞋" if not validation_feedback else "推荐真实跑鞋"

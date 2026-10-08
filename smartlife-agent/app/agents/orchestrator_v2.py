@@ -31,12 +31,12 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from app.config import create_llm
 from app.classifier import UnifiedClassifier, ClassificationResult, get_classifier
 from app.streaming import EventQueue, EventType
-from app.agents.shopping_agent import ShoppingAgent
 from app.agents.travel_agent import TravelAgent
-from app.agents.negotiation_agent import NegotiationAgent
 from app.agents.react_graph import ToolReActGraph
 from app.agents.shopping_graph import ShoppingGraph
-from app.negotiation.graph import NegotiationGraph
+from app.agents.customer_service_graph import CustomerServiceGraph
+from app.agents.general_plan_graph import GeneralPlanGraph
+from app.agents.task_models import SharedConstraints, build_composite_plan, branch_outcome, CompositeOutcome
 from app.memory.short_term import ShortTermMemory
 from app.memory.conversation_store import ConversationStore
 from app.memory.long_term import LongTermMemory
@@ -47,6 +47,8 @@ from app.memory.approval_graph import MemoryApprovalGraph
 from app.memory.repository import MemoryRepository
 from app.evaluation.ab_logging import ExperimentLogger
 from app.retrieval.reranker import create_reranker
+from app.retrieval.order_repository import OrderRepository
+from app.retrieval.repositories import ProductRepository, ReviewRepository
 from app.session import build_thread_id
 from app.tools import get_safe_tools
 from app.observability import extract_model_usage, log_exception, timed_span
@@ -69,10 +71,7 @@ class OrchestratorV2:
         self.classifier = get_classifier()
 
         # 子 Agents
-        self.shopping_agent = ShoppingAgent(model_name)
         self.travel_agent = TravelAgent(model_name)
-        self.negotiation_agent = NegotiationAgent()
-        self.negotiation_graph = NegotiationGraph()
 
         # 记忆
         self._short_term_memory = None
@@ -91,7 +90,8 @@ class OrchestratorV2:
             else None
         )
         self._memory_approval_graph = None
-        self._react_graph = None
+        self._customer_service_graph = None
+        self._general_plan_graph = None
         self._shopping_graph = None
         self._memory_repository = None
         self._last_classifications = {}
@@ -196,15 +196,23 @@ class OrchestratorV2:
         return self._memory_repository
 
     @property
-    def react_graph(self):
-        if getattr(self, "_react_graph", None) is None:
-            self._react_graph = ToolReActGraph(
-                model=self.llm,
-                tools=get_safe_tools(),
-                max_steps=6,
-                tool_timeout=10.0,
+    def customer_service_graph(self):
+        if getattr(self, "_customer_service_graph", None) is None:
+            self._customer_service_graph = CustomerServiceGraph(
+                OrderRepository(),
+                self.llm,
             )
-        return self._react_graph
+        return self._customer_service_graph
+
+    @property
+    def general_plan_graph(self):
+        if getattr(self, "_general_plan_graph", None) is None:
+            self._general_plan_graph = GeneralPlanGraph(
+                self.llm,
+                tools=get_safe_tools(),
+                max_revisions=1,
+            )
+        return self._general_plan_graph
 
     @property
     def shopping_graph(self):
@@ -240,44 +248,6 @@ class OrchestratorV2:
                 await queue.emit_error(
                     f"处理失败: {type(e).__name__}: {str(e) or '(无错误信息)'}"
                 )
-            finally:
-                await queue.finish()
-
-        task = asyncio.create_task(_process())
-        try:
-            async for sse in queue.to_sse():
-                yield sse
-        finally:
-            if not task.done():
-                task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
-    async def process_negotiation_streaming(
-        self,
-        participants: List[Dict[str, Any]],
-        scenario: str = "travel"
-    ) -> AsyncGenerator[str, None]:
-        """
-        协商场景流式处理
-
-        Args:
-            participants: 参与者列表
-            scenario: 场景类型
-
-        Yields:
-            SSE 格式的事件字符串
-        """
-        queue = EventQueue()
-
-        async def _process():
-            try:
-                await self._do_negotiation(participants, scenario, queue)
-            except Exception as e:
-                log_exception("orchestrator.negotiation", e, {"scenario": scenario})
-                await queue.emit_error(f"协商失败: {str(e)}")
             finally:
                 await queue.finish()
 
@@ -360,6 +330,7 @@ class OrchestratorV2:
         thread_id: str,
         classification: ClassificationResult,
         queue: EventQueue,
+        constraints: Optional[SharedConstraints] = None,
     ) -> str:
         return await self.shopping_graph.run_streaming(
             user_message,
@@ -367,6 +338,7 @@ class OrchestratorV2:
             thread_id,
             classification.model_dump(),
             queue,
+            constraints=constraints.model_dump() if constraints else None,
         )
 
     async def run_travel_turn(
@@ -376,55 +348,161 @@ class OrchestratorV2:
         thread_id: str,
         classification: ClassificationResult,
         queue: EventQueue,
+        constraints: Optional[SharedConstraints] = None,
     ) -> str:
         chat_history = self.get_chat_history(thread_id)
         if classification.route == "plan_and_execute":
             return await self.travel_agent.plan_trip_streaming(
-                user_message, user_id, queue, chat_history=chat_history
+                user_message,
+                user_id,
+                queue,
+                chat_history=chat_history,
+                constraints=constraints.prompt_context() if constraints else "",
             )
         return await self.travel_agent.chat_streaming(user_message, user_id, queue)
-
-    async def run_negotiation_turn(
-        self,
-        _user_message: str,
-        _user_id: str,
-        _thread_id: str,
-        _classification: ClassificationResult,
-        queue: EventQueue,
-    ) -> str:
-        response_text = "请在「社交协商」标签页中配置参与者信息后开始协商。"
-        await queue.emit_token(response_text, step="agent")
-        return response_text
 
     async def run_react_turn(
         self,
         user_message: str,
-        _user_id: str,
+        user_id: str,
         thread_id: str,
         _classification: ClassificationResult,
         queue: EventQueue,
     ) -> str:
+        graph = ToolReActGraph(
+            model=self.llm,
+            tools=get_safe_tools(actor_id=user_id),
+            max_steps=6,
+            tool_timeout=10.0,
+        )
         return await self._run_react_streaming(
             user_message,
             self.get_chat_history(thread_id),
             queue,
             thread_id,
+            react_graph=graph,
+        )
+
+    async def run_customer_service_turn(
+        self,
+        user_message: str,
+        user_id: str,
+        thread_id: str,
+        _classification: ClassificationResult,
+        queue: EventQueue,
+    ) -> str:
+        await queue.emit(EventType.STEP, {
+            "step": 2,
+            "total": 4,
+            "name": "订单查询",
+            "description": "从当前用户授权的 OrderRepository 读取订单",
+        }, step="retrieval")
+        return await self.customer_service_graph.run_streaming(
+            user_message,
+            user_id,
+            queue=queue,
+            history=self.get_chat_history(thread_id),
+        )
+
+    async def run_general_plan_turn(
+        self,
+        user_message: str,
+        user_id: str,
+        thread_id: str,
+        _classification: ClassificationResult,
+        queue: EventQueue,
+    ) -> str:
+        await queue.emit(EventType.STEP, {
+            "step": 2,
+            "total": 4,
+            "name": "任务规划",
+            "description": "分解任务、执行工具并校验结果",
+        }, step="plan")
+        graph = GeneralPlanGraph(
+            self.llm,
+            tools=get_safe_tools(actor_id=user_id),
+            max_revisions=1,
+        )
+        return await graph.run_streaming(
+            user_message,
+            context="\n".join(str(getattr(item, "content", item)) for item in self.get_chat_history(thread_id)[-5:]),
+            queue=queue,
+            trace_id=thread_id,
         )
 
     async def run_general_turn(
         self,
         user_message: str,
-        _user_id: str,
+        user_id: str,
         thread_id: str,
-        _classification: ClassificationResult,
+        classification: ClassificationResult,
         queue: EventQueue,
     ) -> str:
+        if classification.route == "plan_and_execute":
+            return await self.run_general_plan_turn(
+                user_message, user_id, thread_id, classification, queue
+            )
         return await self._run_general_streaming(
             user_message,
             thread_id,
             self.get_chat_history(thread_id),
             queue,
         )
+
+    async def synthesize_composite_response(
+        self,
+        user_message: str,
+        shopping: Dict[str, Any],
+        travel: Dict[str, Any],
+        constraints: SharedConstraints,
+        queue: EventQueue,
+    ) -> str:
+        """合并并约束校验双意图结果；单分支失败仍保留可验证的另一分支。"""
+        def fallback() -> str:
+            parts = []
+            if shopping.get("status") == "ok":
+                parts.append("【购物推荐】\n" + str(shopping.get("response") or "").strip())
+            else:
+                parts.append("【购物推荐】\n未能完成：" + str(shopping.get("error") or "未知错误"))
+            if travel.get("status") == "ok":
+                parts.append("【旅行计划】\n" + str(travel.get("response") or "").strip())
+            else:
+                parts.append("【旅行计划】\n未能完成：" + str(travel.get("error") or "未知错误"))
+            return "\n\n".join(parts).strip()
+
+        if shopping.get("status") != "ok" or travel.get("status") != "ok":
+            return fallback()
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", """把购物建议与旅行计划综合成一份一致的最终回答。
+必须保留真实商品名和行程事实，不得新增未经检索的数据。
+统一检查预算、日期、人数和装备/活动是否冲突；失败时保留原分支正文并明确说明。"""),
+            ("user", """原始请求：{request}
+
+共享约束：
+{constraints}
+
+购物分支：
+{shopping}
+
+旅行分支：
+{travel}
+
+请输出最终中文回答。"""),
+        ])
+        chain = prompt | self.llm
+        try:
+            result = await chain.ainvoke({
+                "request": user_message,
+                "constraints": constraints.prompt_context(),
+                "shopping": shopping.get("response") or "",
+                "travel": travel.get("response") or "",
+            })
+            synthesized = str(result.content or "").strip()
+            return synthesized or fallback()
+        except Exception as exc:
+            log_exception("composite.synthesis", exc)
+            await queue.emit_error(f"跨场景综合失败，已保留两个分支结果：{type(exc).__name__}", step="generate")
+            return fallback()
 
     async def finish_turn(
         self,
@@ -459,16 +537,16 @@ class OrchestratorV2:
         await self.begin_turn(user_message, thread_id)
         classification = await self.classify_turn(user_message, thread_id, queue)
 
-        if classification.intent in ("shopping", "customer_service"):
+        if classification.intent == "customer_service":
+            response_text = await self.run_customer_service_turn(
+                user_message, user_id, thread_id, classification, queue
+            )
+        elif classification.intent == "shopping":
             response_text = await self.run_shopping_turn(
                 user_message, user_id, thread_id, classification, queue
             )
         elif classification.intent == "travel":
             response_text = await self.run_travel_turn(
-                user_message, user_id, thread_id, classification, queue
-            )
-        elif classification.intent == "negotiation":
-            response_text = await self.run_negotiation_turn(
                 user_message, user_id, thread_id, classification, queue
             )
         elif classification.intent == "general" and classification.route == "react":
@@ -481,33 +559,6 @@ class OrchestratorV2:
             )
 
         await self.finish_turn(thread_id, response_text, classification, queue)
-
-    async def _do_negotiation(
-        self,
-        participants: List[Dict[str, Any]],
-        scenario: str,
-        queue: EventQueue
-    ):
-        """协商处理逻辑"""
-        await queue.emit(EventType.STEP, {
-            "step": 1, "total": 2,
-            "name": "协商分析",
-            "description": "分析参与者偏好和冲突"
-        }, step="negotiation")
-
-        enriched_participants = self.negotiation_agent.enrich_participants(participants, scenario)
-        result = await self.negotiation_graph.run_streaming(
-            enriched_participants,
-            scenario,
-            queue,
-            thread_id=f"negotiation:{scenario}:{','.join(p.get('user_id', 'unknown') for p in participants)}",
-        )
-
-        await queue.emit(EventType.DONE, {
-            "negotiation_result": result,
-            "scenario": scenario,
-            "response": result.get("plan_text", ""),
-        }, step="done")
 
     # ================================================================
     # 购物流式处理
@@ -556,6 +607,7 @@ class OrchestratorV2:
         retrieval: Dict[str, Any],
         queue: EventQueue,
         validation_feedback: str = "",
+        constraints: Optional[Dict[str, Any]] = None,
     ) -> str:
         """购物子图节点：构建上下文并流式生成回答。"""
         chat_history = self.get_chat_history(thread_id)
@@ -589,6 +641,10 @@ class OrchestratorV2:
                 "以下内容来自已保存的用户 Memory，可用于个性化，不得否认或改写：\n"
                 f"{memory_context}"
             )
+        if constraints:
+            constraint_text = "\n".join(f"- {key}: {value}" for key, value in constraints.items() if value not in (None, "", []))
+            if constraint_text:
+                full_input += f"\n\n【共享约束】\n{constraint_text}\n购物推荐不得突破预算、日期、人数等共享约束。"
         if validation_feedback:
             full_input += (
                 "\n\n【上一版回答未通过校验，请修正】\n"
@@ -824,6 +880,7 @@ class OrchestratorV2:
         chat_history: List,
         queue: EventQueue,
         thread_id: str,
+        react_graph: Optional[ToolReActGraph] = None,
     ) -> str:
         """通过真实工具调用循环处理 general/react 请求。"""
         await queue.emit(EventType.STEP, {
@@ -861,9 +918,10 @@ class OrchestratorV2:
             elif event == "finalized":
                 await queue.emit_thinking("🧠 工具推理完成", step="react")
 
-        self.react_graph.on_event = on_event
+        graph = react_graph or ToolReActGraph(model=self.llm, tools=get_safe_tools(), max_steps=6, tool_timeout=10.0)
+        graph.on_event = on_event
         messages = list(chat_history) + [HumanMessage(content=user_message)]
-        result = await self.react_graph.run_streaming(messages, thread_id=thread_id)
+        result = await graph.run_streaming(messages, thread_id=thread_id)
         response = result.get("response", "") or "工具推理已完成，但没有生成最终回答。"
         await queue.emit_token(response, step="react")
         return response
@@ -1173,64 +1231,6 @@ class OrchestratorV2:
             "source": "manual_compress",
         })
 
-    # ================================================================
-    # 兼容旧接口（同步）
-    # ================================================================
-
-    async def process(
-        self,
-        user_message: str,
-        user_id: str,
-        session_id: str,
-        scene: str = "general"
-    ) -> Dict[str, Any]:
-        """兼容旧接口 - 收集所有事件返回最终结果"""
-        thread_id = build_thread_id(user_id, scene, session_id)
-        self.short_term_memory.add_message(thread_id, "user", user_message)
-        history_for_classification = self.short_term_memory.get_history(thread_id, last_n=11)[:-1]
-        previous_classification = self._last_classifications.get(thread_id)
-        classification = await self.classifier.aclassify(
-            user_message,
-            history=history_for_classification,
-            previous=previous_classification,
-        )
-        self._last_classifications[thread_id] = classification
-        chat_history = self.short_term_memory.get_langchain_messages(thread_id, last_n=10)
-
-        if classification.intent in ("shopping", "customer_service"):
-            response = self.shopping_agent.process(user_message, user_id, chat_history)
-            response_text = response.get("response", "")
-        elif classification.intent == "travel":
-            if classification.route == "plan_and_execute":
-                response = self.travel_agent.plan_trip(user_message, user_id, chat_history=chat_history)
-                response_text = response.get("plan", "")
-            else:
-                response = self.travel_agent.chat(user_message, user_id)
-                response_text = response.get("response", "")
-        elif classification.intent == "negotiation":
-            response_text = "请在「社交协商」标签页中配置参与者信息后开始协商。"
-        else:
-            general_prompt = ChatPromptTemplate.from_messages([
-                ("system", "你是 SmartLife Agent 智能助手。用中文回复。"),
-                *[(msg["role"], msg["content"]) for msg in self.short_term_memory.get_history(thread_id, last_n=5)],
-                ("user", user_message)
-            ])
-            chain = general_prompt | self.llm
-            result = chain.invoke({})
-            response_text = result.content
-
-        self.short_term_memory.add_message(thread_id, "assistant", response_text)
-
-        return {
-            "response": response_text,
-            "classification": classification.model_dump(),
-            "agent_used": classification.intent,
-            "memories": {
-                "short_term_count": len(self.short_term_memory.get_history(thread_id)),
-            }
-        }
-
-
 # === 全局实例 ===
 _orchestrator_v2 = None
 
@@ -1246,9 +1246,3 @@ async def process_user_message_streaming(
     orchestrator = get_orchestrator_v2()
     async for sse in orchestrator.process_streaming(message, user_id, session_id, scene):
         yield sse
-
-async def process_user_message(
-    message: str, user_id: str, session_id: str, scene: str = "general"
-) -> Dict[str, Any]:
-    orchestrator = get_orchestrator_v2()
-    return await orchestrator.process(message, user_id, session_id, scene)

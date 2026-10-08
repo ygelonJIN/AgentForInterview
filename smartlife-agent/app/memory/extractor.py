@@ -12,8 +12,21 @@ from difflib import SequenceMatcher
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
 from langchain_core.prompts import ChatPromptTemplate
+from pydantic import BaseModel, Field
 from app.config import create_small_llm
 from app.observability import log_exception
+
+
+class MemoryCandidate(BaseModel):
+    content: str
+    category: str = "general"
+    confidence: str = "medium"
+    type: str = "preference"
+    data: Dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryCandidateBatch(BaseModel):
+    candidates: List[MemoryCandidate] = Field(default_factory=list)
 
 
 @dataclass
@@ -80,16 +93,16 @@ class MemoryExtractor:
 - 旅行相关：目的地、日期、人数、预算
 - 其他重要信息
 
-请以 JSON 数组格式返回，每个元素包含：
+请返回一个 JSON 对象，字段 candidates 是数组，每个元素包含：
 - content: 事实描述
 - category: shopping/travel/general
 - confidence: high/medium/low
 
-重要：必须只返回一个 JSON 数组，不要有任何其他文字。如果没有值得提取的信息，返回空数组 []"""),
+重要：只返回结构化对象。如果没有值得提取的信息，返回空 candidates。"""),
             ("user", "本轮用户信息：\n{conversation}")
         ])
         
-        self.chain = self.extract_prompt | self.llm
+        self.chain = self.extract_prompt | self.llm.with_structured_output(MemoryCandidateBatch)
 
     @staticmethod
     def _normalize_content(content: Any) -> str:
@@ -175,6 +188,27 @@ class MemoryExtractor:
             excluded_contents=excluded_contents,
         ).candidates
 
+    @staticmethod
+    def _result_candidates(result: Any) -> Any:
+        if isinstance(result, MemoryCandidateBatch):
+            return [item.model_dump() for item in result.candidates]
+        if isinstance(result, list):
+            return result
+        if isinstance(result, dict):
+            return result.get("candidates", result)
+        if hasattr(result, "model_dump"):
+            payload = result.model_dump()
+            return payload.get("candidates", payload)
+        raw = (getattr(result, "content", "") or "").strip()
+        if not raw:
+            raw = (
+                getattr(result, "reasoning_content", "")
+                or getattr(result, "additional_kwargs", {}).get("reasoning_content", "")
+                or getattr(result, "text", "")
+                or ""
+            ).strip()
+        return raw
+
     def extract_candidates_result(
         self,
         messages: List[Dict[str, str]],
@@ -198,14 +232,7 @@ class MemoryExtractor:
             result = self.chain.invoke({
                 "conversation": conversation,
             })
-            raw = (getattr(result, "content", "") or "").strip()
-            if not raw:
-                raw = (
-                    getattr(result, "reasoning_content", "")
-                    or getattr(result, "additional_kwargs", {}).get("reasoning_content", "")
-                    or getattr(result, "text", "")
-                    or ""
-                ).strip()
+            raw = self._result_candidates(result)
             if not raw:
                 fallback = self._clean_candidates(
                     self._explicit_fact_fallback(conversation),
@@ -223,13 +250,13 @@ class MemoryExtractor:
                     status="no_content",
                 )
 
-            parsed = self._parse_json(raw)
+            parsed = raw if isinstance(raw, list) else self._parse_json(str(raw))
             if not isinstance(parsed, list):
                 return MemoryExtractionResult(
                     diagnostic=f"记忆提取失败：小模型返回非列表。原始输出:\n{raw[:300]}",
                     status="error",
                 )
-            if not parsed and not re.search(r"\[\s*\]", raw):
+            if not parsed and isinstance(raw, str) and not re.search(r"\[\s*\]", raw):
                 return MemoryExtractionResult(
                     diagnostic=f"记忆提取失败：无法解析小模型返回的 JSON。原始输出:\n{raw[:300]}",
                     status="error",

@@ -4,16 +4,16 @@ from .payment import get_payment_tools
 from .time import get_current_time, get_time_tools
 
 
-def get_all_tools():
+def get_all_tools(actor_id: str | None = None):
     """返回统一注册表中的全部非支付工具。"""
     from .registry import get_registry
-    return get_registry(include_write_tools=True).tools()
+    return get_registry(actor_id=actor_id, include_write_tools=True).tools()
 
 
-def get_safe_tools():
+def get_safe_tools(actor_id: str | None = None):
     """返回当前 ReAct 主链路可用的只读工具。"""
     from .registry import get_registry
-    return get_registry(include_write_tools=False).tools()
+    return get_registry(actor_id=actor_id, include_write_tools=False).tools()
 
 
 __all__ = [

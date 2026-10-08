@@ -18,7 +18,7 @@ class MemoryApprovalGraph:
             self._execute_memory,
             action_type="memory",
             approved_actions=("save_selected", "save_all"),
-            checkpointer=checkpointer or create_checkpointer("memory"),
+            checkpointer=checkpointer or create_checkpointer(),
             interrupt_payload=self._interrupt_payload,
         )
         self.checkpointer = self._approval.checkpointer
