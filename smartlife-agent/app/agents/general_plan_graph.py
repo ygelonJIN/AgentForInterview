@@ -55,9 +55,14 @@ class GeneralPlanGraph:
         planner: Optional[Callable[..., Awaitable[GeneralTaskPlan]]] = None,
         executor: Optional[Callable[..., Awaitable[Dict[str, Any]]]] = None,
         max_revisions: int = 1,
+        agent_id: Optional[str] = None,
     ):
         self.llm = llm
-        self.tools_by_name = {item.name: item for item in tools}
+        tool_items = list(tools or [])
+        self.agent_policy: Optional[AgentToolPolicy] = (
+            validate_agent_tools(agent_id, tool_items) if agent_id else None
+        )
+        self.tools_by_name = {item.name: item for item in tool_items}
         self.planner = planner or self._default_planner
         self.executor = executor or self._execute_step
         self.max_revisions = max_revisions
@@ -87,6 +92,11 @@ class GeneralPlanGraph:
     async def _execute_step(self, step: GeneralPlanStep) -> Dict[str, Any]:
         if not step.tool_name:
             return {"status": "completed", "result": f"已规划：{step.instruction}"}
+        if self.agent_policy is not None:
+            try:
+                self.agent_policy.require(step.tool_name)
+            except ToolAuthorizationError as exc:
+                return {"status": "failed", "error": str(exc)}
         tool = self.tools_by_name.get(step.tool_name)
         if tool is None:
             return {"status": "failed", "error": f"未知工具: {step.tool_name}"}

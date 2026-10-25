@@ -1,14 +1,18 @@
 # SmartLife Agent — 全栈智能体电商旅游平台 v5
 
-> **文档状态（2026-10-05）**
+> **文档状态（2026-10-05；2026-10-25 增补 trip_gear）**
 > - Current：`smartlife-agent/app/main.py -> LangGraphOrchestrator -> OrchestratorV2` 是当前入口。
-> - Target：MCP 动态发现、外部天气/酒店/路线服务、完整跨场景采购联动仍是目标能力。
+> - Current：混合语义路由、shopping+travel 复合意图并行、Agent 专属 MCP 工具能力面、跨 Agent 工具隔离和运行时拒绝已实现。
+> - Current（2026-10-25）：新增 `trip_gear`（行程约束派生与装备协同）链路，详见 `smartlife-agent/docs/trip-gear.md`；装备类请求走有向链，不再走 shopping+travel 并行分支。
+> - Target：远端 MCP Agent 的动态注册/发现与消息路由、外部酒店服务、完整跨场景采购联动仍是目标能力。
 > - Deprecated：`app/agents/orchestrator.py` 是旧兼容实现，不属于当前主链路。
 > - Removed/Unwired：旧的 MCP 动态发现和未接线组件不得被视为已完成功能。
 
 ## 项目定位
 
 > 基于 LangChain Core 与 LangGraph 构建的 Multi-Agent 智能体系统，统一覆盖**电商购物**和**旅游出行**两大场景。
+>
+> 毕业设计聚焦其中的 `trip_gear` 链路：约束派生 → 逐日行程 → 装备推导 → 已有判定 → 缺口检索 → 校验修复。
 
 ---
 
@@ -17,7 +21,7 @@
 | 理由 | 具体场景 | 为什么拆不开 |
 |------|---------|-------------|
 | **记忆驱动的跨场景推荐** | 用户上周买了帐篷和登山杖，这周问"周末去哪玩" | 记忆存在同一个向量库里，旅游 Agent 能直接召回购物场景的语义，推荐露营路线 |
-| **统一预算与采购联动** | 用户说"我要露营，帮我列装备清单+行程" | 购物清单和行程规划需要同步预算，由共享约束协调器统筹，并由 Shopping/Travel Plan-Execute 子图并行执行 |
+| **统一预算与采购联动** | 用户说"我要露营，帮我列装备清单+行程" | 购物清单和行程规划需要同步预算；装备类请求走 `trip_gear` 有向链（约束→行程→装备→已有→缺口→校验），普通 shopping+travel 才并行 |
 
 ---
 
@@ -30,8 +34,8 @@
 | **结构化审核与硬校验** | 复杂任务结果的自检和优化 | 生成行程/清单后自检合理性，不满意则重新规划 |
 | **RAG + Rerank + Top K** | 非结构化内容检索（用户评价、攻略、FAQ） | 粗排 + 精排的设计、Cross-Encoder vs Bi-Encoder 的 trade-off |
 | **NL2SQL** | 结构化商品查询（价格、分类、库存） | 自然语言到 SQL 的准确性、与 RAG 的分工 |
-| **MCP** | 子 Agent 工具暴露，Orchestrator 动态发现 | MCP 协议设计、与直接 function calling 的区别、Server 注册机制 |
-| **Function Calling** | 天气、地图、支付、时间等外部工具调用 | 工具描述设计、参数约束、错误处理 |
+| **MCP** | 每个 Agent 暴露独立工具能力面，跨 Agent 强隔离 | MCP Server 构建、tools/list、Agent Tool Policy、执行层授权 |
+| **Function Calling** | 天气、地图、时间及只读订单查询 | 工具描述设计、参数约束、错误处理 |
 | **JSON Schema** | 工具参数定义、LLM 输出格式约束 | 保证输出结构化，减少解析错误，与 Pydantic 的配合 |
 | **长期记忆** | 用户画像 + 跨会话摘要记忆 + 跨场景推荐 | 摘要压缩策略、检索质量保证、记忆淘汰机制 |
 
@@ -39,218 +43,175 @@
 
 ## 三、系统架构
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────┐
-│                     用户入口 (Streamlit)                              │
+│                         Streamlit Web UI                             │
 └──────────────────────────────┬──────────────────────────────────────┘
                                │
                     ┌──────────▼──────────┐
-                    │  任务路由器 (小模型)   │
-                    │  判断简单/复杂任务     │
-                    │  → ReAct / Plan&Exec │
+                    │ prepare / classify   │
                     └──────────┬──────────┘
                                │
-┌──────────────────────────────▼──────────────────────────────────────┐
-│               Orchestrator Agent (ReAct)                             │
-│         意图识别 → 通过 MCP 动态发现子 Agent → 路由                     │
-│                                                                      │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────┐  │
-│  │ Plan &       │  │ Shopping     │  │    Travel Agent          │  │
-│  │ Execute      │  │ Agent        │  │    (行程+活动+攻略)       │  │
-│  │ (预算+行程)   │  │ (导购+客服)   │  │                          │  │
-│  └──────┬───────┘  └──────┬───────┘  └────────┬─────────────┘  │  │
-│         │                 │                    │                │  │
-│         └────────┬────────┴────────────────────┘                │  │
-│                  │                                               │  │
-│  ┌───────────────▼──────────────────────────────────────────┐   │  │
-│  │              MCP 协议层                                    │   │  │
-│  │  Shopping Agent → MCP Server (商品查询/筛选/下单 tools)     │   │  │
-│  │  Travel Agent   → MCP Server (景点/活动/天气 tools)        │   │  │
-│  │  Memory Agent   → MCP Server (记忆读写 tools)             │   │  │
-│  └──────────────────────────────────────────────────────────┘   │  │
-│                                                                  │  │
-│  ┌──────────────────┐  ┌──────────────────┐                     │  │
-│  │  混合检索层        │  │  长期记忆层        │                     │  │
-│  │  ┌─────────────┐ │  │  用户画像          │                     │  │
-│  │  │ NL2SQL      │ │  │  跨会话摘要        │                     │  │
-│  │  │ (结构化查询)  │ │  │  跨场景偏好        │                     │  │
-│  │  ├─────────────┤ │  └──────────────────┘                     │  │
-│  │  │ RAG+Rerank  │ │                                           │  │
-│  │  │ (语义检索)   │ │  ┌──────────────────┐                     │  │
-│  │  │ 结果融合     │ │  │  偏好分析          │                     │  │
-│  │  │ + Top K     │ │  │  冲突解决          │                     │  │
-│  │  └─────────────┘ │  │  妥协方案          │                     │  │
-│  └──────────────────┘  └──────────────────┘                     │  │
-└──────────────────────────────────────────────────────────────────────┘
+        ┌──────────────────────▼───────────────────────┐
+        │ UnifiedClassifier                             │
+        │ 关键词 → 上下文 → 小模型 → 主模型仲裁           │
+        │ 输出 intents / primary_intent / route / ...    │
+        └──────────────────────┬───────────────────────┘
                                │
-                    ┌──────────▼──────────┐
-                    │   Streamlit 前端     │
-                    │  对话 | 筛选 | 地图   │
-                    └─────────────────────┘
+                 ┌─────────────▼─────────────┐
+                 │ LangGraphOrchestrator._route│
+                 └───┬──────┬──────┬──────┬───┘
+                     │      │      │      │
+             ┌───────▼─┐ ┌──▼────┐ ┌▼──────────────┐ ┌─▼────────────┐
+             │Shopping │ │Travel │ │Shopping+Travel │ │Customer /    │
+             │ Agent   │ │ Agent │ │并行执行并合并    │ │General/React │
+             └───────┬─┘ └──┬────┘ └┬──────────────┘ └─┬────────────┘
+                     │      │      │                   │
+        ┌────────────▼──────▼──────▼───────────────────▼────────────┐
+        │              Agent 专属 Tool Registry                       │
+        │ shopping / travel / general 工具能力面严格隔离               │
+        └────────────┬──────────────────────────┬───────────────────┘
+                     │                          │
+          ┌──────────▼──────────┐    ┌──────────▼──────────┐
+          │ Hybrid Retrieval     │    │ Memory / Approval    │
+          │ NL2SQL + RAG + Rank  │    │ Short / Long / MD    │
+          └─────────────────────┘    └─────────────────────┘
+
+旁路能力（不在主聊天消息链中）：
+外部 MCP Client ─→ shopping/travel/general 独立 MCP Server
+                  tools/list 与 call_tool 均受 Agent Tool Policy 约束
 ```
+
+关键边界：
+
+- `intent` / `primary_intent` 决定 Agent；
+- `route` 决定 ReAct 或 Plan & Execute；
+- `retrieval` 决定 SQL、RAG、混合或不检索；
+- `sub_intent=gear_plan` 决定是否进入 `trip_gear`（约束派生 → 行程 → 装备 → 校验），见 `smartlife-agent/docs/trip-gear.md`；
+- `shopping + travel` 是当前唯一并行双 Agent 分支；
+- MCP Server 是对外能力面，主聊天当前仍使用进程内 Registry 和静态 `bind_tools()`。
 
 ---
 
-## 四、任务路由：小模型判断 ReAct vs Plan & Execute
+## 四、任务路由：混合分类决定 Agent 与执行范式
 
-用一个轻量级模型（如 GPT-4o-mini 或本地小模型）做任务分类，而不是每次都用大模型判断。
+当前不是纯关键词路由，也不是每次都调用大模型做语义路由，而是四层混合分类：
 
-### 路由规则
-
-| 判断条件 | ReAct | Plan & Execute |
-|---------|-------|----------------|
-| 步骤之间有依赖关系？ | 单步或简单多步 | 后续步骤依赖前面结果 |
-| 需要用户中间确认？ | 直接给结果 | 先出计划让用户审 |
-| 任务可分解为独立子任务？ | 否 | 是 |
-| 需要回退和重新规划？ | 否 | 是 |
-
-### 路由实现
-
-```python
-from langchain_core.prompts import ChatPromptTemplate
-from pydantic import BaseModel, Field
-
-class TaskRoute(BaseModel):
-    """任务路由结果"""
-    route: str = Field(description="react 或 plan_and_execute")
-    reason: str = Field(description="路由理由")
-
-router_prompt = ChatPromptTemplate.from_messages([
-    ("system", """你是一个任务路由器。判断用户请求应该用哪种 Agent 处理。
-
-ReAct Agent 适合：
-- 单次查询（商品搜索、天气查询、简单问答）
-- 导购对话（帮我找XX）
-- 客服问答（退换货政策、订单状态）
-
-Plan & Execute Agent 适合：
-- 多步规划（行程规划、采购清单、预算分配）
-- 跨场景任务（买装备+规划旅行）
-- 需要用户确认计划的任务
-
-关键词提示：规划、计划、清单、安排、预算分配、帮我列、行程 → 复杂任务"""),
-    ("user", "{user_message}")
-])
-
-# 用小模型做路由，成本低、速度快
-router_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-router = router_prompt | router_llm.with_structured_output(TaskRoute)
-
-def route_task(user_message: str) -> TaskRoute:
-    result = router.invoke({"user_message": user_message})
-    return result
+```text
+关键词快筛
+  → 上下文/指代沿用
+  → 小模型语义分类
+  → 低置信或格式异常时主模型仲裁/修复
+  → 默认兜底
 ```
 
-### 具体场景分配
+分类器一次输出三组互相独立的结果：
 
-**ReAct 处理：**
-- "帮我找一双 500 块以内的跑步鞋" → 搜索、筛选、返回结果
-- "这个商品退换货政策是什么" → 查知识库、回答
-- "杭州明天天气怎么样" → 调工具、返回
-- 简单导购对话、客服问答
+```python
+class ClassificationResult(BaseModel):
+    intents: list[str]          # 1-2 个明确意图，决定使用哪些 Agent
+    primary_intent: str         # 主意图，决定默认执行 Agent
+    route: str                  # react / plan_and_execute
+    retrieval: str              # sql_only / rag_only / mixed / none
+    sub_intent: str             # search / plan_trip / gear_plan / ...
+    confidence: float
+    reason: str
+```
 
-**Plan & Execute 处理：**
-- "我要装修新房，预算 5 万，帮我列采购清单"
-  → Plan: 1.确定房间 2.列品类 3.每个品类选品 4.算总价 5.调整预算
-- "我和女朋友周末去杭州玩两天，预算 3000"
-  → Plan: 1.查天气 2.查景点 3.查活动 4.排日程 5.算费用
-- "帮我规划一个露营装备清单+周末露营行程"
-  → 跨场景，需要先规划再执行
+### 三层职责
+
+| 字段 | 职责 | 示例 |
+|---|---|---|
+| `intents` / `primary_intent` | 决定 Agent | `shopping`、`travel`、`customer_service`、`general` |
+| `route` | 决定执行范式 | `react`、`plan_and_execute` |
+| `retrieval` | 决定数据获取方式 | `sql_only`、`rag_only`、`mixed`、`none` |
+
+> 装备类请求额外把 `sub_intent` 置为 `gear_plan`，由 `_route()` 优先分流到 `trip_gear`；上表三组字段的职责不变。
+
+### 条件路由
+
+LangGraph 的 `_route()` 不再调用模型，而是消费分类结果：
+
+```text
+sub_intent = gear_plan         → trip_gear
+intents 包含 shopping + travel → shopping_travel
+primary_intent = shopping      → shopping
+primary_intent = travel        → travel
+primary_intent = customer_service → customer_service
+primary_intent = general + react → react
+primary_intent = general + plan_and_execute → general_plan
+其他                            → general
+```
+
+多意图最多保留两个。当前真正并行执行两个 Agent 的分支是 `shopping + travel`：
+
+1. Shopping Agent 查询商品、评价或订单；
+2. Travel Agent 查询天气、活动并生成行程；
+3. 两个分支并行运行；
+4. 最终按“购物推荐 / 旅行计划”两个分区合成回答。
+
+其他复合表达仍以 `primary_intent` 为主，避免任意意图组合导致不可控的 Agent 扇出。
+
+装备类请求（`gear_plan`）优先进入 `trip_gear`，不再走 `shopping + travel` 并行分支。
+
+### 示例
+
+| 用户请求 | 分类结果 | 执行 |
+|---|---|---|
+| “推荐一双跑步鞋” | `shopping` | Shopping Agent |
+| “帮我规划杭州两天行程” | `travel + plan_and_execute` | Travel Agent |
+| “推荐跑鞋，再规划杭州两日游” | `shopping + travel` | 两个 Agent 并行 |
+| “周末去莫干山露营，帮我列装备清单” | `travel + gear_plan` | `trip_gear` 链路 |
+| “订单到哪里了” | `customer_service` | Customer Service Agent |
+| “杭州明天天气怎么样” | `general + react` | 通用 ReAct |
 
 ---
 
-## 五、MCP 协议：子 Agent 工具暴露与动态发现
+## 五、MCP 协议：Agent 专属工具能力面
 
-### 为什么用 MCP 而不是硬编码 tool list？
+### 当前实现
 
-硬编码方式：Orchestrator 里写死 shopping_tools = [search_products, filter_products, ...]，新增工具要改 Orchestrator 代码。
+每个 Agent 可以构建为独立 MCP Server，并且只发布自己的工具：
 
-MCP 方式：每个子 Agent 暴露为 MCP Server，Orchestrator 通过 MCP 协议动态查询"你现在有什么能力"，然后决定调用哪个。
+| Agent | 工具能力面 |
+|---|---|
+| `shopping` | `search_products`、`get_product_reviews`、`get_order_status` |
+| `travel` | `search_destinations`、`get_local_activities`、`plan_itinerary`、`get_weather`、`get_route`、`get_current_time` |
+| `general` | `get_weather`、`get_route`、`get_current_time` |
 
-### MCP Server 设计
+启动方式：
 
-```python
-# Shopping Agent MCP Server
-from mcp.server import Server
-from mcp.types import Tool
-
-shopping_server = Server("shopping-agent")
-
-@shopping_server.tool()
-def search_products(query: str, category: str = None, max_price: float = None) -> list:
-    """搜索商品，支持自然语言描述和结构化筛选"""
-    # NL2SQL 处理结构化条件
-    # RAG 处理语义描述
-    ...
-
-@shopping_server.tool()
-def get_product_reviews(product_id: str, aspect: str = None) -> list:
-    """获取商品评价，支持按方面筛选"""
-    ...
-
-@shopping_server.tool()
-def place_order(user_id: str, product_id: str, quantity: int) -> dict:
-    """下单"""
-    ...
-
-# Travel Agent MCP Server
-travel_server = Server("travel-agent")
-
-@travel_server.tool()
-def search_destinations(preference: str, budget: float, days: int) -> list:
-    """搜索目的地，根据偏好和预算推荐"""
-    ...
-
-@travel_server.tool()
-def get_local_activities(city: str, date: str, interests: list = None) -> list:
-    """获取本地活动信息"""
-    ...
-
-@travel_server.tool()
-def plan_itinerary(destination: str, days: int, budget: float, interests: list) -> dict:
-    """规划行程"""
-    ...
-
-# Memory Agent MCP Server
-memory_server = Server("memory-agent")
-
-@memory_server.tool()
-def get_user_profile(user_id: str) -> dict:
-    """获取用户画像"""
-    ...
-
-@memory_server.tool()
-def save_preference(user_id: str, preference: dict) -> dict:
-    """保存用户偏好"""
-    ...
-
-@memory_server.tool()
-def get_cross_scene_memories(user_id: str, current_scene: str) -> list:
-    """获取跨场景记忆（购物到旅游 / 旅游到购物）"""
-    ...
+```bash
+venv312/bin/python scripts/run_mcp_server.py --transport stdio --agent shopping
+venv312/bin/python scripts/run_mcp_server.py --transport stdio --agent travel
 ```
 
-### Orchestrator 通过 MCP 动态发现
+代码入口：
 
 ```python
-from langchain_mcp import MCPClient
+from app.mcp_servers.protocol_server import build_mcp_server
 
-async def discover_tools():
-    """Orchestrator 动态发现所有子 Agent 的工具"""
-    async with MCPClient() as client:
-        # 连接所有 MCP Server
-        await client.connect("shopping-agent", "localhost:8001")
-        await client.connect("travel-agent", "localhost:8002")
-        await client.connect("memory-agent", "localhost:8003")
-        
-        # 动态获取所有可用工具
-        tools = await client.list_tools()
-        return tools  # 自动转为 LangChain Tool 对象
+shopping_server = build_mcp_server(agent_id="shopping", actor_id="user_001")
+travel_server = build_mcp_server(agent_id="travel", actor_id="user_001")
 ```
 
-### 面试话术
+### 三层工具隔离
 
-"我把每个子 Agent 封装成 MCP Server，Orchestrator 通过 MCP 协议动态发现和调用子 Agent 的工具，而不是硬编码路由表。这样新增一个子 Agent 不需要改 Orchestrator 的代码，只需要启动一个新的 MCP Server 并注册即可。"
+1. **MCP 发现层**：`tools/list` 只返回当前 Agent 的工具；
+2. **模型绑定层**：`bind_tools()` 只绑定当前 Agent 的工具；
+3. **执行授权层**：即使模型被提示注入或伪造 `tool_call`，跨 Agent 工具也会被拒绝，不会真正调用。
+
+```python
+policy = get_agent_tool_policy("shopping")
+policy.require("get_route")
+# ToolAuthorizationError: 工具越权: get_route 不属于 Agent shopping
+```
+
+### 即插即用边界
+
+当前“即插即用”是指外部 MCP 客户端可以独立连接、替换或升级某个 Agent MCP Server，且不会看到或调用其他 Agent 的工具。
+
+主聊天链路目前仍由 LangGraph 使用进程内 Agent Registry 和静态 `bind_tools()` 执行，不依赖 MCP 网络调用。远端 MCP Agent 的自动注册、动态发现、能力协商和消息路由是后续目标，不应宣称已经实现。
 
 ---
 
@@ -459,6 +420,8 @@ result = agent.invoke({"input": "我和女朋友周末去杭州玩两天，预�
 ### 为什么需要 Reflection？
 
 Plan & Execute 生成的行程/清单可能有不合理的地方（行程太赶、预算超支、时间冲突）。TravelPlanGraph 与 GeneralPlanGraph 通过结构化审核和确定性硬校验完成自检。
+
+> 2026-10-25 增补：`trip_gear` 不依赖模型自审，改用确定性校验（预算含装备、时间重叠、天数、露营必备装备）加两轮有界修复；本节描述的是 TravelPlanGraph / GeneralPlanGraph 的审核方式，详见 `smartlife-agent/docs/trip-gear.md`。
 
 ### 实现
 
@@ -678,51 +641,40 @@ def intelligent_shopping_guide(user_query: str) -> dict:
 
 ## 十四、项目目录结构
 
-```
+```text
 smartlife-agent/
 ├── app/
-│   ├── main.py                    # Streamlit 入口
-│   ├── router.py                  # 任务路由器（小模型分类）
+│   ├── main.py                         # Streamlit 入口
+│   ├── classifier.py                   # 混合分类器与 ClassificationResult
 │   ├── agents/
-│   │   ├── orchestrator.py        # 主 Orchestrator (ReAct)
-│   │   ├── shopping_agent.py      # 导购+客服 Agent
-│   │   ├── travel_agent.py        # 旅游 Agent (Plan & Execute)
-│   │   └── travel_graph.py        # Travel 证据执行与结构化审核
+│   │   ├── langgraph_orchestrator.py   # 顶层分类、条件路由和复合分支
+│   │   ├── orchestrator_v2.py          # 场景执行服务
+│   │   ├── shopping_graph.py           # 商品检索与购物回答
+│   │   ├── travel_agent.py             # 旅游问答与计划入口
+│   │   ├── travel_graph.py             # 旅游证据执行和结构化审核
+│   │   ├── react_graph.py              # 受控 ReAct 工具循环
+│   │   └── general_plan_graph.py       # 通用 Plan & Execute
 │   ├── mcp_servers/
-│   │   ├── shopping_server.py     # Shopping MCP Server
-│   │   ├── travel_server.py       # Travel MCP Server
-│   │   └── memory_server.py       # Memory MCP Server
+│   │   └── protocol_server.py          # 真实 MCP Protocol Server
 │   ├── tools/
-│   │   ├── weather.py             # 天气 Function Calling
-│   │   ├── map.py                 # 地图 Function Calling
-│   │   ├── payment.py             # 支付 Function Calling
-│   │   └── time.py                # 时间 Function Calling
+│   │   ├── agent_capabilities.py       # Agent Tool Policy 与越权拒绝
+│   │   ├── registry.py                 # Actor/Agent 绑定工具注册表
+│   │   ├── shopping_tools.py           # 电商工具
+│   │   ├── travel_tools.py             # 旅游工具
+│   │   ├── weather.py / map.py / time.py
+│   │   └── payment.py                  # 兼容模块；支付工具已移除并返回空列表
 │   ├── retrieval/
-│   │   ├── nl2sql.py              # NL2SQL 模块
-│   │   ├── rag.py                 # RAG 检索模块
-│   │   ├── reranker.py            # Cross-Encoder Rerank
-│   │   └── fusion.py              # 结果融合
-│   ├── memory/
-│   │   ├── short_term.py          # 短期记忆（会话）
-│   │   ├── long_term.py           # 长期记忆（向量库）
-│   │   └── compressor.py          # 摘要压缩
-│   │   ├── graph.py               # LangGraph 状态机
-│   │   ├── preference.py          # 偏好分析
-│   │   └── conflict.py            # 冲突解决
-│   └── evaluation/
-│       ├── rag_evaluator.py       # LLM Judge RAG 评测
-│       └── test_cases.py          # 测试用例
-├── data/
-│   ├── products.db                # 商品数据库
-│   ├── reviews/                   # 用户评价（向量化）
-│   ├── guides/                    # 旅游攻略（向量化）
-│   └── activities/                # 本地活动
-├── tests/
-│   ├── test_rag.py                # RAG 评测
-│   ├── test_nl2sql.py             # NL2SQL 测试
-│   ├── test_agents.py             # Agent 测试
+│   │   ├── service.py                  # SQL/RAG 检索编排
+│   │   ├── nl2sql.py / rag.py / reranker.py
+│   │   └── repositories.py             # 商品、评价和订单 Repository
+│   ├── memory/                         # 短期、长期、Markdown 与审批
+│   ├── evaluation/                     # RAG、Rerank、A/B 和 E2E 评测
+│   └── observability.py                # Trace、耗时与模型用量
+├── scripts/run_mcp_server.py           # 启动统一或 Agent 专属 MCP Server
+├── docs/current-agent-flow.html        # 当前完整分支流程图
+├── tests/                              # 单元、集成、MCP 和隔离测试
 ├── requirements.txt
-└── README.md
+└── requirements.lock
 ```
 
 ---
@@ -742,7 +694,7 @@ smartlife-agent/
 |------|-------------|
 | 为什么不用纯 RAG 查商品？ | 结构化数据用 SQL 更精确，RAG 适合非结构化评价和攻略 |
 | ReAct 和 Plan & Execute 怎么选？ | 小模型判断任务复杂度，简单任务走 ReAct 省成本，复杂任务走 Plan & Execute 保证质量 |
-| MCP 和直接 function calling 有什么区别？ | MCP 支持动态发现和跨 Agent 共享，function calling 是静态绑定 |
+| MCP 和直接 function calling 有什么区别？ | MCP 是标准化工具协议，可独立发布能力面；当前主聊天仍使用静态 bind_tools，两者边界必须说清楚 |
 | RAG 的粗排和精排怎么配合？ | Bi-Encoder 召回 20 条（快），Cross-Encoder 精排取 Top 5（准） |
 | 结构化审核迭代几次？ | Travel 最多 3 次，GeneralPlan 最多 1 次，避免无限循环 |
 
@@ -766,7 +718,7 @@ smartlife-agent/
 | **RAG** | 非结构化检索 | 用户评价、攻略、FAQ 的语义检索 |
 | **Rerank + Top K** | RAG 精排 | Cross-Encoder 粗排后精排，提高检索质量 |
 | **NL2SQL** | 结构化查询 | 自然语言到 SQL，精确筛选商品 |
-| **MCP** | 子 Agent 工具暴露 | Orchestrator 动态发现子 Agent 能力 |
-| **Function Calling** | 外部工具 | 天气、地图、支付、时间等简单工具 |
+| **MCP** | Agent 专属工具能力面 | tools/list 隔离、bind_tools 隔离、执行层越权拒绝 |
+| **Function Calling** | 外部工具 | 天气、地图、时间和只读订单查询 |
 | **JSON Schema** | 工具参数定义 | 保证输出结构化，减少解析错误 |
 | **长期记忆** | 用户画像 | 跨会话偏好、跨场景推荐 |

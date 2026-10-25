@@ -51,6 +51,7 @@ from app.retrieval.order_repository import OrderRepository
 from app.retrieval.repositories import ProductRepository, ReviewRepository
 from app.session import build_thread_id
 from app.tools import get_safe_tools
+from app.trip_gear.intent import is_gear_request
 from app.observability import extract_model_usage, log_exception, timed_span
 
 
@@ -67,6 +68,7 @@ class OrchestratorV2:
     """
 
     def __init__(self, model_name: str = None):
+        self.model_name = model_name
         self.llm = create_llm(model_name)
         self.classifier = get_classifier()
 
@@ -94,6 +96,7 @@ class OrchestratorV2:
         self._general_plan_graph = None
         self._shopping_graph = None
         self._memory_repository = None
+        self._trip_gear_agent = None
         self._last_classifications = {}
 
         # 通用对话 prompt
@@ -318,6 +321,27 @@ class OrchestratorV2:
                 }, step="classify")
                 self._last_classifications[thread_id] = classification
 
+        # 装备清单安全网：露营/出差/带什么这类请求要走行程+装备链路，
+        # 不能被“帐篷/睡袋”等商品词带到购物子图。
+        if classification.intent != "customer_service" and is_gear_request(user_message):
+            classification.intent = "travel"
+            classification.primary_intent = "travel"
+            classification.intents = ["travel"]
+            classification.route = "plan_and_execute"
+            classification.sub_intent = "gear_plan"
+            classification.retrieval = "mixed"
+            classification.reason = f"{classification.reason} | 装备清单安全网".strip(" |")
+            self._last_classifications[thread_id] = classification
+            await queue.emit(EventType.CLASSIFY, {
+                "route": classification.route,
+                "intent": "travel",
+                "sub_intent": "gear_plan",
+                "retrieval": classification.retrieval,
+                "confidence": classification.confidence,
+                "reason": classification.reason,
+                "method": "keyword",
+            }, step="classify")
+
         return classification
 
     def get_chat_history(self, thread_id: str) -> List[Any]:
@@ -361,6 +385,26 @@ class OrchestratorV2:
             )
         return await self.travel_agent.chat_streaming(user_message, user_id, queue)
 
+    async def run_trip_gear_turn(
+        self,
+        user_message: str,
+        user_id: str,
+        thread_id: str,
+        classification: ClassificationResult,
+        queue: EventQueue,
+    ) -> str:
+        """行程约束派生 + 装备协同规划：一条有向链路，不做双分支并行。"""
+        if self._trip_gear_agent is None:
+            from app.trip_gear.agent import TripGearAgent
+
+            self._trip_gear_agent = TripGearAgent(model_name=self.model_name)
+        return await self._trip_gear_agent.run_streaming(
+            user_message,
+            user_id,
+            queue,
+            chat_history=self.get_chat_history(thread_id),
+        )
+
     async def run_react_turn(
         self,
         user_message: str,
@@ -371,7 +415,8 @@ class OrchestratorV2:
     ) -> str:
         graph = ToolReActGraph(
             model=self.llm,
-            tools=get_safe_tools(actor_id=user_id),
+            tools=get_safe_tools(actor_id=user_id, agent_id="general"),
+            agent_id="general",
             max_steps=6,
             tool_timeout=10.0,
         )
@@ -420,7 +465,8 @@ class OrchestratorV2:
         }, step="plan")
         graph = GeneralPlanGraph(
             self.llm,
-            tools=get_safe_tools(actor_id=user_id),
+            tools=get_safe_tools(actor_id=user_id, agent_id="general"),
+            agent_id="general",
             max_revisions=1,
         )
         return await graph.run_streaming(
@@ -918,7 +964,13 @@ class OrchestratorV2:
             elif event == "finalized":
                 await queue.emit_thinking("🧠 工具推理完成", step="react")
 
-        graph = react_graph or ToolReActGraph(model=self.llm, tools=get_safe_tools(), max_steps=6, tool_timeout=10.0)
+        graph = react_graph or ToolReActGraph(
+            model=self.llm,
+            tools=get_safe_tools(agent_id="general"),
+            agent_id="general",
+            max_steps=6,
+            tool_timeout=10.0,
+        )
         graph.on_event = on_event
         messages = list(chat_history) + [HumanMessage(content=user_message)]
         result = await graph.run_streaming(messages, thread_id=thread_id)

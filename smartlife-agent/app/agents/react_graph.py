@@ -19,6 +19,7 @@ from langgraph.graph import END, START, StateGraph
 from app.execution_log import CallbackEventQueue, build_execution_log, run_policy_node
 from app.observability import extract_model_usage, record_trace, timed_span
 from app.reliability import NodePolicy, RetryPolicy, RetryableError
+from app.tools.agent_capabilities import AgentToolPolicy, validate_agent_tools
 
 
 class ReActState(TypedDict):
@@ -41,12 +42,16 @@ class ToolReActGraph:
         max_steps: int = 6,
         tool_timeout: float = 10.0,
         on_event: Optional[Callable[..., Any]] = None,
+        agent_id: Optional[str] = None,
     ):
         if max_steps <= 0:
             raise ValueError("max_steps 必须大于 0")
         if tool_timeout <= 0:
             raise ValueError("tool_timeout 必须大于 0")
         self.tools = list(tools or [])
+        self.agent_policy: Optional[AgentToolPolicy] = (
+            validate_agent_tools(agent_id, self.tools) if agent_id else None
+        )
         self.tools_by_name = {tool.name: tool for tool in self.tools}
         self.max_steps = max_steps
         self.tool_timeout = tool_timeout
@@ -170,24 +175,46 @@ class ToolReActGraph:
         trace_id: str = "",
     ) -> Dict[str, Any]:
         name = call.get("name", "")
-        tool = self.tools_by_name.get(name)
         started = time.monotonic()
-        if tool is None:
-            result = {
+
+        if self.agent_policy is not None and not self.agent_policy.allows(name):
+            error = (
+                f"工具越权: {name} 不属于 Agent "
+                f"{self.agent_policy.agent_id}，已拒绝执行"
+            )
+            record_trace(
+                f"tool.{name or 'unauthorized'}",
+                0.0,
+                trace_id=trace_id,
+                status="error",
+                attributes={"error": error},
+            )
+            return {
                 "tool": name,
                 "ok": False,
                 "result": "",
-                "error": f"未知工具: {name}",
+                "error": error,
                 "duration_ms": 0,
             }
+
+        tool = self.tools_by_name.get(name)
+        if tool is None:
+            error = f"未知工具: {name}"
             record_trace(
                 f"tool.{name or 'unknown'}",
                 0.0,
                 trace_id=trace_id,
                 status="error",
-                attributes={"error": result["error"]},
+                attributes={"error": error},
             )
-            return result
+            return {
+                "tool": name,
+                "ok": False,
+                "result": "",
+                "error": error,
+                "duration_ms": 0,
+            }
+
         try:
             args = call.get("args", {}) or {}
             if hasattr(tool, "ainvoke"):

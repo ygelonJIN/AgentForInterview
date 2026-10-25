@@ -103,6 +103,7 @@ class LangGraphOrchestrator:
             # 覆盖购物子图最坏路径：规划 + 检索 + 生成 + 一次校验修复。
             "shopping": NodePolicy(timeout_seconds=300, retry_policy=RetryPolicy(max_attempts=1)),
             "travel": NodePolicy(timeout_seconds=180, retry_policy=RetryPolicy(max_attempts=1)),
+            "trip_gear": NodePolicy(timeout_seconds=300, retry_policy=RetryPolicy(max_attempts=1)),
             "shopping_travel": NodePolicy(timeout_seconds=480, retry_policy=RetryPolicy(max_attempts=1)),
             "customer_service": NodePolicy(timeout_seconds=60, retry_policy=RetryPolicy(max_attempts=1)),
             "general_plan": NodePolicy(timeout_seconds=180, retry_policy=RetryPolicy(max_attempts=1)),
@@ -150,6 +151,7 @@ class LangGraphOrchestrator:
             "classify": "classify",
             "shopping": "shopping",
             "travel": "travel",
+            "trip_gear": "trip_gear",
             "shopping_travel": "shopping",
             "customer_service": "retrieval",
             "general_plan": "plan",
@@ -165,6 +167,7 @@ class LangGraphOrchestrator:
         graph.add_node("classify", self._policy_node("classify", self._classify))
         graph.add_node("shopping", self._policy_node("shopping", self._shopping))
         graph.add_node("travel", self._policy_node("travel", self._travel))
+        graph.add_node("trip_gear", self._policy_node("trip_gear", self._trip_gear))
         graph.add_node("shopping_travel", self._policy_node("shopping_travel", self._shopping_travel))
         graph.add_node("customer_service", self._policy_node("customer_service", self._customer_service))
         graph.add_node("general_plan", self._policy_node("general_plan", self._general_plan))
@@ -180,6 +183,7 @@ class LangGraphOrchestrator:
             {
                 "shopping": "shopping",
                 "travel": "travel",
+                "trip_gear": "trip_gear",
                 "shopping_travel": "shopping_travel",
                 "customer_service": "customer_service",
                 "general_plan": "general_plan",
@@ -187,7 +191,7 @@ class LangGraphOrchestrator:
                 "general": "general",
             },
         )
-        for scene_node in ("shopping", "travel", "shopping_travel", "customer_service", "general_plan", "react", "general"):
+        for scene_node in ("shopping", "travel", "trip_gear", "shopping_travel", "customer_service", "general_plan", "react", "general"):
             graph.add_edge(scene_node, "finalize")
         graph.add_edge("finalize", END)
         return graph.compile(checkpointer=self.checkpointer)
@@ -232,6 +236,8 @@ class LangGraphOrchestrator:
         intent = classification.get("intent", "general")
         route = classification.get("route", "react")
         intents = set(classification.get("intents") or [intent])
+        if classification.get("sub_intent") == "gear_plan":
+            return "trip_gear"
         if {"shopping", "travel"}.issubset(intents):
             return "shopping_travel"
         if intent == "shopping":
@@ -271,14 +277,16 @@ class LangGraphOrchestrator:
             },
             message=f"条件路由选择 {scene} 分支",
         )
-        runner = {
-            "shopping": self.legacy.run_shopping_turn,
-            "travel": self.legacy.run_travel_turn,
-            "customer_service": self.legacy.run_customer_service_turn,
-            "general_plan": self.legacy.run_general_plan_turn,
-            "react": self.legacy.run_react_turn,
-            "general": self.legacy.run_general_turn,
+        runner_name = {
+            "shopping": "run_shopping_turn",
+            "travel": "run_travel_turn",
+            "trip_gear": "run_trip_gear_turn",
+            "customer_service": "run_customer_service_turn",
+            "general_plan": "run_general_plan_turn",
+            "react": "run_react_turn",
+            "general": "run_general_turn",
         }[scene]
+        runner = getattr(self.legacy, runner_name)
         if scene in {"shopping", "travel"}:
             response = await runner(
                 state["user_message"],
@@ -303,6 +311,9 @@ class LangGraphOrchestrator:
 
     async def _travel(self, state: OrchestratorState, config: Optional[RunnableConfig] = None):
         return await self._run_scene(state, config, "travel")
+
+    async def _trip_gear(self, state: OrchestratorState, config: Optional[RunnableConfig] = None):
+        return await self._run_scene(state, config, "trip_gear")
 
     async def _customer_service(self, state: OrchestratorState, config: Optional[RunnableConfig] = None):
         return await self._run_scene(state, config, "customer_service")

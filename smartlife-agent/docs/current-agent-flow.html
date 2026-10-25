@@ -983,6 +983,13 @@
         重新按树形关系绘制。每个分支块都有一个明确父节点；子节点等宽排列；
         SVG 连线根据节点真实位置绘制到每个子节点的条件标签和顶部，不再使用无法对齐的装饰箭头。
       </p>
+      <div class="callout warning">
+        <strong>2026-10-25 增补：</strong>
+        新增第七个出口 <code>trip_gear</code>（行程约束派生与装备协同），
+        路由条件为 <code>sub_intent=gear_plan</code>。本文主图、关键词表和
+        “六个场景出口”仍按原稿绘制，未重绘；该链路的节点、字段与规则见
+        <code>smartlife-agent/docs/trip-gear.md</code>。
+      </div>
       <div class="legend">
         <span class="legend-item"><span class="legend-line"></span>真实执行边</span>
         <span class="legend-item"><span class="legend-line dashed"></span>循环 / 重试返回边</span>
@@ -1053,11 +1060,12 @@ Python async generator → Streamlit background thread → st.empty()</div>
           <p><strong>中文：</strong>统一分类器，也叫“统一任务分诊器”。</p>
           <p>它不只判断 Intent。它把过去分离的任务路由和意图识别合并为一次输出：</p>
           <div class="formula">ClassificationResult {
-  route,       // react / plan_and_execute
-  intent,      // shopping / travel / customer_service / general
-  sub_intent,  // search / recommend / order_status / plan_trip / qa / chat ...
-  retrieval,   // sql_only / rag_only / mixed / none
-  confidence,  // 0.0 - 1.0
+  intents,         // 1-2 个明确意图，决定使用哪些 Agent
+  primary_intent,  // shopping / travel / customer_service / general
+  route,           // react / plan_and_execute
+  sub_intent,      // search / recommend / order_status / plan_trip / qa / chat ...
+  retrieval,       // sql_only / rag_only / mixed / none
+  confidence,      // 0.0 - 1.0
   reason
 }</div>
           <p>判断顺序是：关键词规则 → 上下文指代沿用 → 小模型 → 低置信主模型仲裁/格式修复 → 默认兜底。</p>
@@ -1219,7 +1227,7 @@ general + plan_and_execute      → "general_plan"
     <section class="section">
       <div class="section-head">
         <div>
-          <h2>01 · 全景主干：共同入口 → 统一分类 → 六个场景出口</h2>
+          <h2>01 · 全景主干：共同入口 → 统一分类 → 六个原场景出口 + trip_gear</h2>
           <p>先走共同前置，再从 ClassificationResult 一次性展开场景分支。</p>
         </div>
         <div class="chapter">OVERVIEW</div>
@@ -1585,21 +1593,22 @@ combined.strategy 由最终 Product/Review 派生，但工具/攻略/记忆需�
       </div>
 
       <div class="diagram">
-        <div class="diagram-title"><h3>Intent 的五类定义与小模型输出</h3><span>关键词层命中时不会调用小模型；未命中才让小模型判断这些语义类别</span></div>
+        <div class="diagram-title"><h3>Intent 的四类定义与多意图输出</h3><span>关键词层命中时不会调用小模型；未命中才让小模型判断这些语义类别</span></div>
         <div class="table-wrap">
           <table class="name-table">
             <thead><tr><th>Intent</th><th>中文含义</th><th>典型任务</th><th>顶层去向</th></tr></thead>
             <tbody>
               <tr><td><code>shopping</code></td><td>购物</td><td>找商品、推荐、比较、价格/品牌/库存筛选</td><td>Shopping 分支</td></tr>
-              <tr><td><code>customer_service</code></td><td>客户服务</td><td>订单、物流、退换、退款、投诉、售后</td><td>Shopping 分支</td></tr>
+              <tr><td><code>customer_service</code></td><td>客户服务</td><td>订单、物流、退换、退款、投诉、售后</td><td>Customer Service 分支</td></tr>
               <tr><td><code>travel</code></td><td>旅行</td><td>目的地、酒店、景点、攻略、路线、行程规划</td><td>Travel 分支</td></tr>
-              <tr><td><code>general</code></td><td>通用对话</td><td>闲聊、一般问答、通用工具请求</td><td>ReAct 或普通生成</td></tr>
+              <tr><td><code>general</code></td><td>通用对话</td><td>闲聊、一般问答、通用工具请求</td><td>ReAct、General Plan 或普通生成</td></tr>
             </tbody>
           </table>
         </div>
         <div class="formula">小模型输出 Intent 的方法：
 输入 = 当前消息 + 最近对话上下文 + 上一轮分类（仅作为连续指代线索）
-输出 = 一个严格 JSON，其中 intent 只能是上述 5 个枚举值
+输出 = 一个严格 JSON：primary_intent 是 1 个主意图，intents 是 1-2 个明确意图
+shopping + travel 同时出现 → 顶层进入 shopping_travel 并行分支
 若 confidence &lt; 0.55 → 主模型仲裁
 若 JSON/字段非法 → 主模型修复
 若都失败 → general / react / chat / none</div>
@@ -1658,7 +1667,7 @@ combined.strategy 由最终 Product/Review 派生，但工具/攻略/记忆需�
           <svg class="tree-lines"></svg>
           <div class="root-node node-blue">
             <h3>classification.intent</h3>
-            <p>注意：这里使用的是分类器给出的主 Intent；当前系统没有多 Intent 列表。</p>
+            <p>这里使用分类器给出的主 Intent 选择购物检索公式；多意图只影响顶层 Agent 路由。shopping+travel 会合并两个分支的 Product、Review 和证据来源。</p>
           </div>
           <div class="tree-children" style="--cols:4">
             <article class="branch-node node-gray">
@@ -2180,7 +2189,7 @@ EvidencePlanner 再把布尔值映射为 SQL、RAG、mixed、none</div>
         </article>
         <article class="aux-card">
           <h3>MCP Protocol Server</h3>
-          <p>独立发布 Tool Registry；默认只读。主 ReAct 仍是静态 bind_tools，不是 MCP 动态发现路由。</p>
+          <p>可按 --agent shopping/travel/general 发布独立 MCP 能力面，发现、bind_tools 和执行层都禁止跨 Agent 工具。默认只读；主聊天仍使用进程内 Registry 与静态 bind_tools，不是远端 MCP 动态路由。</p>
         </article>
       </div>
     </section>

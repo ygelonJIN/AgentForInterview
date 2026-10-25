@@ -1,21 +1,27 @@
 # SmartLife Agent
 
-SmartLife Agent 是一个面向电商导购、旅行规划、客服与通用任务的全栈智能体平台。项目基于 Python、Streamlit、LangChain、LangGraph、ChromaDB 和 MCP，演示了任务路由、智能体编排、混合检索、工具调用、长期记忆、审批机制、流式输出及评测能力。
+> **毕业设计题目**：基于 LangGraph 的行程约束派生与装备协同规划智能体设计与实现
+
+SmartLife Agent 是一个面向电商导购、旅行规划、客服与通用任务的全栈智能体平台，也是本毕业设计的工程基础。项目基于 Python、Streamlit、LangChain、LangGraph、ChromaDB 和 MCP，演示了任务路由、智能体编排、混合检索、工具调用、长期记忆、审批机制、流式输出及评测能力。
+
+本设计在通用平台之上聚焦一条纵向链路：把一句出行需求派生为可追溯的约束清单，生成结构化逐日行程，由行程推导装备清单，结合对话与长期记忆判断已有装备，只对缺口调用商品检索，最后做预算、时间与装备齐全性校验，并在有限轮次内修复。实现见 `smartlife-agent/app/trip_gear/`，说明见 `smartlife-agent/docs/trip-gear.md`。
 
 > 项目代码位于 `smartlife-agent/` 目录。
 
 ## 功能特性
 
-- **智能体编排**：根据任务类型自动选择 ReAct 或 Plan & Execute，并路由到购物、旅行、客服或通用规划智能体。
+- **混合语义路由**：关键词快筛、上下文沿用、小模型语义分类和主模型仲裁共同判断意图；选择购物、旅游、客服或通用 Agent，并决定 ReAct / Plan & Execute。明确的电商+旅游复合任务会并行使用两个 Agent。
+- **行程约束与装备协同**：把用户需求派生为带来源、硬度、状态的约束清单；生成逐日行程后推导装备清单，从对话/上文/长期记忆判断已有装备，只对缺口检索商品，并做预算、时间与装备齐全性校验。
+- **智能体编排**：LangGraph 按 `intent` 选择场景 Agent，按 `route` 选择执行范式，按 `retrieval` 选择 SQL、RAG 或混合检索，按 `sub_intent=gear_plan` 选择行程+装备链路。
 - **混合检索**：结合 NL2SQL、RAG、向量召回和 Cross-Encoder Rerank，分别处理结构化与非结构化数据。
-- **工具调用**：统一 Tool Registry，支持天气、地图、时间、购物、旅行和记忆等工具。
-- **MCP 协议服务**：支持 stdio 与 Streamable HTTP，可向外部 MCP 客户端动态发布工具。
+- **Agent 工具隔离**：电商、旅游和通用 Agent 拥有独立 Tool Registry，模型只能发现当前 Agent 的工具。
+- **MCP 协议服务**：支持 stdio 与 Streamable HTTP，可把每个 Agent 作为独立 MCP 能力面即插即用；跨 Agent 工具在注册、发现和执行层都会被拒绝。
 - **长期记忆**：支持偏好、事件和对话记忆，提供 Markdown 同步、记忆压缩、用户隔离和记忆写入审批。
 - **数据导入**：支持商品、订单、用户、评价等 CSV 数据，以及 PDF、DOCX、Excel 和 Markdown 文档导入。
 - **可靠性机制**：包含超时、重试、熔断、缓存、节点执行策略和结果校验。
 - **可观测性**：提供执行日志、步骤时间线、Trace、Token 统计和敏感信息脱敏。
 - **评测体系**：支持 RAG 评测、Rerank A/B、端到端并发基准和性能基线校验。
-- **敏感操作保护**：支付、记忆写入等敏感操作默认采用显式确认或审批机制。
+- **敏感操作保护**：支付、退款和下单不在当前能力范围；记忆写入默认采用显式确认或审批机制。
 
 ## 技术栈
 
@@ -41,24 +47,79 @@ SmartLife Agent 是一个面向电商导购、旅行规划、客服与通用任�
                          └──────────┬───────────┘
                                     │
                          ┌──────────▼───────────┐
-                         │  LangGraph Orchestrator│
+                         │ LangGraph Prepare     │
                          └──────────┬───────────┘
                                     │
-                  ┌─────────────────┼─────────────────┐
-                  │                 │                 │
-          ┌───────▼──────┐  ┌───────▼──────┐  ┌───────▼──────┐
-          │ ReAct Agent  │  │ Plan&Execute │  │  Sub-Agents  │
-          └───────┬──────┘  └───────┬──────┘  └───────┬──────┘
-                  │                 │                 │
-                  └─────────────────┼─────────────────┘
+                    ┌───────────────▼────────────────┐
+                    │ UnifiedClassifier               │
+                    │ 关键词 → 上下文 → 小模型 → 仲裁   │
+                    │ intents / route / retrieval      │
+                    └───────────────┬────────────────┘
                                     │
-               ┌────────────────────┼────────────────────┐
-               │                    │                    │
-       ┌───────▼──────┐    ┌────────▼────────┐   ┌──────▼──────┐
-       │ Tool Registry │    │ Hybrid Retrieval │   │   Memory    │
-       │  Tools / MCP  │    │ NL2SQL + RAG     │   │ Short / Long│
-       └──────────────┘    └─────────────────┘   └─────────────┘
+                    ┌───────────────▼────────────────┐
+                    │ LangGraph Conditional Router    │
+                    └───┬────────┬────────┬────────┬──┘
+                        │        │        │        │
+                 ┌──────▼───┐ ┌──▼─────┐ ┌▼──────────────┐ ┌─▼────────────┐
+                 │ Shopping │ │ Travel │ │ Shopping+Travel│ │ Customer /   │
+                 │  Agent   │ │ Agent  │ │ 并行执行并合并   │ │ General/React│
+                 └──────┬───┘ └──┬─────┘ └┬──────────────┘ └─┬────────────┘
+                        │        │        │                   │
+               ┌────────▼────────▼────────▼───────────────────▼────────┐
+               │ Agent 专属 Tool Registry / MCP 能力面                  │
+               │ 工具隔离 bind_tools + 执行时越权拒绝                    │
+               └────────────┬──────────────────────────┬──────────────┘
+                            │                          │
+                 ┌──────────▼──────────┐    ┌──────────▼──────────┐
+                 │ Hybrid Retrieval     │    │ Memory / Approval    │
+                 │ NL2SQL + RAG + Rank  │    │ Short / Long / MD    │
+                 └─────────────────────┘    └─────────────────────┘
+
+旁路能力（不在主聊天消息链中）：
+外部 MCP Client ─→ shopping / travel / general 独立 MCP Server
 ```
+
+装备类请求（`sub_intent=gear_plan`）不走上面的并行分支，而是进入单独的 `trip_gear` 节点：
+
+```text
+derive（约束派生）→ plan（逐日行程）→ gear（装备推导）
+      → owned（已有判定）→ shop（缺口检索）→ verify（校验）
+      → repair（有限修复）→ finalize（输出）
+```
+
+该链路的约束、行程、装备字段与规则见 `smartlife-agent/docs/trip-gear.md`。
+
+路由字段承担不同职责：
+
+- `intents` / `primary_intent`：决定使用哪个 Agent；
+- `route`：决定使用 ReAct 还是 Plan & Execute；
+- `retrieval`：决定使用 SQL、RAG、混合检索或不检索。
+
+装备类请求额外使用 `sub_intent=gear_plan` 作为第四种路由信号，直接进入 `trip_gear` 节点；`intents`、`route`、`retrieval` 的原职责不变。
+
+多意图最多保留两个。只有 `shopping + travel` 会进入并行双 Agent 分支，其他请求以 `primary_intent` 对应的 Agent 为主。
+
+## 智能路由与多意图
+
+当前不是“纯语义路由”，而是分层混合路由：
+
+1. **关键词快筛**：明确商品、旅行、订单等词时零延迟分类。
+2. **上下文沿用**：处理“改成手机”“再便宜一点”等指代和连续任务。
+3. **小模型语义分类**：一次输出 `intents`、`primary_intent`、`route`、`retrieval`、`sub_intent` 和置信度。
+4. **主模型仲裁**：置信度低于 `0.55` 或格式异常时仲裁/修复，最终失败才兜底为 `general`。
+
+路由字段承担不同职责：
+
+| 字段 | 作用 | 示例 |
+|---|---|---|
+| `intents` / `primary_intent` | 决定使用哪个 Agent | `shopping`、`travel` |
+| `route` | 决定 ReAct 或 Plan & Execute | `react`、`plan_and_execute` |
+| `retrieval` | 决定数据获取方式 | `sql_only`、`rag_only`、`mixed` |
+| `sub_intent=gear_plan` | 决定是否进入行程+装备链路 | `gear_plan` → `trip_gear` |
+
+多意图最多保留两个。只有同时包含 `shopping + travel` 时进入 `shopping_travel` 节点，两个 Agent 并行执行后合并回答；其他情况以 `primary_intent` 对应的 Agent 为主。
+
+当消息同时包含出行语境和“装备/清单/带什么”，或露营、出差、度假等强场景时，分类器会置为 `travel + gear_plan`，优先进入 `trip_gear`；普通 `shopping + travel` 仍走并行分支。
 
 ## 快速开始
 
@@ -198,6 +259,22 @@ http://localhost:8501
 我和朋友周末去杭州玩两天，预算 3000 元，帮我规划一个轻松一点的行程。
 ```
 
+### 行程约束与装备协同
+
+- 从一句话派生约束清单（目的地/天数/人数/预算/住宿/天气），并标注来源。
+- 生成逐日行程，再由行程推导装备清单；装备不限于户外，裙装、正装、儿童用品同样处理。
+- 从当前对话、上文用户发言和长期记忆判断“已有装备”，只补缺口。
+- 预算默认含装备；超预算时有限轮次内自动削减可选装备。
+- 商品库暂未覆盖的装备会如实标注，不编造价格。
+
+示例：
+
+```text
+周末两个人去莫干山露营，预算 1500，我有帐篷和睡袋。
+```
+
+说明见 [`smartlife-agent/docs/trip-gear.md`](smartlife-agent/docs/trip-gear.md)。
+
 ### 客服与通用规划
 
 - 回答订单和售后问题。
@@ -252,13 +329,48 @@ SmartLife Agent 将数据源划分为两类：
 
 ## MCP Server
 
-项目可以作为 MCP Server，将统一 Tool Registry 中的工具发布给外部 MCP 客户端。
+项目可以将每个 Agent 作为独立 MCP Server 发布。每个 Server 使用自己的能力清单，不混用其他 Agent 的工具：
+
+| Agent | 独占工具 |
+|---|---|
+| `shopping` | `search_products`、`get_product_reviews`、`get_order_status`（订单需要 Actor） |
+| `travel` | `search_destinations`、`get_local_activities`、`plan_itinerary`、`get_weather`、`get_route`、`get_current_time` |
+| `general` | `get_weather`、`get_route`、`get_current_time` |
+
+`shopping` 与 `travel` 的工具集合严格互斥。
+
+这种结构支持即插即用：外部 MCP 客户端只连接所需 Agent；即使模型被注入并伪造跨域 `tool_call`，运行时也会拒绝。当前主聊天由 LangGraph 直接使用进程内 Agent Registry；远端 MCP Agent 的自动注册、发现和消息路由仍是后续目标。
+
+### 当前实现边界
+
+当前“即插即用”是指外部 MCP 客户端可以独立连接、替换或升级某个 Agent MCP Server，并且只能看到和调用该 Agent 自己的工具。
+
+已经实现：
+
+- 按 `--agent shopping/travel/general` 启动独立 MCP Server；
+- MCP `tools/list` 只返回当前 Agent 的工具；
+- 模型 `bind_tools()` 只绑定当前 Agent 的工具；
+- 执行层拒绝伪造或越权的跨 Agent `tool_call`。
+
+尚未实现：
+
+- 远端 MCP Agent 的自动注册和动态发现；
+- Orchestrator 通过 MCP 网络协议路由聊天消息；
+- 多个远端 Agent 之间的能力协商。
+
+当前主聊天链路仍由 LangGraph 使用进程内 Agent Registry 和静态 `bind_tools()` 执行，不依赖 MCP 网络调用。
 
 ### stdio 模式
 
 ```bash
-venv312/bin/python scripts/run_mcp_server.py --transport stdio
+# 电商 Agent MCP
+venv312/bin/python scripts/run_mcp_server.py --transport stdio --agent shopping
+
+# 旅游 Agent MCP
+venv312/bin/python scripts/run_mcp_server.py --transport stdio --agent travel
 ```
+
+不传 `--agent` 时保留旧的统一 Tool Registry Server，便于兼容已有客户端。
 
 ### Streamable HTTP 模式
 
@@ -267,6 +379,7 @@ export SMARTLIFE_MCP_AUTH_TOKEN="replace-with-a-secret"
 
 venv312/bin/python scripts/run_mcp_server.py \
   --transport streamable-http \
+  --agent shopping \
   --host 127.0.0.1 \
   --port 8765
 ```
@@ -374,6 +487,7 @@ venv312/bin/python scripts/run_e2e_benchmark.py \
 │   │   ├── mcp_servers/         # MCP 协议服务
 │   │   ├── retrieval/           # NL2SQL、RAG、规划与精排
 │   │   ├── tools/               # 天气、地图、购物、旅行等工具
+│   │   ├── trip_gear/           # 约束派生、逐日行程、装备推导与校验
 │   │   ├── ui/                  # Streamlit UI 组件
 │   │   ├── config.py            # 模型配置
 │   │   ├── main.py              # Web 应用入口
@@ -447,5 +561,6 @@ python data/init_db.py
 
 - `project-design-v5.md`：完整系统设计、技术方案和实现说明。
 - `smartlife-agent/QUICKSTART.md`：详细环境配置、故障排查和评测说明。
+- `smartlife-agent/docs/trip-gear.md`：行程约束、装备协同、校验修复的实现说明。
 - `smartlife-agent/data/evaluation/README.md`：评测数据格式和运行方法。
 - `smartlife-agent/data/import_templates/README.md`：数据导入格式说明。

@@ -129,6 +129,23 @@ python3 --version
 - ReAct 工具循环步数、工具调用和达到上限后的收束；
 - SQL/RAG 等数据源降级或部分成功情况。
 
+### 路由行为速览
+
+智能对话不是只靠一个语义模型判断：
+
+```text
+关键词快筛
+  → 上下文/指代沿用
+  → 小模型输出 intents + primary_intent + route + retrieval
+  → confidence < 0.55 或格式异常时主模型仲裁
+  → LangGraph 条件路由
+```
+
+- `intents` 决定使用哪个 Agent，最多保留两个；
+- `route` 决定 `ReAct` 或 `Plan & Execute`；
+- `retrieval` 决定 SQL、RAG 或混合检索；
+- 明确的 `shopping + travel` 复合请求会并行执行两个 Agent，再合并正文；其他请求以 `primary_intent` 为主。
+
 策略配置主要位于：
 
 | 能力 | 代码位置 | 上限/策略 |
@@ -165,6 +182,15 @@ python3 --version
 用户：我和女朋友周末去杭州玩两天，预算3000
 助手：我来为您规划杭州两日游行程...
 ```
+
+### 行程约束与装备协同
+```
+用户：周末两个人去莫干山露营，预算1500，我有帐篷和睡袋
+助手：先给出约束清单和逐日行程，再给出装备清单（已有/待购/自备）、
+      预算占用和未满足约束...
+```
+
+说明：这类请求会进入 `trip_gear` 链路；看到“商品库暂未匹配”表示商品库还没覆盖该品类，不是编造失败。
 
 ---
 
@@ -217,18 +243,24 @@ P50/P95/P99，便于定位慢在检索、生成、校验还是后处理。
 ### 4. 启动真实 MCP Server
 
 ```bash
-# stdio（供 MCP 客户端拉起）
-venv312/bin/python scripts/run_mcp_server.py --transport stdio
+# 电商 Agent MCP（只包含电商工具）
+venv312/bin/python scripts/run_mcp_server.py --transport stdio --agent shopping
+
+# 旅游 Agent MCP（只包含旅游工具）
+venv312/bin/python scripts/run_mcp_server.py --transport stdio --agent travel
 
 # Streamable HTTP（建议生产环境配置 Bearer Token）
 export SMARTLIFE_MCP_AUTH_TOKEN="replace-with-a-secret"
 venv312/bin/python scripts/run_mcp_server.py \
   --transport streamable-http \
+  --agent shopping \
   --host 127.0.0.1 \
   --port 8765
 ```
 
-MCP Server 发布统一 Tool Registry 中的真实工具。默认只发布只读工具；显式传入 `--include-write-tools` 时，记忆写入工具仍只创建审批请求。
+每个 `--agent` 都会启动独立 MCP 能力面，只发布该 Agent 自己的工具。工具隔离同时作用于 MCP 发现、模型 Tool Calling 和执行层；伪造的跨 Agent `tool_call` 不会真正执行。省略 `--agent` 时保留旧的统一 Tool Registry Server。
+
+默认只发布只读工具；显式传入 `--include-write-tools` 时，记忆写入工具仍只创建审批请求。
 
 ### 5. 启用在线 Rerank A/B
 

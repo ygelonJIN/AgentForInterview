@@ -11,6 +11,7 @@ from mcp.server.auth.provider import AccessToken
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import MCPServer
 
+from app.tools.agent_capabilities import get_agent_tool_policy
 from app.tools.registry import get_registry
 
 
@@ -58,14 +59,30 @@ def build_mcp_server(
     auth_token: str | None = None,
     public_url: str = "http://127.0.0.1:8765",
     actor_id: str | None = None,
+    agent_id: str | None = None,
 ) -> MCPServer:
-    """构建协议级 MCP Server。默认只发布只读工具。"""
-    registry = get_registry(actor_id=actor_id, include_write_tools=include_write_tools)
+    """构建协议级 MCP Server。默认只发布只读工具。
+
+    指定 ``agent_id`` 时构建独立 Agent MCP Server，只发布该 Agent 自己的
+    工具能力面；模型或 MCP 客户端都无法通过另一个 Agent 的 Server 调用
+    跨域工具。省略 ``agent_id`` 保留旧的统一 Registry Server。
+    """
+    policy = get_agent_tool_policy(agent_id) if agent_id else None
+    registry = get_registry(
+        actor_id=actor_id,
+        include_write_tools=include_write_tools,
+        agent_id=agent_id,
+    )
     server = MCPServer(
-        name="smartlife-agent",
-        title="SmartLife Agent Tools",
-        description="商品、订单、旅游、天气、路线和记忆工具",
+        name=policy.mcp_server_name if policy else "smartlife-agent",
+        title=policy.display_name if policy else "SmartLife Agent Tools",
+        description=(
+            policy.description if policy
+            else "商品、订单、旅游、天气、路线和记忆工具"
+        ),
         instructions=(
+            f"这是 {policy.display_name} 的独立 MCP 能力面，只允许使用已发布工具。"
+            if policy else
             "所有订单和记忆数据都受用户身份约束。"
             "记忆写入工具只会创建审批请求，不会绕过用户审批。"
         ),
@@ -97,6 +114,13 @@ def build_mcp_server(
     return server
 
 
-async def list_tool_names(*, include_write_tools: bool = False) -> list[str]:
-    server = build_mcp_server(include_write_tools=include_write_tools)
+async def list_tool_names(
+    *,
+    include_write_tools: bool = False,
+    agent_id: str | None = None,
+) -> list[str]:
+    server = build_mcp_server(
+        include_write_tools=include_write_tools,
+        agent_id=agent_id,
+    )
     return [tool.name for tool in await server.list_tools()]
