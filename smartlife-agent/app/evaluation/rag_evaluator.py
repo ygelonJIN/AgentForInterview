@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
+from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
+
+from app.llm_json import invoke_json
 
 
 @dataclass
@@ -90,11 +93,23 @@ class RAGEvaluator:
             "4. context_recall：上下文是否覆盖标准答案中的关键事实。\n"
             "所有分数为 0 到 1。不得因为文笔流畅而提高 groundedness。"
         )
-        chain = self.judge_llm.with_structured_output(JudgeVerdict)
-        return chain.invoke({
-            "system": prompt,
-            **case,
-        })
+        messages = [
+            SystemMessage(content=prompt),
+            HumanMessage(
+                content=(
+                    "问题：" + str(case.get("question", "")) +
+                    "\n标准答案：" + str(case.get("ground_truth", "")) +
+                    "\n上下文：" + str(case.get("context", "")) +
+                    "\n回答：" + str(case.get("answer", ""))
+                )
+            ),
+        ]
+        return invoke_json(
+            self.judge_llm,
+            messages,
+            JudgeVerdict,
+            variables=None,
+        )
 
     def evaluate_all(self) -> EvalResult:
         if not self.test_cases:

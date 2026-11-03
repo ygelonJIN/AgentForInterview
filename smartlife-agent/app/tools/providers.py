@@ -81,14 +81,6 @@ def reset_provider_runtime_state() -> None:
     _GEOCODE_CACHE = TTLCache(max_entries=256, ttl_seconds=24 * 60 * 60)
 
 
-def get_provider_diagnostics() -> Dict[str, Any]:
-    return {
-        "breakers": [breaker.snapshot() for breaker in _CIRCUIT_BREAKERS.values()],
-        "caches": {key: cache.stats() for key, cache in _RESPONSE_CACHES.items()},
-        "geocode_cache": _GEOCODE_CACHE.stats(),
-    }
-
-
 class JsonHttpProvider:
     """可选的自定义 JSON HTTP provider。"""
 

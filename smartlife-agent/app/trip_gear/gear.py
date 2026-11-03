@@ -10,6 +10,7 @@ from typing import Dict, List
 
 from app.trip_gear.itinerary import activities_text
 from app.trip_gear.models import GearItem, Itinerary, TripFacts
+from app.trip_gear.shopping import canonical_gear_name
 
 # 每次都会带、平台通常不卖的底座
 BASE_ITEMS = (
@@ -142,12 +143,24 @@ def merge_suggestions(
     gear: List[GearItem],
     suggestions: List[GearItem],
 ) -> List[GearItem]:
-    """把模型补充的装备并进规则清单：同名合并，不同名作为长尾补进来。"""
+    """把模型补充的装备并进规则清单：同名合并，不同名作为长尾补进来。
+
+    除了字面同名，还按规范身份比对——模型常把"防水鞋"写成"防滑防水运动鞋"，
+    不归一就会让同一件商品被买两遍，冗余装备率直接超标。
+    """
     for suggestion in suggestions or []:
         name = str(suggestion.name or "").strip()
         if len(name) < 2:
             continue
-        match = next((item for item in gear if _same_name(item.name, name)), None)
+        canonical = canonical_gear_name(name)
+        match = next(
+            (
+                item for item in gear
+                if _same_name(item.name, name)
+                or (canonical and canonical_gear_name(item.name) == canonical)
+            ),
+            None,
+        )
         if match:
             match.qty = max(match.qty, max(1, int(suggestion.qty or 1)))
             match.reason = _append(match.reason, suggestion.reason or "模型补充")

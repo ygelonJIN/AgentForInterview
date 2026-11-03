@@ -1,11 +1,8 @@
 """统一 RetrievalService 契约测试。"""
 
-import threading
 
 import pytest
-import time
 
-from app.observability import get_trace_recorder
 from app.retrieval.rag import RetrievalResult
 from app.retrieval.service import RetrievalService
 

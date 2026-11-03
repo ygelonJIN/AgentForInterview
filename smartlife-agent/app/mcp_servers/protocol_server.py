@@ -112,15 +112,3 @@ def build_mcp_server(
             structured_output=False,
         )
     return server
-
-
-async def list_tool_names(
-    *,
-    include_write_tools: bool = False,
-    agent_id: str | None = None,
-) -> list[str]:
-    server = build_mcp_server(
-        include_write_tools=include_write_tools,
-        agent_id=agent_id,
-    )
-    return [tool.name for tool in await server.list_tools()]

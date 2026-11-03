@@ -1,7 +1,6 @@
 """约束派生：目的地、周末、预算口径、天气派生。"""
 
 from app.trip_gear.constraints import derive_constraints, enrich_weather
-from app.trip_gear.models import TripFacts
 
 
 def test_destination_outside_city_whitelist_is_derived():

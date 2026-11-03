@@ -14,6 +14,7 @@ from typing import List, Dict, Any, Optional
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 from app.config import create_small_llm
+from app.llm_json import JsonExtractionError, extract_json_object
 from app.observability import log_exception
 
 
@@ -102,7 +103,7 @@ class MemoryExtractor:
             ("user", "本轮用户信息：\n{conversation}")
         ])
         
-        self.chain = self.extract_prompt | self.llm.with_structured_output(MemoryCandidateBatch)
+        self.chain = self.extract_prompt | self.llm
 
     @staticmethod
     def _normalize_content(content: Any) -> str:
@@ -196,17 +197,25 @@ class MemoryExtractor:
             return result
         if isinstance(result, dict):
             return result.get("candidates", result)
+        # 顺序要紧：AIMessage 也是 pydantic 模型（有 model_dump），必须优先按消息处理，
+        # 否则会把 {content, response_metadata, ...} 当成候选集，后面按 list 处理会炸。
+        content = getattr(result, "content", None)
+        if isinstance(content, str) and content.strip():
+            text = content.strip()
+            try:
+                payload = extract_json_object(text)
+            except JsonExtractionError:
+                return text
+            return payload.get("candidates", payload)
         if hasattr(result, "model_dump"):
             payload = result.model_dump()
             return payload.get("candidates", payload)
-        raw = (getattr(result, "content", "") or "").strip()
-        if not raw:
-            raw = (
-                getattr(result, "reasoning_content", "")
-                or getattr(result, "additional_kwargs", {}).get("reasoning_content", "")
-                or getattr(result, "text", "")
-                or ""
-            ).strip()
+        raw = (
+            getattr(result, "reasoning_content", "")
+            or getattr(result, "additional_kwargs", {}).get("reasoning_content", "")
+            or getattr(result, "text", "")
+            or ""
+        ).strip()
         return raw
 
     def extract_candidates_result(

@@ -1,9 +1,12 @@
-"""TravelPlanGraph 的步骤、执行、反思和修订闭环测试。"""
+"""旅行子图（纯 LangGraph）的步骤、执行、反思和修订闭环测试。
 
+依赖通过 ``TurnContext.extra`` 注入，节点签名统一 ``(state, runtime)``。
+"""
 import asyncio
 import re
 
-from app.agents.travel_graph import TravelPlanGraph
+from app.graphs.context import TurnContext
+from app.graphs.subgraphs.travel import build_travel_plan_graph
 from app.observability import get_trace_recorder
 
 
@@ -43,14 +46,42 @@ class _Executor:
         return {"status": "completed", "result": f"done:{step['id']}", "source": "test"}
 
 
-def _run(graph, request):
-    return asyncio.run(graph.run_streaming(request, "user-1", "", thread_id="travel:test"))
+class _TravelService:
+    def _build_plan_context(self, user_input, user_id, chat_history=None, constraints=""):
+        return "上下文"
+
+    @staticmethod
+    def _remove_revision_notes(plan):
+        return plan
+
+
+class _Services:
+    travel_service = _TravelService()
+    llm = None
+
+    def get_chat_history(self, thread_id):
+        return []
+
+
+def _run(request, *, planner, reflector, executor, max_revisions=3, chat_history=None):
+    ctx = TurnContext(services=_Services(), trace_id="travel:test").with_extra(
+        planner=planner,
+        reflector=reflector,
+        executor=executor,
+        max_revisions=max_revisions,
+        chat_history=chat_history,
+    )
+    return asyncio.run(build_travel_plan_graph().ainvoke(
+        {"user_message": request, "user_id": "user-1", "thread_id": "travel:test"},
+        context=ctx,
+    ))
 
 
 def test_travel_graph_executes_steps_and_revises_until_approved():
     planner = _Planner()
     executor = _Executor()
-    graph = TravelPlanGraph(
+    state = _run(
+        "杭州3天预算1000元",
         planner=planner,
         reflector=_Reflector([
             {"is_satisfactory": False, "suggestions": ["增加休息时间"]},
@@ -58,15 +89,8 @@ def test_travel_graph_executes_steps_and_revises_until_approved():
         ]),
         executor=executor,
         max_revisions=3,
-    )
-
-    state = asyncio.run(graph.run_streaming(
-        "杭州3天预算1000元",
-        "user-1",
-        "",
-        thread_id="travel:test",
         chat_history=[{"role": "user", "content": "从上海出发"}],
-    ))
+    )
 
     assert state["requirements"]["destination"] == "杭州"
     assert state["requirements"]["days"] == 3
@@ -81,7 +105,8 @@ def test_travel_graph_executes_steps_and_revises_until_approved():
 
 
 def test_travel_graph_stops_at_max_revisions_with_best_effort_status():
-    graph = TravelPlanGraph(
+    state = _run(
+        "北京2天预算800元",
         planner=_Planner(),
         reflector=_Reflector([
             {"is_satisfactory": False, "suggestions": ["仍需修改"]},
@@ -91,30 +116,28 @@ def test_travel_graph_stops_at_max_revisions_with_best_effort_status():
         max_revisions=1,
     )
 
-    state = _run(graph, "北京2天预算800元")
-
     assert state["revision_count"] == 1
     assert len(state["plan_versions"]) == 2
     assert state["status"] == "max_revisions_reached"
 
 
 def test_travel_graph_requires_clarification_for_missing_core_fields():
-    graph = TravelPlanGraph(
+    state = _run(
+        "帮我规划一次旅行",
         planner=_Planner(),
         reflector=_Reflector([{"is_satisfactory": True}]),
         executor=_Executor(),
     )
 
-    state = _run(graph, "帮我规划一次旅行")
-
     assert state["status"] == "needs_clarification"
     assert "目的地" in state["final_plan"]
     assert "天数" in state["final_plan"]
-    assert state["plan_versions"] == []
+    assert not state.get("plan_versions")
 
 
 def test_travel_graph_records_executor_failure_without_crashing():
-    graph = TravelPlanGraph(
+    state = _run(
+        "上海2天预算500元",
         planner=_Planner(),
         reflector=_Reflector([
             {"is_satisfactory": False, "suggestions": ["修复执行问题"]},
@@ -123,8 +146,6 @@ def test_travel_graph_records_executor_failure_without_crashing():
         executor=_Executor(fail_first=True),
         max_revisions=3,
     )
-
-    state = _run(graph, "上海2天预算500元")
 
     failed = [step for step in state["evidence_results"] if step["status"] == "failed"]
     completed = [step for step in state["evidence_results"] if step["status"] == "completed"]
@@ -144,16 +165,11 @@ def test_deterministic_day_mismatch_forces_revision_even_if_model_passes():
 
     planner = _ThreeDayPlanner()
     state = _run(
-        TravelPlanGraph(
-            planner=planner,
-            reflector=_Reflector([
-                {"is_satisfactory": True},
-                {"is_satisfactory": True},
-            ]),
-            executor=_Executor(),
-            max_revisions=1,
-        ),
         "上海2天预算500元",
+        planner=planner,
+        reflector=_Reflector([{"is_satisfactory": True}, {"is_satisfactory": True}]),
+        executor=_Executor(),
+        max_revisions=1,
     )
 
     assert planner.calls == 2
@@ -167,16 +183,11 @@ def test_deterministic_budget_overrun_forces_revision():
             return "第一天：A\n第二天：B\n总费用：1200元"
 
     state = _run(
-        TravelPlanGraph(
-            planner=_OverBudgetPlanner(),
-            reflector=_Reflector([
-                {"is_satisfactory": True},
-                {"is_satisfactory": True},
-            ]),
-            executor=_Executor(),
-            max_revisions=1,
-        ),
         "上海2天预算800元",
+        planner=_OverBudgetPlanner(),
+        reflector=_Reflector([{"is_satisfactory": True}, {"is_satisfactory": True}]),
+        executor=_Executor(),
+        max_revisions=1,
     )
 
     assert state["status"] == "max_revisions_reached"
@@ -198,13 +209,11 @@ def test_deterministic_hard_error_skips_llm_reflection():
 
     reflector = _CountingReflector()
     state = _run(
-        TravelPlanGraph(
-            planner=_OverBudgetPlanner(),
-            reflector=reflector,
-            executor=_Executor(),
-            max_revisions=0,
-        ),
         "上海2天预算800元",
+        planner=_OverBudgetPlanner(),
+        reflector=reflector,
+        executor=_Executor(),
+        max_revisions=0,
     )
 
     assert reflector.calls == 0
@@ -223,13 +232,11 @@ def test_single_clean_step_skips_llm_reflection():
 
     reflector = _CountingReflector()
     state = _run(
-        TravelPlanGraph(
-            planner=_Planner(),
-            reflector=reflector,
-            executor=_Executor(),
-            max_revisions=1,
-        ),
         "上海1天预算500元",
+        planner=_Planner(),
+        reflector=reflector,
+        executor=_Executor(),
+        max_revisions=1,
     )
 
     assert reflector.calls == 0
@@ -239,13 +246,11 @@ def test_single_clean_step_skips_llm_reflection():
 
 def test_invalid_reflection_format_does_not_silently_pass():
     state = _run(
-        TravelPlanGraph(
-            planner=_Planner(),
-            reflector=_Reflector(["pass", "看起来没问题"]),
-            executor=_Executor(),
-            max_revisions=1,
-        ),
         "上海2天预算500元",
+        planner=_Planner(),
+        reflector=_Reflector(["pass", "看起来没问题"]),
+        executor=_Executor(),
+        max_revisions=1,
     )
 
     assert state["status"] == "max_revisions_reached"
@@ -258,18 +263,12 @@ def test_invalid_reflection_format_does_not_silently_pass():
 def test_travel_graph_records_model_and_execution_trace_spans():
     recorder = get_trace_recorder()
     recorder.clear()
-    graph = TravelPlanGraph(
+    _run(
+        "杭州3天预算1000元",
         planner=_Planner(),
         reflector=_Reflector([{"is_satisfactory": True}]),
         executor=_Executor(),
     )
-
-    asyncio.run(graph.run_streaming(
-        "杭州3天预算1000元",
-        "user-1",
-        "",
-        thread_id="trace-travel",
-    ))
 
     spans = recorder.summary()["spans"]
     assert spans["model.travel_plan"]["count"] == 1

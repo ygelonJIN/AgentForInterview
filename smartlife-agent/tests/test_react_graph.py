@@ -4,7 +4,8 @@ import asyncio
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.agents.react_graph import ToolReActGraph
+from app.graphs.context import TurnContext
+from app.graphs.subgraphs.react import build_react_graph, initial_react_state
 from app.observability import get_trace_recorder
 
 
@@ -45,16 +46,38 @@ class _Model:
         return AIMessage(content="最终回答")
 
 
+class _Services:
+    def __init__(self, model, tools):
+        self.llm = model
+        self._tools = list(tools)
+
+    def tools_for(self, actor_id, agent_id="general"):
+        return self._tools
+
+
+def _run(model, tools, *, max_steps=4, tool_timeout=1.0, agent_id=None, trace_id="react"):
+    extra = {}
+    if agent_id:
+        extra["agent_id"] = agent_id
+    ctx = TurnContext(services=_Services(model, tools), trace_id=trace_id).with_extra(**extra)
+    state = initial_react_state(
+        [HumanMessage(content="查询回显")],
+        trace_id=trace_id,
+        max_steps=max_steps,
+        tool_timeout=tool_timeout,
+    )
+    return asyncio.run(build_react_graph().ainvoke(state, context=ctx))
+
+
 def test_react_graph_runs_tool_then_returns_final_answer():
     tool = _Tool()
     model = _Model()
-    graph = ToolReActGraph(model, [tool], max_steps=4, tool_timeout=1.0)
 
-    result = asyncio.run(graph.run_streaming([HumanMessage(content="查询回显")]))
+    result = _run(model, [tool])
 
     assert result["response"] == "最终回答"
     assert result["status"] == "completed"
-    assert result["tool_count"] == 1
+    assert len(result["tool_results"]) == 1
     assert result["tool_results"][0]["tool"] == "echo"
     assert result["tool_results"][0]["ok"] is True
     assert tool.calls == [{"value": 1}]
@@ -62,23 +85,19 @@ def test_react_graph_runs_tool_then_returns_final_answer():
 
 def test_react_graph_stops_at_max_steps():
     model = _Model(always_call=True)
-    graph = ToolReActGraph(model, [_Tool()], max_steps=2, tool_timeout=1.0)
-
-    result = asyncio.run(graph.run_streaming([HumanMessage(content="无限调用")]))
+    result = _run(model, [_Tool()], max_steps=2)
 
     assert result["status"] == "max_steps_reached"
     assert result["step_count"] == 2
     # 第一次 agent 决定调用工具，第二次 agent 到达预算后直接收束。
-    assert result["tool_count"] == 1
+    assert len(result["tool_results"]) == 1
     assert result["error"]
 
 
 def test_react_graph_turns_tool_timeout_into_tool_error():
     slow_tool = _Tool(delay=0.05)
     model = _Model()
-    graph = ToolReActGraph(model, [slow_tool], max_steps=4, tool_timeout=0.001)
-
-    result = asyncio.run(graph.run_streaming([HumanMessage(content="调用慢工具")]))
+    result = _run(model, [slow_tool], tool_timeout=0.001)
 
     assert result["response"] == "最终回答"
     assert result["status"] == "completed"
@@ -88,9 +107,7 @@ def test_react_graph_turns_tool_timeout_into_tool_error():
 
 def test_react_graph_reports_unknown_tool_without_crashing():
     model = _Model(tool_name="missing")
-    graph = ToolReActGraph(model, [_Tool()], max_steps=4, tool_timeout=1.0)
-
-    result = asyncio.run(graph.run_streaming([HumanMessage(content="调用不存在的工具")]))
+    result = _run(model, [_Tool()])
 
     assert result["tool_results"][0]["ok"] is False
     assert "未知工具" in result["tool_results"][0]["error"]
@@ -99,10 +116,7 @@ def test_react_graph_reports_unknown_tool_without_crashing():
 def test_react_graph_records_model_and_tool_trace_spans():
     recorder = get_trace_recorder()
     recorder.clear()
-    tool = _Tool()
-    graph = ToolReActGraph(_Model(), [tool], max_steps=4, tool_timeout=1.0)
-
-    asyncio.run(graph.run_streaming([HumanMessage(content="查询回显")], thread_id="trace-react"))
+    _run(_Model(), [_Tool()], trace_id="trace-react")
 
     spans = recorder.summary()["spans"]
     assert spans["model.react_agent"]["count"] == 2

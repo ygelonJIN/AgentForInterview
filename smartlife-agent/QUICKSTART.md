@@ -150,11 +150,12 @@ python3 --version
 
 | 能力 | 代码位置 | 上限/策略 |
 |------|----------|-----------|
-| 通用超时、重试、熔断、TTL 缓存 | `app/reliability.py` | 各调用方通过 `NodePolicy` 配置 |
-| 顶层 LangGraph 节点 | `app/agents/langgraph_orchestrator.py` | 分类最多 2 次；场景节点通常 1 次 |
-| 购物检索与回答修复 | `app/agents/shopping_graph.py` | 检索规划最多 2 次；回答修复 1 次；修复预算 120 秒 |
-| 旅行生成、执行、审核、修订 | `app/agents/travel_graph.py` | 默认最多修订 3 次 |
-| ReAct 工具推理循环 | `app/agents/react_graph.py` | 默认最多 6 步 |
+| 熔断与 TTL 缓存 | `app/reliability.py` | 由检索/工具 provider 使用 |
+| 节点超时与重试 | 各图 `add_node(..., retry_policy=, timeout=)` | 由 LangGraph 原生参数声明 |
+| 顶层图 | `app/graphs/orchestrator.py` | 分类最多 2 次；场景节点通常 1 次 |
+| 购物检索与回答修复 | `app/graphs/subgraphs/shopping.py` | 检索规划最多 2 次；回答修复 1 次；修复预算 120 秒 |
+| 旅行生成、执行、审核、修订 | `app/graphs/subgraphs/travel.py` | 默认最多修订 3 次 |
+| ReAct 工具推理循环 | `app/graphs/subgraphs/react.py` | 默认最多 6 步 |
 | 日志事件格式和脱敏 | `app/execution_log.py` | API Key、Token 等字段自动脱敏 |
 
 ---

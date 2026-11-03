@@ -1,7 +1,7 @@
 """把结构化结果渲染成用户可读的正文。"""
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from app.trip_gear.itinerary import total_cost
 from app.trip_gear.models import Constraint, GearItem, Issue, Itinerary, TripFacts
@@ -10,6 +10,14 @@ from app.trip_gear.verify import gear_cost
 
 def _money(value: float) -> str:
     return f"¥{float(value or 0):g}"
+
+
+_STATUS_LABELS = {
+    "ok": "满足",
+    "violated": "违反",
+    "relaxed": "已放宽",
+    "unverified": "未校验",
+}
 
 
 def _gear_line(item: GearItem, products: Dict[str, Dict[str, Any]]) -> str:
@@ -32,13 +40,17 @@ def render(
     gear: List[GearItem],
     products: Dict[str, Dict[str, Any]],
     issues: List[Issue],
+    ambiguous_owned: Optional[List[str]] = None,
 ) -> str:
     lines: List[str] = []
 
     lines.append("## 约束清单")
-    for constraint in constraints[:10]:
-        marker = "（未满足）" if constraint.status == "violated" else ""
-        lines.append(f"- {constraint.text}（{constraint.source}）{marker}")
+    for constraint in constraints[:12]:
+        label = _STATUS_LABELS.get(constraint.status, constraint.status)
+        hardness = "硬" if constraint.hard else "软"
+        lines.append(
+            f"- [{label}] {constraint.text}（来源：{constraint.source}，{hardness}约束）"
+        )
 
     if itinerary.days:
         lines.append("")
@@ -83,6 +95,16 @@ def render(
     if unknown:
         equipment_label += f"（{len(unknown)} 项未匹配，未计入）"
     total = round(trip + equipment, 2)
+    if ambiguous_owned:
+        lines.append("")
+        lines.append("## 待确认")
+        lines.append(
+            "你提到过这些，但没说是哪些具体物品，我先没算成已有，"
+            "也没重复计费。告诉我具体是什么，我按已有处理："
+        )
+        for phrase in ambiguous_owned:
+            lines.append(f"- 「{phrase}」")
+
     lines.append("")
     lines.append("## 预算与校验")
     if facts.budget is None:

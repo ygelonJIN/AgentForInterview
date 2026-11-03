@@ -1,7 +1,6 @@
-"""通用敏感操作审批图。"""
+"""通用敏感操作审批图：``interrupt`` 暂停 + checkpointer 恢复，超时用原生参数。"""
 import asyncio
-from app.reliability import NodePolicy, RetryPolicy
-from typing import Any, Awaitable, Callable, Dict, Iterable, Optional, TypedDict
+from typing import Any, Callable, Dict, Iterable, Optional, TypedDict
 
 from app.checkpointing import create_checkpointer
 from langgraph.graph import END, START, StateGraph
@@ -40,16 +39,13 @@ class ActionApprovalGraph:
             raise ValueError("approved_actions 不能为空")
         self.checkpointer = checkpointer or create_checkpointer()
         self.interrupt_payload = interrupt_payload
-        self.execute_policy = NodePolicy(
-            timeout_seconds=execute_timeout_seconds,
-            retry_policy=RetryPolicy(max_attempts=1),
-        )
+        self.execute_timeout_seconds = float(execute_timeout_seconds)
         self.graph = self._build_graph()
 
     def _build_graph(self):
         graph = StateGraph(ActionApprovalState)
         graph.add_node("request_approval", self._request_approval)
-        graph.add_node("execute", self._execute)
+        graph.add_node("execute", self._execute, timeout=self.execute_timeout_seconds)
         graph.add_node("reject", self._reject)
         graph.add_edge(START, "request_approval")
         graph.add_conditional_edges(
@@ -79,19 +75,16 @@ class ActionApprovalGraph:
         return "execute" if action in self.approved_actions else "reject"
 
     async def _execute(self, state: ActionApprovalState) -> Dict[str, Any]:
-        async def operation(_attempt: int):
-            result = await asyncio.to_thread(
-                self.execute,
-                state.get("user_id", ""),
-                state.get("action_type", self.action_type),
-                state.get("payload", {}),
-                state.get("decision", {}),
-            )
-            if hasattr(result, "__await__"):
-                result = await result
-            return {"result": result, "status": "executed"}
-
-        return await self.execute_policy.run(operation)
+        result = await asyncio.to_thread(
+            self.execute,
+            state.get("user_id", ""),
+            state.get("action_type", self.action_type),
+            state.get("payload", {}),
+            state.get("decision", {}),
+        )
+        if hasattr(result, "__await__"):
+            result = await result
+        return {"result": result, "status": "executed"}
 
     @staticmethod
     async def _reject(_state: ActionApprovalState) -> Dict[str, Any]:

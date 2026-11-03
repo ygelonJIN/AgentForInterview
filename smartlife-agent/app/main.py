@@ -10,7 +10,6 @@ SmartLife Agent v2 - Streaming 前端应用
 - 向量库 + MD 文档并存
 """
 import streamlit as st
-import asyncio
 import json
 import sys
 import os
@@ -22,35 +21,31 @@ import uuid
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.config import set_main_config, set_small_config, set_embedding_config, get_embedding_status
 from app.identity import ActorContext
-from app.observability import log_exception, log_warning
+from app.observability import log_exception
 from app.async_runner import SharedAsyncRunner
 from app.stream_response import StreamResponseBuffer
 from app.streaming import deduplicate_process_events, reconcile_tool_events
 from app.process_timeline import build_process_timeline, infer_active_step
-from app.ui.content import (
-    filter_travel_resources,
-    get_database_path,
-    load_orders,
-    load_product,
-    load_product_reviews,
-    load_product_summary,
-    load_product_taxonomy,
-    load_products,
-    load_travel_resources,
-    load_user,
-)
+from app.ui.content import filter_travel_resources, load_orders, load_product, load_product_reviews, load_product_summary, load_product_taxonomy, load_products, load_travel_resources, load_user
 from app.ui.theme import (
     NAV_ITEMS,
+    alert_html,
+    brand_html,
     inject_theme,
     metric_columns,
+    nav_label_html,
+    plan_panels_html,
+    rail_block,
     render_card,
     render_empty,
-    render_hero,
     render_metric,
     render_page_header,
-    render_process_card,
     render_review,
     render_section_header,
+    stats_html,
+    steps_html,
+    threads_html,
+    user_html,
 )
 
 st.set_page_config(
@@ -76,8 +71,8 @@ if "actor_context" not in st.session_state:
         st.session_state["user_id"],
         st.session_state["browser_session_id"],
     )
-if "orchestrator_v2" not in st.session_state:
-    st.session_state["orchestrator_v2"] = None
+if "turn_graph" not in st.session_state:
+    st.session_state["turn_graph"] = None
 if "candidate_memories" not in st.session_state:
     st.session_state["candidate_memories"] = []
 if "show_memory_extraction" not in st.session_state:
@@ -131,21 +126,22 @@ def _migrate_legacy_in_memory_conversations():
 
 _migrate_legacy_in_memory_conversations()
 
-# ========== Orchestrator 初始化 ==========
-def get_orchestrator_v2():
-    if st.session_state["orchestrator_v2"] is None:
+# ========== 顶层图入口 ==========
+def get_turn_graph():
+    """UI 唯一入口：返回编译后的对话图。"""
+    if st.session_state["turn_graph"] is None:
         try:
             from app.config import has_api_key
             if not has_api_key("main"):
                 st.error("❌ 请先在左侧输入 API Key")
                 return None
-            from app.agents.langgraph_orchestrator import get_langgraph_orchestrator
-            st.session_state["orchestrator_v2"] = get_langgraph_orchestrator(model_name=None)
+            from app.graphs.orchestrator import get_turn_graph as build_turn_graph_entry
+            st.session_state["turn_graph"] = build_turn_graph_entry(model_name=None)
         except Exception as e:
-            log_exception("ui.orchestrator_init", e)
+            log_exception("ui.graph_init", e)
             st.error(f"初始化失败: {e}")
             return None
-    return st.session_state["orchestrator_v2"]
+    return st.session_state["turn_graph"]
 
 
 def _begin_memory_approval(orch, user_id, candidates, scene):
@@ -387,7 +383,7 @@ def _refresh_background_memory_extraction():
     pending = st.session_state.get("pending_background_memory")
     if not pending:
         return
-    orch = get_orchestrator_v2()
+    orch = get_turn_graph()
     if not orch or not hasattr(orch, "pop_memory_extraction_result"):
         return
     payload = orch.pop_memory_extraction_result(
@@ -432,7 +428,7 @@ def render_memory_extraction_panel(scene, key_suffix):
         return
 
     st.subheader("📝 记忆提取结果")
-    _orch = get_orchestrator_v2()
+    _orch = get_turn_graph()
     selected_indices = []
     for i, candidate in enumerate(candidates):
         emoji = {"shopping": "🛍️", "travel": "✈️", "general": "📝"}.get(
@@ -516,8 +512,19 @@ def _split_execution_logs(events):
     return regular, logs
 
 
+ROUTINE_LOG_KINDS = {"node_started", "node_succeeded"}
+
+
 def _execution_logs_html(events):
+    """只保留分支、重试、降级、异常这类有信息量的日志，节点起停默认收进折叠区。"""
     _, logs = _split_execution_logs(events)
+    logs = [
+        event for event in logs
+        if not (
+            (event.get("data") or {}).get("kind") in ROUTINE_LOG_KINDS
+            and (event.get("data") or {}).get("status") in {"ok", "running", None}
+        )
+    ]
     if not logs:
         return ""
     rows = []
@@ -558,7 +565,7 @@ def _execution_logs_html(events):
             f'<div class="execution-log-message">{message}</div></div></div>'
         )
     return (
-        '<details class="execution-log-panel" open>'
+        '<details class="execution-log-panel">'
         f'<summary>执行日志 · {len(logs)} 条（分支、重试、循环、降级）</summary>'
         f'<div class="execution-log-list">{"".join(rows)}</div>'
         '</details>'
@@ -695,7 +702,7 @@ def _persistent_events(events):
     ])
 
 
-def _process_events_html(events, include_transient=False, active_step=None):
+def _process_events_html(events, include_transient=False, active_step=None, collapsed=False):
     """生成一组过程事件的稳定 HTML，按逻辑节点去重。"""
     normalized_active_step = active_step or infer_active_step(events)
     persistent = events if include_transient else _persistent_events(events)
@@ -712,30 +719,76 @@ def _process_events_html(events, include_transient=False, active_step=None):
         h = _fmt_event_html(evt)
         if h:
             cards.append(h)
-    return (
-        "".join(cards)
-        + _timing_summary_html(events)
-        + _execution_logs_html(persistent)
-    )
+    body = "".join(cards) + _timing_summary_html(events) + _execution_logs_html(persistent)
+    if collapsed and cards:
+        # 已完成的轮次默认收起：正文优先，过程留可展开的证据。
+        return (
+            f'<details class="process-panel"><summary>运行过程 · {len(cards)} 条</summary>'
+            f"{body}</details>"
+        )
+    return body
 
 
-def render_process_events(events, include_transient=False):
+def render_process_events(events, include_transient=False, collapsed=False):
     """把一组过程事件按顺序渲染成样式卡片（步骤在前、与正文区分）。"""
     cards = _process_events_html(
         events,
         include_transient=include_transient,
         active_step=4,
+        collapsed=collapsed,
     )
     if cards:
         st.markdown(cards, unsafe_allow_html=True)
 
 
+def _plan_payload(events):
+    """取本轮最后一份结构化方案（trip_gear 的 plan_result 事件）。"""
+    for evt in reversed(events or []):
+        if evt.get("event") == "plan_result":
+            data = evt.get("data")
+            if isinstance(data, dict):
+                return data
+    return None
+
+
+def _plan_lead_html(payload):
+    facts = payload.get("facts") or {}
+    days = len((payload.get("itinerary") or {}).get("days") or [])
+    gear = payload.get("gear") or []
+    constraints = payload.get("constraints") or []
+    issues = payload.get("issues") or []
+    parts = []
+    if days:
+        parts.append(f"{days} 天")
+    if facts.get("people"):
+        parts.append(f"{facts.get('people')} 人")
+    if facts.get("destination"):
+        parts.append(str(facts["destination"]))
+    head = " · ".join(parts) if parts else "方案"
+    tail = f"约束 {len(constraints)} 条 · 装备 {len(gear)} 项"
+    if issues:
+        tail += f" · {len(issues)} 处未满足"
+    return (
+        '<div class="sl-lead">方案已生成：'
+        f'<em>{head}</em>，{tail}。'
+        '<span>逐项可回溯到约束来源与工具结果。</span></div>'
+    )
+
+
 def render_assistant_message(msg):
-    """渲染一条助手消息：过程步骤固定在前，模型回复正文固定在后。"""
+    """渲染一条助手消息：结构化面板优先，Markdown 原文收进折叠区。"""
     if isinstance(msg.get("process_events"), list) or "response" in msg:
-        render_process_events(msg.get("process_events", []), include_transient=False)
+        events = msg.get("process_events", [])
+        render_process_events(events, include_transient=False, collapsed=True)
+        payload = _plan_payload(events)
         resp = msg.get("response", "")
-        if resp:
+        if payload:
+            st.markdown(_plan_lead_html(payload), unsafe_allow_html=True)
+            st.markdown(plan_panels_html(payload), unsafe_allow_html=True)
+            if resp:
+                with st.expander("查看 Markdown 原文"):
+                    st.markdown(resp)
+        elif resp:
             st.markdown(resp)
     else:
         st.markdown(msg.get("content", ""))
@@ -933,115 +986,309 @@ def render_option_group(values, *, key, labels=None, default=None, columns=None)
     return selected
 
 
+def _recent_threads(limit: int = 4):
+    """左栏「最近会话」：只读展示，点击交给对话区继续。"""
+    try:
+        from app.memory.conversation_store import ConversationStore
+        rows = ConversationStore().list_threads(user_id=st.session_state["user_id"])
+    except Exception:
+        return []
+    output = []
+    for row in rows:
+        preview = str(row.get("preview") or "").strip()
+        if not preview or not int(row.get("message_count") or 0):
+            continue
+        if len(output) >= limit:
+            break
+        output.append({
+            "thread_id": row.get("thread_id", ""),
+            "title": preview,
+            "updated_at": str(row.get("last_at") or "")[:16].replace("T", " "),
+        })
+    return output
+
+
 def render_app_sidebar():
     with st.sidebar:
-        st.markdown(
-            """
-            <div class="sidebar-brand">
-              <div class="sidebar-kicker">SMARTLIFE</div>
-              <div class="sidebar-title">智能生活工作台</div>
-              <div class="sidebar-copy">一个入口，自主调度购物、旅行与通用智能体。</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        st.markdown(brand_html(), unsafe_allow_html=True)
+        st.markdown(nav_label_html("工作台"), unsafe_allow_html=True)
         current = st.session_state.get("active_page", "assistant")
-        for _icon, label, page_key in NAV_ITEMS:
-            if st.button(
-                label,
-                key=f"nav_{page_key}",
-                use_container_width=True,
-                type="primary" if current == page_key else "secondary",
-            ):
-                st.session_state["active_page"] = page_key
-                st.rerun()
-        st.markdown("---")
+        with st.container(key="nav_menu"):
+            for _icon, label, page_key in NAV_ITEMS:
+                if st.button(
+                    label,
+                    key=f"nav_{page_key}",
+                    use_container_width=True,
+                    type="primary" if current == page_key else "secondary",
+                ):
+                    st.session_state["active_page"] = page_key
+                    st.rerun()
+
+        threads = _recent_threads()
+        st.markdown(nav_label_html("最近会话"), unsafe_allow_html=True)
+        if threads:
+            st.markdown(threads_html(threads), unsafe_allow_html=True)
+        else:
+            st.markdown(
+                '<div class="sl-thread"><div class="sl-thread-title">还没有会话</div>'
+                '<div class="sl-thread-meta">发出第一条需求试试</div></div>',
+                unsafe_allow_html=True,
+            )
+
         pending_count = int(bool(st.session_state.get("show_memory_extraction"))) + sum(
             1 for key, value in st.session_state.items()
             if key.startswith("pending_inline_") and value
         )
         if pending_count:
-            st.info(f"有 {pending_count} 项内容等待处理，可在记忆中心完成。")
-        else:
-            st.caption("Agent 自动路由已就绪")
-        st.caption(f"当前用户 · {st.session_state['user_id']}")
+            st.markdown(
+                alert_html("warn", f"{pending_count} 项待确认", "到记忆中心处理候选记忆与敏感操作。"),
+                unsafe_allow_html=True,
+            )
+        st.markdown(user_html(st.session_state["user_id"], "local actor"), unsafe_allow_html=True)
         return current
 
 
 def render_quick_prompt(label: str, prompt: str, key: str):
-    if st.button(label, key=key, use_container_width=True):
+    if st.button(label, key=key):
         st.session_state["pending_assistant"] = prompt
         st.rerun()
 
 
-def render_assistant_page():
-    render_hero(
-        "Unified Agent Workspace",
-        "说你想做什么，剩下的交给智能体",
-        "系统会理解任务、自主选择合适的 Agent，并把分类、检索、工具调用和生成过程透明地展示出来。",
-    )
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        render_quick_prompt("挑选一双雨天跑鞋", "帮我推荐一双适合雨天跑步、预算 800 元以内的跑鞋", "quick_shoes")
-    with c2:
-        render_quick_prompt("规划周末旅行", "帮我规划一个杭州周末两日游，预算 1500 元", "quick_trip")
-    with c3:
-        render_quick_prompt("对比热门手机", "对比一下小米 14、iPhone 15 Pro 和华为 Mate 60 Pro", "quick_compare")
-    with c4:
-        render_quick_prompt("制定出行清单", "准备去露营三天，帮我列一份装备清单", "quick_list")
+QUICK_PROMPTS = (
+    ("雨天跑鞋", "帮我推荐一双适合雨天跑步、预算 800 元以内的跑鞋", "quick_shoes"),
+    ("周末杭州两日", "帮我规划一个杭州周末两日游，预算 1500 元", "quick_trip"),
+    ("露营装备清单", "准备去露营三天，帮我列一份装备清单", "quick_list"),
+    ("手机比价", "对比小米 14、iPhone 15 Pro 和华为 Mate 60 Pro", "quick_compare"),
+)
 
-    render_section_header("智能对话", "购物、旅行、通用问题都可以从这里开始")
+EMPTY_STATE_HTML = """
+<div class="sl-empty sl-empty--left">
+  <div class="sl-empty-title">从一句话开始</div>
+  <p class="sl-empty-quote">「周末两个人去莫干山露营，预算 1500，我有帐篷和睡袋。」</p>
+  <p>系统会派生约束清单 → 生成逐日行程 → 由行程推导装备并判定已有 → 只对缺口检索商品 → 校验预算并在有限轮次内修复。</p>
+</div>
+"""
+
+
+def render_quick_prompt(label: str, prompt: str, key: str):
+    if st.button(label, key=key):
+        st.session_state["pending_assistant"] = prompt
+        st.rerun()
+
+
+def _last_assistant_events():
+    for msg in reversed(st.session_state.get("assistant_msgs") or []):
+        if msg.get("role") == "assistant" and isinstance(msg.get("process_events"), list):
+            return msg["process_events"]
+    return []
+
+
+def _rail_steps(events):
+    if not events:
+        return []
+    timeline = build_process_timeline(_persistent_events(events), active_step=4)
+    steps = []
+    for evt in timeline:
+        if evt.get("event") != "step":
+            continue
+        data = evt.get("data") or {}
+        steps.append({
+            "name": f'{data.get("step", "")}. {data.get("name", "")}'.strip(),
+            "desc": data.get("description", ""),
+            "status": data.get("status", ""),
+        })
+    return steps
+
+
+def _rail_metrics(events):
+    timing = {}
+    tools = 0
+    retrievals = 0
+    for evt in events or []:
+        event_type = evt.get("event")
+        if event_type == "done":
+            timing = (evt.get("data") or {}).get("timing_ms") or {}
+        elif event_type == "tool_call":
+            tools += 1
+        elif event_type == "retrieval":
+            retrievals += 1
+
+    def seconds(value):
+        return f"{value / 1000:.1f}s" if isinstance(value, (int, float)) else "—"
+
+    return [
+        ("首 Token", seconds(timing.get("time_to_first_token_ms"))),
+        ("链路", seconds(timing.get("pipeline_ms"))),
+        ("工具调用", tools),
+        ("检索", retrievals),
+        ("事件", len(events or [])),
+        ("方案", "已生成" if _plan_payload(events) else "—"),
+    ]
+
+
+def _pending_confirm_count():
+    return int(bool(st.session_state.get("show_memory_extraction"))) + sum(
+        1 for key, value in st.session_state.items()
+        if key.startswith("pending_inline_") and value
+    )
+
+
+def render_run_rail():
+    """右轨：本轮运行轨迹、待确认、用量。数据全部来自事件流，不另外猜测。"""
+    events = _last_assistant_events()
+    steps = _rail_steps(events)
+    elapsed = ""
+    for evt in events or []:
+        if evt.get("event") == "done":
+            timing = (evt.get("data") or {}).get("timing_ms") or {}
+            pipeline = timing.get("pipeline_ms")
+            if isinstance(pipeline, (int, float)):
+                elapsed = f"{pipeline / 1000:.1f}s"
+    if steps:
+        st.markdown(rail_block("运行轨迹", steps_html(steps), extra=elapsed), unsafe_allow_html=True)
+    else:
+        st.markdown(
+            rail_block(
+                "运行轨迹",
+                '<div class="sl-rail-foot">发出第一条需求后，这里按顺序显示 '
+                "derive → plan → gear → owned → shop → verify → finalize 的执行状态。</div>",
+            ),
+            unsafe_allow_html=True,
+        )
+
+    pending = _pending_confirm_count()
+    if pending:
+        st.markdown(
+            rail_block(
+                "待确认",
+                alert_html("warn", f"{pending} 项待处理", "候选记忆与敏感操作需要你确认后才会写入。"),
+            ),
+            unsafe_allow_html=True,
+        )
+        if st.button("去记忆中心处理", key="rail_memory", use_container_width=True):
+            st.session_state["active_page"] = "memory"
+            st.rerun()
+    else:
+        st.markdown(
+            rail_block("待确认", '<div class="sl-rail-foot">暂无待确认内容。记忆写入与敏感操作都会先在这里排队。</div>'),
+            unsafe_allow_html=True,
+        )
+
+    st.markdown(
+        rail_block(
+            "本次用量",
+            stats_html(_rail_metrics(events))
+            + '<div class="sl-rail-foot">口径：本轮事件流，不含模型隐式重试</div>',
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def render_assistant_page():
+    render_page_header(
+        "行程与装备协同",
+        "说一句出行需求：系统派生约束清单、生成逐日行程、按行程推导装备，并在预算内完成校验与有限修复。",
+        meta="智能助手",
+    )
+    with st.container(key="quick_chips"):
+        quick_cols = st.columns(len(QUICK_PROMPTS))
+        for col, (label, prompt, key) in zip(quick_cols, QUICK_PROMPTS):
+            with col:
+                render_quick_prompt(label, prompt, key)
+
     if "assistant_msgs" not in st.session_state:
         st.session_state["assistant_msgs"] = []
 
     _refresh_background_memory_extraction()
 
-    for msg in st.session_state["assistant_msgs"]:
-        with st.chat_message(msg["role"]):
-            render_assistant_message(msg)
+    main_col, rail_col = st.columns([1, 0.36], gap="large")
 
-    if st.session_state.get("show_memory_extraction"):
-        st.info("本轮已生成待确认的记忆内容，可前往记忆中心查看和决定是否保存。")
+    with main_col:
+        if not st.session_state["assistant_msgs"]:
+            st.markdown(EMPTY_STATE_HTML, unsafe_allow_html=True)
 
-    if pending := st.session_state.get("pending_assistant"):
-        st.session_state.pop("pending_assistant", None)
-        st.session_state["assistant_msgs"].append({"role": "user", "content": pending})
-        with st.chat_message("user"):
-            st.markdown(pending)
-        with st.chat_message("assistant"):
-            orch = get_orchestrator_v2()
-            uid = st.session_state["user_id"]
-            browser_session_id = st.session_state["browser_session_id"]
-            if orch:
-                async def _gen():
-                    async for line in orch.process_streaming(
-                        pending,
-                        uid,
-                        browser_session_id,
-                        scene="general",
-                    ):
-                        yield line
+        for msg in st.session_state["assistant_msgs"]:
+            with st.chat_message(msg["role"]):
+                render_assistant_message(msg)
 
-                def _postprocess(_response, stream_events):
-                    return _extract_memories_after_stream(
-                        orch,
-                        uid,
-                        browser_session_id,
-                        "general",
-                        stream_events,
+        if st.session_state.get("show_memory_extraction"):
+            st.info("本轮已生成待确认的记忆内容，可前往记忆中心查看和决定是否保存。")
+
+        if pending := st.session_state.get("pending_assistant"):
+            st.session_state.pop("pending_assistant", None)
+            st.session_state["assistant_msgs"].append({"role": "user", "content": pending})
+            with st.chat_message("user"):
+                st.markdown(pending)
+            with st.chat_message("assistant"):
+                orch = get_turn_graph()
+                uid = st.session_state["user_id"]
+                browser_session_id = st.session_state["browser_session_id"]
+                # 上一轮被"缺少核心信息"中断时，这一句是补充答案，要走恢复而不是新开一轮。
+                resuming = st.session_state.pop("pending_clarify", None)
+                if orch and resuming:
+                    async def _gen():
+                        async for line in orch.resume_streaming(
+                            pending,
+                            uid,
+                            browser_session_id,
+                            scene="general",
+                        ):
+                            yield line
+                elif orch:
+                    async def _gen():
+                        async for line in orch.process_streaming(
+                            pending,
+                            uid,
+                            browser_session_id,
+                            scene="general",
+                        ):
+                            yield line
+
+                if orch:
+                    def _postprocess(_response, stream_events):
+                        # 中断的轮次没有正文也没有记忆，跳过记忆提取。
+                        if any(
+                            (event.get("event") == "clarify")
+                            for event in (stream_events or [])
+                        ):
+                            return []
+                        return _extract_memories_after_stream(
+                            orch,
+                            uid,
+                            browser_session_id,
+                            "general",
+                            stream_events,
+                        )
+
+                    response, events = run_streaming_realtime(_gen, postprocess=_postprocess)
+                    clarify = next(
+                        (event for event in events if event.get("event") == "clarify"),
+                        None,
                     )
+                    if clarify:
+                        data = clarify.get("data", {}) or {}
+                        st.session_state["pending_clarify"] = {
+                            "thread_id": data.get("thread_id", ""),
+                            "missing": data.get("missing", []),
+                        }
+                        response = (
+                            data.get("question")
+                            or "还需要补充一些信息才能继续，请直接回复缺失的内容。"
+                        )
+                else:
+                    response = "请先在个人中心配置主模型后开始对话。"
+                    events = []
+                    st.warning(response)
+            st.session_state["assistant_msgs"].append({
+                "role": "assistant",
+                "response": response,
+                "process_events": events,
+            })
+            st.rerun()
 
-                response, events = run_streaming_realtime(_gen, postprocess=_postprocess)
-            else:
-                response = "请先在个人中心配置主模型后开始对话。"
-                events = []
-                st.warning(response)
-        st.session_state["assistant_msgs"].append({
-            "role": "assistant",
-            "response": response,
-            "process_events": events,
-        })
-        st.rerun()
+    with rail_col:
+        with st.container(key="assistant_rail"):
+            render_run_rail()
 
     if user_input := st.chat_input(
         "描述购物、旅行或任何问题，系统会自动选择 Agent…",

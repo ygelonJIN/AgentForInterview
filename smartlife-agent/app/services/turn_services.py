@@ -1,42 +1,25 @@
-"""
-Orchestrator v2 - 全链路 Streaming 主协调器
+"""领域服务层。
 
-核心改动：
-1. 统一分类器替代 Router + Intent 双调用
-2. 所有 LLM 调用使用 astream() 替代 invoke()
-3. 全程通过 EventQueue 推送实时事件
-4. 检索策略按分类结果智能路由
-5. 复用子 Agent 的 streaming 方法，不内联重复逻辑
+这里只放**无编排**的能力：分类、检索、生成、校验、记忆读写、压缩。
+控制流、路由、并行、重试、流式全部在 ``app/graphs`` 里由 LangGraph 承担。
 
-记忆系统改动：
-- 去掉自动压缩（每20条消息）
-- 去掉自动保存事件
-- 用户手动触发保存
-- 对话结束后提取候选记忆，用户决定是否保留
-- 向量库 + MD 文档并存
+旧 ``OrchestratorV2`` 的编排方法（process_streaming / run_*_turn / _do_process）
+已删除；任何调用方都应改为驱动图。
 """
-import sys
-import os
-import json
-import re
 import asyncio
+import os
+import sys
 import uuid
-from typing import Dict, List, Any, Optional, AsyncGenerator
+from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from app.config import create_llm
-from app.classifier import UnifiedClassifier, ClassificationResult, get_classifier
-from app.streaming import EventQueue, EventType
-from app.agents.travel_agent import TravelAgent
-from app.agents.react_graph import ToolReActGraph
-from app.agents.shopping_graph import ShoppingGraph
-from app.agents.customer_service_graph import CustomerServiceGraph
-from app.agents.general_plan_graph import GeneralPlanGraph
-from app.agents.task_models import SharedConstraints, build_composite_plan, branch_outcome, CompositeOutcome
+from app.services.travel_service import TravelService
+from app.classifier import ClassificationResult, get_classifier
+from app.services.task_models import SharedConstraints
 from app.memory.short_term import ShortTermMemory
 from app.memory.conversation_store import ConversationStore
 from app.memory.long_term import LongTermMemory
@@ -48,23 +31,18 @@ from app.memory.repository import MemoryRepository
 from app.evaluation.ab_logging import ExperimentLogger
 from app.retrieval.reranker import create_reranker
 from app.retrieval.order_repository import OrderRepository
-from app.retrieval.repositories import ProductRepository, ReviewRepository
 from app.session import build_thread_id
 from app.tools import get_safe_tools
+from app.graphs.events import EventSink
+from app.streaming import EventType
 from app.trip_gear.intent import is_gear_request
 from app.observability import extract_model_usage, log_exception, timed_span
 
 
-class OrchestratorV2:
-    """
-    主协调器 v2 - 全链路流式处理
+class TurnServices:
+    """一轮对话可用的领域能力集合（无状态编排）。
 
-    流程：
-    1. 统一分类（小模型，一次调用）→ 路由 + 意图 + 检索策略
-    2. 根据意图路由到子 Agent
-    3. 子 Agent 流式输出（astream）
-    4. 全程事件推送
-    5. 对话结束后提取候选记忆，用户决定是否保留
+    图节点通过 ``runtime.context.services`` 拿到它；它自己不决定下一步做什么。
     """
 
     def __init__(self, model_name: str = None):
@@ -72,8 +50,10 @@ class OrchestratorV2:
         self.llm = create_llm(model_name)
         self.classifier = get_classifier()
 
-        # 子 Agents
-        self.travel_agent = TravelAgent(model_name)
+        # 子服务
+        self._travel_service = None
+        self._order_repository = None
+        self._trip_gear_service = None
 
         # 记忆
         self._short_term_memory = None
@@ -96,7 +76,6 @@ class OrchestratorV2:
         self._general_plan_graph = None
         self._shopping_graph = None
         self._memory_repository = None
-        self._trip_gear_agent = None
         self._last_classifications = {}
 
         # 通用对话 prompt
@@ -182,6 +161,32 @@ class OrchestratorV2:
         return self._retrieval_service
 
     @property
+    def travel_service(self) -> TravelService:
+        """旅行上下文与规划能力的服务入口（不承担编排）。"""
+        if self._travel_service is None:
+            self._travel_service = TravelService(self.model_name)
+        return self._travel_service
+
+    @property
+    def trip_gear_service(self):
+        """行程约束派生 + 装备协同规划服务入口。"""
+        if self._trip_gear_service is None:
+            from app.trip_gear.service import TripGearService
+
+            self._trip_gear_service = TripGearService(model_name=self.model_name)
+        return self._trip_gear_service
+
+    @property
+    def order_repository(self):
+        if self._order_repository is None:
+            self._order_repository = OrderRepository()
+        return self._order_repository
+
+    def tools_for(self, actor_id: str, agent_id: str = "general"):
+        """按 Actor 绑定的工具集；工具越权校验在工具注册表里完成。"""
+        return get_safe_tools(actor_id=actor_id, agent_id=agent_id)
+
+    @property
     def memory_approval_graph(self):
         if getattr(self, "_memory_approval_graph", None) is None:
             self._memory_approval_graph = MemoryApprovalGraph(
@@ -198,87 +203,37 @@ class OrchestratorV2:
             )
         return self._memory_repository
 
-    @property
-    def customer_service_graph(self):
-        if getattr(self, "_customer_service_graph", None) is None:
-            self._customer_service_graph = CustomerServiceGraph(
-                OrderRepository(),
-                self.llm,
-            )
-        return self._customer_service_graph
-
-    @property
-    def general_plan_graph(self):
-        if getattr(self, "_general_plan_graph", None) is None:
-            self._general_plan_graph = GeneralPlanGraph(
-                self.llm,
-                tools=get_safe_tools(),
-                max_revisions=1,
-            )
-        return self._general_plan_graph
-
-    @property
-    def shopping_graph(self):
-        if getattr(self, "_shopping_graph", None) is None:
-            self._shopping_graph = ShoppingGraph(self)
-        return self._shopping_graph
-
-    # ================================================================
-    # Streaming 入口
-    # ================================================================
-
-    async def process_streaming(
-        self,
-        user_message: str,
-        user_id: str,
-        session_id: str,
-        scene: str = "general"
-    ) -> AsyncGenerator[str, None]:
-        """
-        全链路流式处理 - 返回 SSE 事件流
-
-        Yields:
-            SSE 格式的事件字符串
-        """
-        thread_id = build_thread_id(user_id, scene, session_id)
-        queue = EventQueue()
-
-        async def _process():
-            try:
-                await self._do_process(user_message, user_id, thread_id, queue)
-            except Exception as e:
-                log_exception("orchestrator.streaming", e, {"thread_id": thread_id})
-                await queue.emit_error(
-                    f"处理失败: {type(e).__name__}: {str(e) or '(无错误信息)'}"
-                )
-            finally:
-                await queue.finish()
-
-        task = asyncio.create_task(_process())
-        try:
-            async for sse in queue.to_sse():
-                yield sse
-        finally:
-            if not task.done():
-                task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
-    # ================================================================
-    # 核心处理
-    # ================================================================
-
     async def begin_turn(self, user_message: str, thread_id: str) -> None:
-        """记录用户消息，作为一次图执行的起点。"""
+        """记录用户消息；由 prepare 节点调用。"""
         self.short_term_memory.add_message(thread_id, "user", user_message)
 
-    async def classify_turn(
+    async def finish_turn(
+        self,
+        thread_id: str,
+        response_text: str,
+        classification: ClassificationResult,
+        queue: EventSink,
+    ) -> None:
+        """保存助手回复并发送统一完成事件；由 finalize 节点调用。"""
+        self.short_term_memory.add_message(thread_id, "assistant", response_text)
+        payload = {
+            "response": response_text,
+            "classification": classification.model_dump(),
+            "agent_used": getattr(classification, "agent_label", classification.intent),
+            "memories": {
+                "short_term_count": len(self.short_term_memory.get_history(thread_id)),
+            },
+        }
+        if hasattr(queue, "emit_done"):
+            await queue.emit_done(payload)
+        else:
+            await queue.emit(EventType.DONE, payload, step="done")
+
+    async def classify(
         self,
         user_message: str,
         thread_id: str,
-        queue: EventQueue,
+        queue: EventSink,
     ) -> ClassificationResult:
         """执行统一分类和产品关键词安全网。"""
         await queue.emit(EventType.STEP, {
@@ -347,161 +302,13 @@ class OrchestratorV2:
     def get_chat_history(self, thread_id: str) -> List[Any]:
         return self.short_term_memory.get_langchain_messages(thread_id, last_n=10)
 
-    async def run_shopping_turn(
-        self,
-        user_message: str,
-        user_id: str,
-        thread_id: str,
-        classification: ClassificationResult,
-        queue: EventQueue,
-        constraints: Optional[SharedConstraints] = None,
-    ) -> str:
-        return await self.shopping_graph.run_streaming(
-            user_message,
-            user_id,
-            thread_id,
-            classification.model_dump(),
-            queue,
-            constraints=constraints.model_dump() if constraints else None,
-        )
-
-    async def run_travel_turn(
-        self,
-        user_message: str,
-        user_id: str,
-        thread_id: str,
-        classification: ClassificationResult,
-        queue: EventQueue,
-        constraints: Optional[SharedConstraints] = None,
-    ) -> str:
-        chat_history = self.get_chat_history(thread_id)
-        if classification.route == "plan_and_execute":
-            return await self.travel_agent.plan_trip_streaming(
-                user_message,
-                user_id,
-                queue,
-                chat_history=chat_history,
-                constraints=constraints.prompt_context() if constraints else "",
-            )
-        return await self.travel_agent.chat_streaming(user_message, user_id, queue)
-
-    async def run_trip_gear_turn(
-        self,
-        user_message: str,
-        user_id: str,
-        thread_id: str,
-        classification: ClassificationResult,
-        queue: EventQueue,
-    ) -> str:
-        """行程约束派生 + 装备协同规划：一条有向链路，不做双分支并行。"""
-        if self._trip_gear_agent is None:
-            from app.trip_gear.agent import TripGearAgent
-
-            self._trip_gear_agent = TripGearAgent(model_name=self.model_name)
-        return await self._trip_gear_agent.run_streaming(
-            user_message,
-            user_id,
-            queue,
-            chat_history=self.get_chat_history(thread_id),
-        )
-
-    async def run_react_turn(
-        self,
-        user_message: str,
-        user_id: str,
-        thread_id: str,
-        _classification: ClassificationResult,
-        queue: EventQueue,
-    ) -> str:
-        graph = ToolReActGraph(
-            model=self.llm,
-            tools=get_safe_tools(actor_id=user_id, agent_id="general"),
-            agent_id="general",
-            max_steps=6,
-            tool_timeout=10.0,
-        )
-        return await self._run_react_streaming(
-            user_message,
-            self.get_chat_history(thread_id),
-            queue,
-            thread_id,
-            react_graph=graph,
-        )
-
-    async def run_customer_service_turn(
-        self,
-        user_message: str,
-        user_id: str,
-        thread_id: str,
-        _classification: ClassificationResult,
-        queue: EventQueue,
-    ) -> str:
-        await queue.emit(EventType.STEP, {
-            "step": 2,
-            "total": 4,
-            "name": "订单查询",
-            "description": "从当前用户授权的 OrderRepository 读取订单",
-        }, step="retrieval")
-        return await self.customer_service_graph.run_streaming(
-            user_message,
-            user_id,
-            queue=queue,
-            history=self.get_chat_history(thread_id),
-        )
-
-    async def run_general_plan_turn(
-        self,
-        user_message: str,
-        user_id: str,
-        thread_id: str,
-        _classification: ClassificationResult,
-        queue: EventQueue,
-    ) -> str:
-        await queue.emit(EventType.STEP, {
-            "step": 2,
-            "total": 4,
-            "name": "任务规划",
-            "description": "分解任务、执行工具并校验结果",
-        }, step="plan")
-        graph = GeneralPlanGraph(
-            self.llm,
-            tools=get_safe_tools(actor_id=user_id, agent_id="general"),
-            agent_id="general",
-            max_revisions=1,
-        )
-        return await graph.run_streaming(
-            user_message,
-            context="\n".join(str(getattr(item, "content", item)) for item in self.get_chat_history(thread_id)[-5:]),
-            queue=queue,
-            trace_id=thread_id,
-        )
-
-    async def run_general_turn(
-        self,
-        user_message: str,
-        user_id: str,
-        thread_id: str,
-        classification: ClassificationResult,
-        queue: EventQueue,
-    ) -> str:
-        if classification.route == "plan_and_execute":
-            return await self.run_general_plan_turn(
-                user_message, user_id, thread_id, classification, queue
-            )
-        return await self._run_general_streaming(
-            user_message,
-            thread_id,
-            self.get_chat_history(thread_id),
-            queue,
-        )
-
     async def synthesize_composite_response(
         self,
         user_message: str,
         shopping: Dict[str, Any],
         travel: Dict[str, Any],
         constraints: SharedConstraints,
-        queue: EventQueue,
+        queue: EventSink,
     ) -> str:
         """合并并约束校验双意图结果；单分支失败仍保留可验证的另一分支。"""
         def fallback() -> str:
@@ -550,71 +357,11 @@ class OrchestratorV2:
             await queue.emit_error(f"跨场景综合失败，已保留两个分支结果：{type(exc).__name__}", step="generate")
             return fallback()
 
-    async def finish_turn(
-        self,
-        thread_id: str,
-        response_text: str,
-        classification: ClassificationResult,
-        queue: EventQueue,
-    ) -> None:
-        """保存助手回复并发送统一完成事件。"""
-        self.short_term_memory.add_message(thread_id, "assistant", response_text)
-        payload = {
-            "response": response_text,
-            "classification": classification.model_dump(),
-            "agent_used": getattr(classification, "agent_label", classification.intent),
-            "memories": {
-                "short_term_count": len(self.short_term_memory.get_history(thread_id)),
-            }
-        }
-        if hasattr(queue, "emit_done"):
-            await queue.emit_done(payload)
-        else:
-            await queue.emit(EventType.DONE, payload, step="done")
-
-    async def _do_process(
-        self,
-        user_message: str,
-        user_id: str,
-        thread_id: str,
-        queue: EventQueue
-    ):
-        """兼容入口；新的顶层控制流由 LangGraphOrchestrator 承担。"""
-        await self.begin_turn(user_message, thread_id)
-        classification = await self.classify_turn(user_message, thread_id, queue)
-
-        if classification.intent == "customer_service":
-            response_text = await self.run_customer_service_turn(
-                user_message, user_id, thread_id, classification, queue
-            )
-        elif classification.intent == "shopping":
-            response_text = await self.run_shopping_turn(
-                user_message, user_id, thread_id, classification, queue
-            )
-        elif classification.intent == "travel":
-            response_text = await self.run_travel_turn(
-                user_message, user_id, thread_id, classification, queue
-            )
-        elif classification.intent == "general" and classification.route == "react":
-            response_text = await self.run_react_turn(
-                user_message, user_id, thread_id, classification, queue
-            )
-        else:
-            response_text = await self.run_general_turn(
-                user_message, user_id, thread_id, classification, queue
-            )
-
-        await self.finish_turn(thread_id, response_text, classification, queue)
-
-    # ================================================================
-    # 购物流式处理
-    # ================================================================
-
     async def plan_shopping_retrieval(
         self,
         user_message: str,
         classification: ClassificationResult,
-        queue: EventQueue,
+        queue: EventSink,
     ):
         """购物子图节点：确定 SQL/RAG 需求和检索策略。"""
         needs = self._classify_data_needs(user_message, classification)
@@ -632,7 +379,7 @@ class OrchestratorV2:
         user_message: str,
         planned_strategy: str,
         needs: Dict[str, Any],
-        queue: EventQueue,
+        queue: EventSink,
         user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """购物子图节点：执行 SQL/RAG 检索。"""
@@ -651,7 +398,7 @@ class OrchestratorV2:
         thread_id: str,
         classification: ClassificationResult,
         retrieval: Dict[str, Any],
-        queue: EventQueue,
+        queue: EventSink,
         validation_feedback: str = "",
         constraints: Optional[Dict[str, Any]] = None,
     ) -> str:
@@ -669,7 +416,7 @@ class OrchestratorV2:
             memory_context = "\n".join(
                 [m["content"] for m in cross_memories[:3]]
             )
-        weather_context = await self.travel_agent.get_weather_context(user_message)
+        weather_context = await self.travel_service.get_weather_context(user_message)
 
         full_input = user_message
         if retrieval.get("product_context"):
@@ -801,24 +548,6 @@ class OrchestratorV2:
         ):
             raise ValueError("回答必须至少引用一个检索到的真实商品名称")
 
-    async def _run_shopping_streaming(
-        self,
-        user_message: str,
-        user_id: str,
-        chat_history: List,
-        classification: ClassificationResult,
-        queue: EventQueue,
-        thread_id: Optional[str] = None,
-    ) -> str:
-        """兼容入口；实际购物控制流由 ShoppingGraph 承担。"""
-        return await self.shopping_graph.run_streaming(
-            user_message,
-            user_id,
-            thread_id or build_thread_id(user_id, "shopping", "legacy"),
-            classification.model_dump(),
-            queue,
-        )
-
     def _classify_data_needs(self, query: str, classification: 'ClassificationResult') -> dict:
         """按事实需求选择 SQL/RAG，不把二者当成固定降级顺序。"""
         q = (query or '').lower()
@@ -881,108 +610,15 @@ class OrchestratorV2:
             'source_policy': 'independent_not_fallback',
         }
 
-    async def _emit_retrieval_plan(self, queue: 'EventQueue', strategy: str, needs: dict, source: str = 'policy'):
+    async def _emit_retrieval_plan(self, queue: 'EventSink', strategy: str, needs: dict, source: str = 'policy'):
         """检索规划信息已并入 Step 2「数据检索」描述，避免重复推送 Step 2。"""
         return
-
-    async def _run_general_streaming(
-        self,
-        user_message: str,
-        session_id: str,
-        chat_history: List,
-        queue: EventQueue
-    ) -> str:
-        """通用对话 - 流式处理"""
-        await queue.emit(EventType.STEP, {
-            "step": 2, "total": 4,
-            "name": "通用对话",
-            "description": "处理通用对话请求"
-        }, step="general")
-
-        general_prompt = ChatPromptTemplate.from_messages([
-            ("system", "你是 SmartLife Agent 智能助手，帮助用户购物和旅行规划。用中文回复。友好、专业、简洁。"),
-            *[(msg.role, msg.content) for msg in chat_history[-5:]],
-            ("user", user_message)
-        ])
-
-        chain = general_prompt | self.llm
-        full_response = ""
-
-        with timed_span(
-            "model.general_generate",
-            trace_id=getattr(queue, "trace_id", ""),
-        ) as measurement:
-            async for chunk in chain.astream({}):
-                if chunk.content:
-                    full_response += chunk.content
-                    await queue.emit_token(chunk.content, step="general")
-                measurement.add_attributes(extract_model_usage(chunk))
-
-        return full_response
-
-    async def _run_react_streaming(
-        self,
-        user_message: str,
-        chat_history: List,
-        queue: EventQueue,
-        thread_id: str,
-        react_graph: Optional[ToolReActGraph] = None,
-    ) -> str:
-        """通过真实工具调用循环处理 general/react 请求。"""
-        await queue.emit(EventType.STEP, {
-            "step": 2,
-            "total": 4,
-            "name": "工具推理",
-            "description": "模型决定是否调用天气、路线或时间工具",
-        }, step="react")
-
-        async def on_event(event: str, data: Dict[str, Any]):
-            if event == "execution_log":
-                await queue.emit_execution_log({
-                    "event": event,
-                    "data": data,
-                    "step": data.get("step", "react"),
-                })
-            elif event == "tool_call":
-                await queue.emit_tool_call(
-                    data.get("tool", ""),
-                    data.get("args", {}),
-                    step="react",
-                )
-            elif event == "tool_result":
-                if data.get("ok"):
-                    await queue.emit_tool_result(
-                        data.get("tool", ""),
-                        str(data.get("result", "")),
-                        step="react",
-                    )
-                else:
-                    await queue.emit_error(
-                        f"工具 {data.get('tool', '')} 执行失败: {data.get('error', '')}",
-                        step="react",
-                    )
-            elif event == "finalized":
-                await queue.emit_thinking("🧠 工具推理完成", step="react")
-
-        graph = react_graph or ToolReActGraph(
-            model=self.llm,
-            tools=get_safe_tools(agent_id="general"),
-            agent_id="general",
-            max_steps=6,
-            tool_timeout=10.0,
-        )
-        graph.on_event = on_event
-        messages = list(chat_history) + [HumanMessage(content=user_message)]
-        result = await graph.run_streaming(messages, thread_id=thread_id)
-        response = result.get("response", "") or "工具推理已完成，但没有生成最终回答。"
-        await queue.emit_token(response, step="react")
-        return response
 
     async def _smart_retrieve(
         self,
         query: str,
         strategy: str,
-        queue: EventQueue,
+        queue: EventSink,
         needs: dict = None,
         owner: Optional[str] = None,
     ) -> dict:
@@ -1086,14 +722,6 @@ class OrchestratorV2:
         ]
 
     @staticmethod
-    def _latest_user_message(history: List[Any]) -> List[Dict[str, str]]:
-        for message in reversed(history or []):
-            role = message.get("role") if isinstance(message, dict) else getattr(message, "type", "")
-            content = message.get("content", "") if isinstance(message, dict) else getattr(message, "content", "")
-            if role == "user" and str(content).strip():
-                return [{"role": "user", "content": str(content)}]
-        return []
-
     def extract_candidate_memories(
         self,
         user_id: str,
@@ -1284,17 +912,11 @@ class OrchestratorV2:
         })
 
 # === 全局实例 ===
-_orchestrator_v2 = None
+_turn_services = None
 
-def get_orchestrator_v2(model_name: str = None) -> OrchestratorV2:
-    global _orchestrator_v2
-    if _orchestrator_v2 is None:
-        _orchestrator_v2 = OrchestratorV2(model_name)
-    return _orchestrator_v2
 
-async def process_user_message_streaming(
-    message: str, user_id: str, session_id: str, scene: str = "general"
-) -> AsyncGenerator[str, None]:
-    orchestrator = get_orchestrator_v2()
-    async for sse in orchestrator.process_streaming(message, user_id, session_id, scene):
-        yield sse
+def get_turn_services(model_name: str = None) -> TurnServices:
+    global _turn_services
+    if _turn_services is None:
+        _turn_services = TurnServices(model_name)
+    return _turn_services

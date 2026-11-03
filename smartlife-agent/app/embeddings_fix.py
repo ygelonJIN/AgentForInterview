@@ -2,7 +2,6 @@
 修复: 使用 DashScope 原生 Embedding API 格式
 """
 import requests
-import json
 from typing import List
 
 

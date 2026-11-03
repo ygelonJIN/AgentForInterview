@@ -1,12 +1,12 @@
 """Agent 即插即用能力面、MCP 发现和运行时工具隔离测试。"""
 
 import asyncio
-import json
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.agents.react_graph import ToolReActGraph
+from app.graphs.context import TurnContext
+from app.graphs.subgraphs.react import build_react_graph, initial_react_state
 from app.mcp_servers.protocol_server import build_mcp_server
 from app.tools.agent_capabilities import (
     AGENT_TOOL_POLICIES,
@@ -104,14 +104,20 @@ def test_model_tool_call_cannot_cross_agent_boundary():
 
     tool = ShoppingTool()
     model = InjectedModel()
-    graph = ToolReActGraph(
-        model=model,
-        tools=[tool],
-        agent_id="shopping",
-        max_steps=3,
-        tool_timeout=1.0,
+
+    class _Services:
+        llm = model
+
+        def tools_for(self, actor_id, agent_id="general"):
+            return [tool]
+
+    ctx = TurnContext(services=_Services(), trace_id="isolation").with_extra(
+        agent_id="shopping", actor_id="user_001"
     )
-    result = asyncio.run(graph.run_streaming([HumanMessage(content="越权调用")]))
+    result = asyncio.run(build_react_graph().ainvoke(
+        initial_react_state([HumanMessage(content="越权调用")], max_steps=3, tool_timeout=1.0),
+        context=ctx,
+    ))
 
     assert model.bound_tool_names == {"search_products"}
     assert tool.calls == []

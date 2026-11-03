@@ -1,6 +1,5 @@
 """通用敏感操作审批图测试。"""
 
-import asyncio
 
 import pytest
 

@@ -419,9 +419,9 @@ result = agent.invoke({"input": "我和女朋友周末去杭州玩两天，预�
 
 ### 为什么需要 Reflection？
 
-Plan & Execute 生成的行程/清单可能有不合理的地方（行程太赶、预算超支、时间冲突）。TravelPlanGraph 与 GeneralPlanGraph 通过结构化审核和确定性硬校验完成自检。
+Plan & Execute 生成的行程/清单可能有不合理的地方（行程太赶、预算超支、时间冲突）。旅行子图与通用规划子图通过结构化审核和确定性硬校验完成自检（现实现：`app/graphs/subgraphs/travel.py`、`app/graphs/subgraphs/general_plan.py`）。
 
-> 2026-10-25 增补：`trip_gear` 不依赖模型自审，改用确定性校验（预算含装备、时间重叠、天数、露营必备装备）加两轮有界修复；本节描述的是 TravelPlanGraph / GeneralPlanGraph 的审核方式，详见 `smartlife-agent/docs/trip-gear.md`。
+> 2026-10-25 增补：`trip_gear` 不依赖模型自审，改用确定性校验（预算含装备、时间重叠、天数、露营必备装备）加两轮有界修复；本节描述的是旅行/通用规划子图的审核方式，详见 `smartlife-agent/docs/trip-gear.md`。
 
 ### 实现
 
@@ -639,6 +639,10 @@ def intelligent_shopping_guide(user_query: str) -> dict:
 
 ---
 
+> 2026-11-03 增补：`app/agents/` 已整体迁移为 `app/graphs/`（纯 LangGraph：`context_schema` 注入、
+> `stream_mode="custom"` 流式、原生 `retry_policy`/`timeout`、并行边归约），`app/agents/` 目录已删除。
+> 架构说明见 `smartlife-agent/docs/graph-architecture.md`；本文其余章节描述的设计意图仍然有效。
+
 ## 十四、项目目录结构
 
 ```text
@@ -646,14 +650,17 @@ smartlife-agent/
 ├── app/
 │   ├── main.py                         # Streamlit 入口
 │   ├── classifier.py                   # 混合分类器与 ClassificationResult
-│   ├── agents/
-│   │   ├── langgraph_orchestrator.py   # 顶层分类、条件路由和复合分支
-│   │   ├── orchestrator_v2.py          # 场景执行服务
-│   │   ├── shopping_graph.py           # 商品检索与购物回答
-│   │   ├── travel_agent.py             # 旅游问答与计划入口
-│   │   ├── travel_graph.py             # 旅游证据执行和结构化审核
-│   │   ├── react_graph.py              # 受控 ReAct 工具循环
-│   │   └── general_plan_graph.py       # 通用 Plan & Execute
+│   ├── graphs/
+│   │   ├── orchestrator.py             # 顶层图：分类、条件路由、复合分支、记忆提取
+│   │   ├── context.py / events.py      # TurnContext 注入 + stream writer 事件出口
+│   │   ├── state.py / nodes.py         # 图状态与通用节点
+│   │   ├── memory.py                   # 记忆提取图 + 审批入口
+│   │   └── subgraphs/                  # shopping / travel / trip_gear / composite /
+│   │                                   # customer_service / general_plan / react / general_chat
+│   ├── services/
+│   │   ├── turn_services.py            # 无编排的领域能力（分类、检索、生成、记忆）
+│   │   ├── travel_service.py           # 旅行 prompt、规划/审核调用、工具执行
+│   │   └── task_models.py              # 共享约束与复合任务模型
 │   ├── mcp_servers/
 │   │   └── protocol_server.py          # 真实 MCP Protocol Server
 │   ├── tools/

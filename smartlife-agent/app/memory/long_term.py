@@ -2,10 +2,9 @@
 长期记忆 - 向量数据库存储
 """
 import os
-import json
 import re
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from datetime import datetime
 from app.observability import log_warning
 

@@ -21,6 +21,8 @@ class Constraint(BaseModel):
     source: str = "用户原话"
     hard: bool = True
     status: str = "ok"  # ok / violated / relaxed / unverified
+    # 机器可校验的身份标识，供校验器派发；空串表示只做展示、不参与自动校验。
+    key: str = ""
 
 
 class ItineraryItem(BaseModel):

@@ -1,7 +1,6 @@
 """
 NL2SQL 测试
 """
-import pytest
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 

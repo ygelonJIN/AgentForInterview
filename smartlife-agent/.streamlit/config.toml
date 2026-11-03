@@ -1,0 +1,13 @@
+# Streamlit 基础主题：与 app/ui/tokens.py 的 V2 token 对齐。
+# 这里只设"底座"（控件底色、强调色、文字色）；
+# 布局与组件外观仍由 app/ui/theme.py 注入的 CSS 负责。
+[theme]
+base = "light"
+primaryColor = "#a8501f"
+backgroundColor = "#f7f0e2"
+secondaryBackgroundColor = "#fbf4e6"
+textColor = "#33291d"
+font = "sans serif"
+
+[browser]
+gatherUsageStats = false

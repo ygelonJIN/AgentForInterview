@@ -52,8 +52,41 @@ def extract_owned(text: str, source: str = "对话") -> List[OwnedItem]:
             name, qty = _parse_item(part)
             if len(name) < 2 or name in _GENERIC:
                 continue
+            # "一堆装备""那些东西"是泛称，没有可购买的具体品类，跳过并留给确认入口。
+            if name.endswith(("装备", "东西", "物品", "用品", "家伙什")):
+                continue
             found.append(OwnedItem(name=name, qty=qty, source=source))
     return _dedupe(found)
+
+
+# 说了"有"但没说是哪种东西的表述：不能当成已有（会漏买），也不能当没说（会重复买）。
+_AMBIGUOUS_RE = re.compile(
+    r"(?:我|自己|家里)(?:都|已经|基本|差不多)?(?:有|带了|买了|备了)"
+    r"(?:一些|一堆|很多|不少|点|点儿|几个)?(?:的)?"
+    r"[^，。！？,\s]{0,6}?(?:装备|东西|物品|用品|家伙什|这些|那些)"
+)
+_AMBIGUOUS_READY_RE = re.compile(
+    r"(?:装备|东西|物品|行头)(?:都|已经|基本)?(?:齐了|全了|准备好了|够了|有了)"
+)
+
+
+def find_ambiguous_owned(text: str) -> List[str]:
+    """找出"我有装备"这类模糊表述，交给用户确认具体是什么。
+
+    抽取器只接受明确名称，模糊表述一律跳过；但直接丢掉会让用户以为系统
+    已经记住了，于是重复购买。所以单独收集，在结果里给出确认入口。
+    """
+    raw = str(text or "")
+    found: List[str] = []
+    for match in _AMBIGUOUS_RE.finditer(raw):
+        phrase = match.group(0).strip()
+        if phrase and phrase not in found:
+            found.append(phrase)
+    for match in _AMBIGUOUS_READY_RE.finditer(raw):
+        phrase = match.group(0).strip()
+        if phrase and phrase not in found:
+            found.append(phrase)
+    return found
 
 
 def extract_from_memories(memories: Iterable[Any]) -> List[OwnedItem]:

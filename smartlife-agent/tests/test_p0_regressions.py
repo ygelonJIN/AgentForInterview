@@ -198,9 +198,9 @@ class _FakeSql:
 
 
 def test_v2_rag_only_path_uses_retrieve_result():
-    from app.agents.orchestrator_v2 import OrchestratorV2
+    from app.services.turn_services import TurnServices
 
-    orchestrator = OrchestratorV2.__new__(OrchestratorV2)
+    orchestrator = TurnServices.__new__(TurnServices)
     orchestrator._rag_retriever = _FakeRag(RetrievalResult(
         documents=[{"content": "真实评价", "metadata": {}, "score": 0.1}],
         scores=[0.1],
@@ -220,9 +220,9 @@ def test_v2_rag_only_path_uses_retrieve_result():
 
 
 def test_v2_mixed_path_contains_sql_products_and_rag_documents():
-    from app.agents.orchestrator_v2 import OrchestratorV2
+    from app.services.turn_services import TurnServices
 
-    orchestrator = OrchestratorV2.__new__(OrchestratorV2)
+    orchestrator = TurnServices.__new__(TurnServices)
     orchestrator._nl2sql_chain = _FakeSql()
     orchestrator._rag_retriever = _FakeRag(RetrievalResult(
         documents=[{"content": "真实评价", "metadata": {}, "score": 0.1}],
@@ -244,9 +244,9 @@ def test_v2_mixed_path_contains_sql_products_and_rag_documents():
 
 
 def test_v2_marks_rag_failure_instead_of_presenting_fake_reviews():
-    from app.agents.orchestrator_v2 import OrchestratorV2
+    from app.services.turn_services import TurnServices
 
-    orchestrator = OrchestratorV2.__new__(OrchestratorV2)
+    orchestrator = TurnServices.__new__(TurnServices)
     orchestrator._rag_retriever = _FakeRag(RetrievalResult(
         ok=False,
         error="vector store missing",

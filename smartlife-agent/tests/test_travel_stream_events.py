@@ -1,87 +1,88 @@
-"""旅游流式步骤和修订正文替换测试。"""
+"""旅行子图的步骤广播与修订正文替换测试。
 
+契约：STEP 2 只发一次、STEP 3 只发一次；修订前先发 ``response_reset``，
+保证 UI 不会把旧版正文和新版正文拼在一起。
+"""
 import asyncio
 
-from app.agents.travel_agent import TravelAgent
+from app.graphs.context import TurnContext
+from app.graphs.subgraphs.travel import build_travel_plan_graph
 from app.streaming import EventType
 
 
-class _Queue:
+class _Planner:
     def __init__(self):
-        self.events = []
+        self.calls = 0
 
-    async def emit(self, event_type, data, step=""):
-        self.events.append({
-            "event": getattr(event_type, "value", event_type),
-            "data": data,
-            "step": step,
-        })
-
-    async def emit_thinking(self, message, step="", model=""):
-        await self.emit(EventType.THINKING, {"message": message}, step)
-
-    async def emit_token(self, token, step=""):
-        await self.emit(EventType.TOKEN, {"token": token}, step)
-
-    async def emit_tool_call(self, tool_name, tool_input=None, step=""):
-        await self.emit(EventType.TOOL_CALL, {"tool": tool_name, "input": tool_input}, step)
-
-    async def emit_tool_result(self, tool_name, output, step=""):
-        await self.emit(EventType.TOOL_RESULT, {"tool": tool_name, "output": output}, step)
-
-    async def emit_response_reset(self, step=""):
-        await self.emit(EventType.RESPONSE_RESET, {}, step)
+    async def __call__(self, request, context, previous_plan=None, feedback=None, on_token=None):
+        self.calls += 1
+        text = "修订版：一、二、三" if previous_plan else "初版：一、二、三"
+        if on_token:
+            await on_token(text, "revise" if previous_plan else "plan")
+        return text
 
 
-def test_travel_plan_emits_steps_two_and_three_and_resets_before_revision(monkeypatch):
-    class _FakeGraph:
-        def __init__(self, **kwargs):
-            self.on_event = kwargs["on_event"]
-            self.on_token = kwargs["on_token"]
+class _Reflector:
+    def __init__(self):
+        self.calls = 0
 
-        async def run_streaming(self, *args, **kwargs):
-            await self.on_event("plan_started", {"revision": 0})
-            await self.on_token("初版：一、二、三、四、五、六", "plan")
-            await self.on_event("reflection", {"is_satisfactory": False})
-            await self.on_event("revision", {"revision_count": 1})
-            await self.on_token("修订版：一、二、三、四、五、六", "revise")
-            return {"final_plan": "修订版：一、二、三、四、五、六"}
+    async def __call__(self, request, plan):
+        self.calls += 1
+        return {"is_satisfactory": False, "suggestions": ["继续修订"]} if self.calls == 1 \
+            else {"is_satisfactory": True, "suggestions": []}
 
-    monkeypatch.setattr(
-        "app.agents.travel_agent.TravelPlanGraph",
-        _FakeGraph,
-    )
-    agent = TravelAgent.__new__(TravelAgent)
-    agent._build_plan_context = lambda *_args, **_kwargs: "攻略与偏好"
-    agent.travel_tool_executor = type("FakeExecutor", (), {
-        "get_weather_evidence": staticmethod(
-            lambda *_args, **_kwargs: __import__("asyncio").sleep(
-                0, {"accepted": False, "simulated": False, "error": "unavailable"}
-            )
-        )
-    })()
-    queue = _Queue()
 
-    result = asyncio.run(agent.plan_trip_streaming(
-        "我要去上海旅游，3000块预算玩5天",
-        "user-1",
-        queue=queue,
+class _TravelService:
+    def _build_plan_context(self, user_input, user_id, chat_history=None, constraints=""):
+        return "攻略与偏好"
+
+    @staticmethod
+    def _remove_revision_notes(plan):
+        return plan
+
+
+class _Services:
+    travel_service = _TravelService()
+    llm = None
+
+    def get_chat_history(self, thread_id):
+        return []
+
+
+def _run():
+    events = []
+    ctx = TurnContext(services=_Services(), trace_id="travel:test").with_extra(
+        planner=_Planner(),
+        reflector=_Reflector(),
+        executor=lambda step, state: {"status": "completed", "result": "ok"},
+        max_revisions=3,
+    ).bind_writer(events.append)
+    state = asyncio.run(build_travel_plan_graph().ainvoke(
+        {"user_message": "我要去上海旅游，3000块预算玩5天", "user_id": "user-1", "thread_id": "t"},
+        context=ctx,
     ))
+    return state, events
 
-    assert result == "修订版：一、二、三、四、五、六"
-    step_numbers = [
-        event["data"]["step"]
-        for event in queue.events
-        if event["event"] == EventType.STEP
-    ]
-    assert step_numbers == [2, 3]
 
-    event_types = [event["event"] for event in queue.events]
-    reset_index = event_types.index(EventType.RESPONSE_RESET)
-    revised_token_index = next(
-        index
-        for index, event in enumerate(queue.events)
-        if event["event"] == EventType.TOKEN
-        and event["data"]["token"].startswith("修订版")
+def test_travel_plan_emits_steps_two_and_three_and_resets_before_revision():
+    state, events = _run()
+
+    assert state["response"].startswith("修订版")
+    steps = [event["data"]["step"] for event in events if event["event"] == EventType.STEP]
+    assert steps == [2, 3], "STEP 2/3 各只广播一次"
+
+    types = [event["event"] for event in events]
+    reset_index = types.index(EventType.RESPONSE_RESET)
+    revised_index = next(
+        index for index, event in enumerate(events)
+        if event["event"] == EventType.TOKEN and event["data"]["token"].startswith("修订版")
     )
-    assert reset_index < revised_token_index
+    assert reset_index < revised_index
+
+
+def test_travel_plan_tokens_carry_stage_as_step():
+    _, events = _run()
+    token_steps = {
+        event["step"] for event in events if event["event"] == EventType.TOKEN
+    }
+    assert {"plan", "revise"} <= token_steps

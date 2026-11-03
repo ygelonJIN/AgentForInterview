@@ -4,7 +4,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 SUPPORTED_DOCUMENT_SUFFIXES = {
     ".txt",
@@ -172,10 +172,3 @@ def load_document_records(
     if not records:
         raise ValueError(f"{path} 没有可导入的内容")
     return records
-
-
-def records_to_dicts(records: Iterable[Any]) -> List[Dict[str, Any]]:
-    return [
-        {"content": record.page_content, "metadata": dict(record.metadata or {})}
-        for record in records
-    ]

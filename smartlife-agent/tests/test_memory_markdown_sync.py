@@ -1,6 +1,5 @@
 import re
 
-from app.memory.long_term import LongTermMemory
 from app.memory.md_memory import MDMemory
 from app.memory.repository import MemoryRepository
 

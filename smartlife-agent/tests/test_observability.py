@@ -14,7 +14,7 @@ from app.observability import (
     log_warning,
     timed_span,
 )
-from app.streaming import EventQueue
+from app.graphs.events import EventSink, TurnTiming, to_sse
 
 
 def test_log_exception_records_component_and_redacts_secrets(caplog):
@@ -64,15 +64,12 @@ def test_timed_span_records_success_and_error():
     assert "p99_ms" in summary["spans"]["unit.success"]
 
 
-def test_event_queue_carries_stable_trace_id_in_sse():
-    async def run():
-        queue = EventQueue(trace_id="trace-fixed")
-        await queue.emit("step", {"name": "test"})
-        await queue.finish()
-        return [line async for line in queue.to_sse()]
+def test_event_sink_carries_stable_trace_id_in_sse():
+    chunks = []
+    sink = EventSink(chunks.append, TurnTiming(), trace_id="trace-fixed")
+    asyncio.run(sink.emit("step", {"name": "test"}))
 
-    lines = asyncio.run(run())
-    payloads = [json.loads(line.removeprefix("data: ")) for line in lines]
+    payloads = [json.loads(to_sse(chunk).removeprefix("data: ")) for chunk in chunks]
 
     assert payloads
     assert all(item["trace_id"] == "trace-fixed" for item in payloads)

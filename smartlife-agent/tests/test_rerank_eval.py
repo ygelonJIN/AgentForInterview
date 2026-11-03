@@ -1,6 +1,5 @@
 """Rerank 离线指标和策略对比测试。"""
 
-import json
 
 import pytest
 

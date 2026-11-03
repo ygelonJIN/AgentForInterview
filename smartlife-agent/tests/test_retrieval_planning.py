@@ -105,10 +105,10 @@ def test_retrieval_service_supports_no_retrieval_plan():
 
 
 def test_shopping_needs_select_only_sql_or_only_rag_for_single_information_type():
-    from app.agents.orchestrator_v2 import OrchestratorV2
+    from app.services.turn_services import TurnServices
     from app.classifier import ClassificationResult
 
-    orchestrator = OrchestratorV2.__new__(OrchestratorV2)
+    orchestrator = TurnServices.__new__(TurnServices)
     classification = ClassificationResult(
         intent="shopping",
         sub_intent="search",
@@ -168,7 +168,7 @@ def test_retrieval_service_supports_rerank_ab_control_and_treatment():
 def test_orchestrator_logs_rerank_experiment_impression_when_enabled():
     import asyncio
 
-    from app.agents.orchestrator_v2 import OrchestratorV2
+    from app.services.turn_services import TurnServices
 
     class Service:
         def retrieve(self, query, **kwargs):
@@ -199,7 +199,7 @@ def test_orchestrator_logs_rerank_experiment_impression_when_enabled():
         async def emit_tool_call(self, *args, **kwargs):
             return None
 
-    orchestrator = OrchestratorV2.__new__(OrchestratorV2)
+    orchestrator = TurnServices.__new__(TurnServices)
     orchestrator._retrieval_service = Service()
     orchestrator._reranker = object()
     orchestrator._experiment_logger = Logger()

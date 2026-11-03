@@ -2,7 +2,7 @@
 短期记忆 - 会话级对话历史
 """
 from threading import RLock
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from datetime import datetime
 

@@ -3,7 +3,7 @@ import re
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, Mapping, Optional, Sequence, Set
 
 
 class SQLSafetyError(ValueError):

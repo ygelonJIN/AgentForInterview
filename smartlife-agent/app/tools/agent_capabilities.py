@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
 
 class ToolAuthorizationError(PermissionError):
@@ -123,17 +123,3 @@ def validate_agent_tools(
         if missing:
             raise ValueError(f"Agent {policy.agent_id} 缺少能力工具: {missing}")
     return policy
-
-
-def select_agent_tools(
-    agent_id: str | None,
-    tools: Iterable[Any],
-) -> list[Any]:
-    """按 Agent 能力面过滤工具；未指定 Agent 时保持旧的统一注册行为。"""
-    items = list(tools)
-    if not agent_id:
-        return items
-    policy = get_agent_tool_policy(agent_id)
-    selected = [tool for tool in items if policy.allows(getattr(tool, "name", ""))]
-    validate_agent_tools(policy.agent_id, selected)
-    return selected

@@ -1,10 +1,10 @@
-"""流式关键路径耗时指标回归测试。"""
+"""流式关键路径耗时指标回归测试（事件出口已改为 LangGraph stream writer）。"""
 
 import asyncio
 
-from app.agents.orchestrator_v2 import OrchestratorV2
 from app.classifier import ClassificationResult
-from app.streaming import EventQueue
+from app.graphs.events import EventSink, TurnTiming
+from app.services.turn_services import TurnServices
 
 
 class _Memory:
@@ -18,23 +18,16 @@ class _Memory:
         return self.messages
 
 
-def _events(queue):
-    async def run():
-        await queue.finish()
-        return [event async for event in queue]
-
-    return asyncio.run(run())
-
-
 def test_done_reports_ttft_response_ready_and_pipeline_timing():
-    orchestrator = OrchestratorV2.__new__(OrchestratorV2)
-    orchestrator._short_term_memory = _Memory()
-    queue = EventQueue(trace_id="trace-timing")
+    services = TurnServices.__new__(TurnServices)
+    services._short_term_memory = _Memory()
+    collected = []
+    sink = EventSink(collected.append, TurnTiming(), trace_id="trace-timing")
 
     async def run():
-        await queue.emit_token("你", step="generate")
-        await queue.emit_token("好", step="generate")
-        await orchestrator.finish_turn(
+        await sink.emit_token("你", step="generate")
+        await sink.emit_token("好", step="generate")
+        await services.finish_turn(
             "thread-1",
             "你好",
             ClassificationResult(
@@ -46,15 +39,28 @@ def test_done_reports_ttft_response_ready_and_pipeline_timing():
                 confidence=1.0,
                 reason="test",
             ),
-            queue,
+            sink,
         )
 
     asyncio.run(run())
-    events = _events(queue)
-    done = next(event for event in events if event.event == "done")
-    timing = done.data["timing_ms"]
+    done = next(event for event in collected if event["event"] == "done")
+    timing = done["data"]["timing_ms"]
 
     assert timing["time_to_first_token_ms"] >= 0
     assert timing["response_ready_ms"] >= timing["time_to_first_token_ms"]
     assert timing["pipeline_ms"] >= timing["response_ready_ms"]
-    assert done.data["response"] == "你好"
+    assert done["data"]["response"] == "你好"
+
+
+def test_event_sink_writes_custom_chunk_shape_expected_by_ui():
+    collected = []
+    sink = EventSink(collected.append, TurnTiming(), trace_id="trace-shape")
+
+    asyncio.run(sink.emit_token("你", step="generate", section="plan"))
+
+    payload = collected[0]
+    assert set(payload) == {"event", "data", "step", "timestamp", "trace_id"}
+    assert payload["event"] == "token"
+    assert payload["data"] == {"token": "你", "section": "plan"}
+    assert payload["step"] == "generate"
+    assert payload["trace_id"] == "trace-shape"

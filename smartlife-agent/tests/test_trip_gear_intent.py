@@ -2,9 +2,11 @@
 
 import asyncio
 
-from app.agents.langgraph_orchestrator import LangGraphOrchestrator
-from app.agents.orchestrator_v2 import OrchestratorV2
 from app.classifier import ClassificationResult
+from app.graphs.context import TurnContext
+from app.graphs.nodes import route
+from app.graphs.subgraphs.trip_gear import build_trip_gear_graph, history_text
+from app.services.turn_services import TurnServices
 from app.trip_gear.intent import is_gear_request
 
 
@@ -40,7 +42,7 @@ def test_gear_plan_routes_to_trip_gear_node():
         }
     }
 
-    assert LangGraphOrchestrator._route(state) == "trip_gear"
+    assert route(state) == "trip_gear"
 
 
 def test_normal_travel_still_routes_to_travel_node():
@@ -53,7 +55,7 @@ def test_normal_travel_still_routes_to_travel_node():
         }
     }
 
-    assert LangGraphOrchestrator._route(state) == "travel"
+    assert route(state) == "travel"
 
 
 class _Classifier:
@@ -78,14 +80,14 @@ class _ShortTermMemory:
 
 
 def test_classify_turn_marks_gear_request_as_travel_gear_plan():
-    orchestrator = OrchestratorV2.__new__(OrchestratorV2)
-    orchestrator.classifier = _Classifier()
-    orchestrator._short_term_memory = _ShortTermMemory()
-    orchestrator._last_classifications = {}
+    services = TurnServices.__new__(TurnServices)
+    services.classifier = _Classifier()
+    services._short_term_memory = _ShortTermMemory()
+    services._last_classifications = {}
     queue = _Queue()
 
     result = asyncio.run(
-        orchestrator.classify_turn("周末去莫干山露营", "thread-1", queue)
+        services.classify("周末去莫干山露营", "thread-1", queue)
     )
 
     assert result.intent == "travel"
@@ -97,30 +99,34 @@ def test_classify_turn_marks_gear_request_as_travel_gear_plan():
     )
 
 
-class _Agent:
-    def __init__(self):
-        self.calls = []
-
-    async def run_streaming(self, message, user_id, queue, chat_history=None):
-        self.calls.append((message, user_id, chat_history))
-        return "ok"
-
-
 class _HistoryStore:
     def get_langchain_messages(self, thread_id, last_n=10):
-        return [{"role": "user", "content": "我有帐篷"}]
+        return [{"role": "user", "content": "周末去莫干山露营两天，我有帐篷和睡袋"}]
 
 
-def test_run_trip_gear_turn_passes_previous_user_turns():
-    orchestrator = OrchestratorV2.__new__(OrchestratorV2)
-    orchestrator._trip_gear_agent = _Agent()
-    orchestrator._short_term_memory = _HistoryStore()
+def test_trip_gear_subgraph_inherits_previous_user_turns():
+    """上一轮用户说过的话必须进入装备子图，助手建议不能算作用户已有。"""
+    history = _HistoryStore().get_langchain_messages("thread-1")
 
-    result = asyncio.run(
-        orchestrator.run_trip_gear_turn("那装备呢", "user-1", "thread-1", None, None)
+    assert history_text(history) == "周末去莫干山露营两天，我有帐篷和睡袋"
+
+    class _Services:
+        def get_chat_history(self, thread_id):
+            return history
+
+    async def planner(facts, constraints):
+        from app.trip_gear.itinerary import fallback_itinerary
+
+        return fallback_itinerary(facts)
+
+    ctx = TurnContext(services=_Services(), trace_id="gear").with_extra(
+        planner=planner,
+        product_search=lambda query="", limit=5: [],
     )
+    result = asyncio.run(build_trip_gear_graph().ainvoke(
+        {"user_message": "那装备清单呢", "user_id": "user-1", "thread_id": "thread-1"},
+        context=ctx,
+    ))
 
-    assert result == "ok"
-    assert orchestrator._trip_gear_agent.calls[0][2] == [
-        {"role": "user", "content": "我有帐篷"}
-    ]
+    assert result["status"] == "ok"
+    assert "已有（上文）" in result["response"]

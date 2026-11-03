@@ -12,10 +12,6 @@ DATA_ROOT = APP_ROOT / "data"
 DEFAULT_DB_PATH = DATA_ROOT / "products.db"
 
 
-def get_database_path() -> Path:
-    return DEFAULT_DB_PATH
-
-
 def _dict_rows(rows: Iterable[sqlite3.Row]) -> List[Dict[str, Any]]:
     return [dict(row) for row in rows]
 

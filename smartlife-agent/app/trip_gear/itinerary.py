@@ -27,10 +27,6 @@ def total_cost(itinerary: Itinerary) -> float:
     )
 
 
-def item_count(itinerary: Itinerary) -> int:
-    return sum(len(day.items) for day in itinerary.days)
-
-
 def _parse_time(value: str) -> Optional[int]:
     match = _TIME_RE.match(str(value or ""))
     if not match:

@@ -3,8 +3,9 @@
 import asyncio
 import threading
 
-from app.agents.langgraph_orchestrator import LangGraphOrchestrator
-from app.agents.orchestrator_v2 import OrchestratorV2
+from app.graphs.context import TurnContext
+from app.graphs.nodes import extract_memory
+from app.services.turn_services import TurnServices
 
 
 class _Queue:
@@ -16,6 +17,14 @@ class _Queue:
 
     async def emit_tool_call(self, tool, detail, step=""):
         self.events.append(("tool_call", {"tool": tool, "input": detail}, step))
+
+
+class _Runtime:
+    """节点只用到 runtime.context 与 runtime.stream_writer。"""
+
+    def __init__(self, context, writer):
+        self.context = context
+        self.stream_writer = writer
 
 
 def test_retrieval_runs_outside_event_loop_thread():
@@ -35,12 +44,12 @@ def test_retrieval_runs_outside_event_loop_thread():
                 "needs": kwargs.get("needs") or {},
             }
 
-    orchestrator = OrchestratorV2.__new__(OrchestratorV2)
-    orchestrator._retrieval_service = _Service()
+    services = TurnServices.__new__(TurnServices)
+    services._retrieval_service = _Service()
     queue = _Queue()
     caller_thread = threading.get_ident()
 
-    result = asyncio.run(orchestrator._smart_retrieve(
+    result = asyncio.run(services._smart_retrieve(
         "查询",
         "sql_only",
         queue,
@@ -48,7 +57,7 @@ def test_retrieval_runs_outside_event_loop_thread():
     ))
 
     assert result["strategy"] == "sql_only"
-    assert orchestrator._retrieval_service.thread_id not in {None, caller_thread}
+    assert services._retrieval_service.thread_id not in {None, caller_thread}
 
 
 def test_memory_extraction_runs_outside_event_loop_thread():
@@ -56,7 +65,7 @@ def test_memory_extraction_runs_outside_event_loop_thread():
         def as_dict(self):
             return {"candidates": [], "status": "no_content"}
 
-    class _Legacy:
+    class _Services:
         def __init__(self):
             self.thread_id = None
 
@@ -64,20 +73,22 @@ def test_memory_extraction_runs_outside_event_loop_thread():
             self.thread_id = threading.get_ident()
             return _Result()
 
-    wrapper = LangGraphOrchestrator.__new__(LangGraphOrchestrator)
-    wrapper.legacy = _Legacy()
-    queue = _Queue()
+    services = _Services()
+    collected = []
+    ctx = TurnContext(services=services, trace_id="mem")
+    runtime = _Runtime(ctx, collected.append)
     caller_thread = threading.get_ident()
 
-    result = asyncio.run(wrapper._extract_memory(
+    result = asyncio.run(extract_memory(
         {
             "user_id": "user-1",
             "session_id": "browser-1",
             "scene": "general",
             "excluded_memories": [],
         },
-        config={"configurable": {"event_queue": queue}},
+        runtime,
     ))
 
     assert result["memory_extraction"]["status"] == "no_content"
-    assert wrapper.legacy.thread_id not in {None, caller_thread}
+    assert services.thread_id not in {None, caller_thread}
+    assert any(event["event"] == "memory_extraction" for event in collected)

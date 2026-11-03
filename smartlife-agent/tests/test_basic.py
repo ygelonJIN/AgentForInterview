@@ -12,7 +12,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 def test_imports():
     """测试导入"""
     try:
-        from app.tools.tool_bundle import ToolBundle
         from app.tools.shopping_tools import ShoppingToolProvider
         from app.tools.travel_tools import TravelToolProvider
         from app.tools.memory_tools import MemoryToolProvider

@@ -10,9 +10,9 @@
 from __future__ import annotations
 
 import re
-from typing import List, Optional, Tuple
+from typing import Iterable, List, Optional, Tuple
 
-from app.agents.task_models import SharedConstraints, extract_shared_constraints
+from app.services.task_models import SharedConstraints, extract_shared_constraints
 from app.trip_gear.models import Constraint, TripFacts
 
 _CN_NUM = {
@@ -144,12 +144,14 @@ def derive_constraints(
 
     constraints: List[Constraint] = []
     if destination:
-        constraints.append(Constraint(text=f"目的地：{destination}", source="用户原话"))
+        constraints.append(Constraint(text=f"目的地：{destination}", source="用户原话", key="destination"))
     if days:
-        constraints.append(Constraint(text=f"天数：{days} 天", source=days_source))
-    constraints.append(Constraint(text=f"人数：{people} 人", source=people_source))
+        constraints.append(Constraint(text=f"天数：{days} 天", source=days_source, key="days"))
+    constraints.append(Constraint(text=f"人数：{people} 人", source=people_source, key="people"))
     if budget is not None:
-        constraints.append(Constraint(text=f"预算：{budget:g} 元", source="用户原话"))
+        constraints.append(
+            Constraint(text=f"预算：{budget:g} 元", source="用户原话", key="budget")
+        )
         constraints.append(
             Constraint(
                 text=(
@@ -158,28 +160,76 @@ def derive_constraints(
                     else "预算口径：不含装备"
                 ),
                 source=scope_source,
+                key="budget_scope",
             )
         )
     if gear_budget is not None:
         constraints.append(
-            Constraint(text=f"装备预算：{gear_budget:g} 元", source="用户原话")
+            Constraint(text=f"装备预算：{gear_budget:g} 元", source="用户原话", key="gear_budget")
         )
     if lodging:
         constraints.append(
             Constraint(
                 text="住宿：露营" if lodging == "camp" else "住宿：酒店/民宿",
                 source="用户原话",
+                key="lodging",
             )
         )
     if transport:
         labels = {"flight": "飞机", "train": "高铁/火车", "drive": "自驾"}
         constraints.append(
-            Constraint(text=f"交通：{labels.get(transport, transport)}", source="用户原话")
+            Constraint(
+                text=f"交通：{labels.get(transport, transport)}",
+                source="用户原话",
+                key="transport",
+            )
         )
     if with_kids:
-        constraints.append(Constraint(text="同行：有儿童", source="用户原话"))
+        constraints.append(Constraint(text="同行：有儿童", source="用户原话", key="with_kids"))
 
     return facts, constraints
+
+
+def merge_inferred(
+    constraints: List[Constraint],
+    inferred: Iterable[dict],
+) -> List[Constraint]:
+    """把模型推断出的约束并进清单（来源标"模型推断"，默认软约束）。
+
+    规则能判定的键不覆盖：规则比模型可靠，重复条目只保留规则那条。
+    """
+    # 只有这些键才代表"同一类约束"，不能重复；"other" 之类只按文本去重。
+    identity_keys = {
+        "destination", "days", "people", "budget", "budget_scope",
+        "gear_budget", "lodging", "transport", "with_kids",
+        "weather", "sleeping_bag_temp", "rain",
+    }
+    known_keys = {item.key for item in constraints if item.key in identity_keys}
+    seen_texts = {item.text.strip() for item in constraints}
+    for raw in inferred or []:
+        if not isinstance(raw, dict):
+            continue
+        text = str(raw.get("text") or "").strip()
+        if len(text) < 2 or text in seen_texts:
+            continue
+        key = str(raw.get("key") or "").strip()
+        # 模型常把 key 写成一句概述，只有命中已知身份键才有校验意义，其余归为 other。
+        if key not in identity_keys:
+            key = "other"
+        if key in identity_keys and key in known_keys:
+            continue
+        constraints.append(
+            Constraint(
+                text=text,
+                source="模型推断",
+                hard=bool(raw.get("hard", False)),
+                key=key,
+            )
+        )
+        seen_texts.add(text)
+        if key in identity_keys:
+            known_keys.add(key)
+    return constraints
 
 
 def enrich_weather(
@@ -194,6 +244,8 @@ def enrich_weather(
                 text="天气：未获取到可验证数据，按通用情况准备",
                 source="降级",
                 hard=False,
+                status="unverified",
+                key="weather",
             )
         )
         return constraints
@@ -208,18 +260,19 @@ def enrich_weather(
     facts.min_temp_c = min_temp
     facts.rain_probability = rain
     facts.weather_summary = summary
-    constraints.append(Constraint(text=f"天气：{summary}", source="天气工具"))
+    constraints.append(Constraint(text=f"天气：{summary}", source="天气工具", key="weather"))
 
     if facts.is_camping and min_temp is not None:
         constraints.append(
             Constraint(
                 text=f"睡袋温标 ≤ {min_temp - 5:.0f}℃",
                 source="规则推导（夜间温度留 5℃ 余量）",
+                key="sleeping_bag_temp",
             )
         )
     if rain is not None and rain >= 40:
         constraints.append(
-            Constraint(text=f"降水概率：{rain:g}%", source="天气工具")
+            Constraint(text=f"降水概率：{rain:g}%", source="天气工具", key="rain")
         )
     return constraints
 

@@ -20,3 +20,6 @@ smartlife-agent/data/*.backup-*
 smartlife-agent/chroma_db.backup*/
 smartlife-agent/chroma_db.rebuild-*/
 smartlife-agent/data/evaluation/ab_events.db
+
+# LangGraph CLI 本地运行缓存
+smartlife-agent/.langgraph_api/

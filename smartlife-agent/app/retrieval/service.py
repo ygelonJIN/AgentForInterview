@@ -10,12 +10,7 @@ import re
 import threading
 import time
 from collections import OrderedDict
-from concurrent.futures import (
-    Future,
-    ThreadPoolExecutor,
-    TimeoutError as FutureTimeoutError,
-    wait,
-)
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError, wait
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from app.observability import record_trace

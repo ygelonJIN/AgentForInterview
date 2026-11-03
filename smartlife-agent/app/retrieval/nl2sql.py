@@ -7,26 +7,30 @@ NL2SQL 模块 - 自然语言到 SQL 转换
 3. 用户术语到数据库分类的映射
 4. 更好的模糊匹配
 """
-import sqlite3
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import Dict, List, Any, Optional
 from langchain_core.prompts import ChatPromptTemplate
 from app.config import create_small_llm
-from app.retrieval.sql_safety import SafeSQLExecutor, SQLSafetyError
+from app.retrieval.sql_safety import SafeSQLExecutor
+from app.llm_json import extract_json_object, message_text
 from pydantic import BaseModel, Field
 
 class SQLQuery(BaseModel):
     """NL2SQL 输出"""
     sql: str = Field(description="生成的 SQL 查询")
-    explanation: str = Field(description="查询解释")
+    explanation: str = Field(default="", description="查询解释")
     needs_rag: list[str] = Field(default=[], description="需要 RAG 检索的语义条件")
+    params: list[Any] = Field(
+        default_factory=list,
+        description="SQL 里若使用 ? 占位符，按出现顺序给出参数值；全用字面量时留空",
+    )
 
 class NL2SQLChain:
     """NL2SQL 链"""
 
-    MODEL_ENRICHMENT_TIMEOUT_SECONDS = 2.0
+    MODEL_ENRICHMENT_TIMEOUT_SECONDS = 8.0
     
     DB_SCHEMA = """
 数据库表结构：
@@ -125,11 +129,14 @@ SQL: SELECT * FROM products WHERE category = '电子' AND subcategory = '手机'
 SQL: SELECT * FROM products WHERE category = '户外' AND waterproof = 1
 
 用户："我想买一个背包，预算300元"
-SQL: SELECT * FROM products WHERE name LIKE '%背包%' AND price <= 300"""),
+SQL: SELECT * FROM products WHERE name LIKE '%背包%' AND price <= 300
+
+要求：优先把条件写成字面量。若使用 ? 占位符，必须把对应值按顺序放进 params 数组，
+否则执行时会因为参数个数不匹配而失败。"""),
             ("user", "{user_query}")
         ])
         
-        self.chain = self.prompt | self.llm.with_structured_output(SQLQuery)
+        self.chain = self.prompt | self.llm
     
     def _expand_terms(self, user_query: str) -> List[str]:
         """扩展用户术语为数据库中的具体名称"""
@@ -262,10 +269,22 @@ SQL: SELECT * FROM products WHERE name LIKE '%背包%' AND price <= 300"""),
             unique.append(product)
         return unique, duplicates
 
+    @staticmethod
+    def _ensure_sql_query(value: Any) -> SQLQuery:
+        """chain 现在返回 AIMessage；测试里注入的假链直接返回 SQLQuery，两种都认。"""
+        if isinstance(value, SQLQuery):
+            return value
+        if isinstance(value, dict):
+            return SQLQuery.model_validate(value)
+        return SQLQuery.model_validate(extract_json_object(message_text(value)))
+
+    def _invoke_chain(self, payload: Dict[str, Any]) -> SQLQuery:
+        return self._ensure_sql_query(self.chain.invoke(payload))
+
     def _invoke_model_enrichment(self, payload: Dict[str, Any]) -> SQLQuery:
         """关键词结果 已有权威商品时，给 NL2SQL 增强一个很短的总预算。"""
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nl2sql-enrichment")
-        future = executor.submit(self.chain.invoke, payload)
+        future = executor.submit(self._invoke_chain, payload)
         try:
             return future.result(timeout=self.MODEL_ENRICHMENT_TIMEOUT_SECONDS)
         except FutureTimeoutError as exc:
@@ -313,7 +332,7 @@ SQL: SELECT * FROM products WHERE name LIKE '%背包%' AND price <= 300"""),
                 if keyword_results:
                     sql_result = self._invoke_model_enrichment({"user_query": user_query})
                 else:
-                    sql_result = self.chain.invoke({"user_query": user_query})
+                    sql_result = self._invoke_chain({"user_query": user_query})
             except Exception as exc:
                 last_error = exc
                 model_error = f"{type(exc).__name__}: {exc}"
@@ -330,7 +349,9 @@ SQL: SELECT * FROM products WHERE name LIKE '%背包%' AND price <= 300"""),
             model_explanation = sql_result.explanation
             model_needs_rag = list(sql_result.needs_rag or [])
             try:
-                execution = self.sql_executor.execute(sql_result.sql)
+                execution = self.sql_executor.execute(
+                    sql_result.sql, tuple(getattr(sql_result, "params", None) or ())
+                )
                 model_results = execution["rows"]
                 model_execution_succeeded = True
             except Exception as exc:

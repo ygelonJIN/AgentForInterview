@@ -12,7 +12,7 @@ SmartLife Agent 是一个面向电商导购、旅行规划、客服与通用任�
 
 - **混合语义路由**：关键词快筛、上下文沿用、小模型语义分类和主模型仲裁共同判断意图；选择购物、旅游、客服或通用 Agent，并决定 ReAct / Plan & Execute。明确的电商+旅游复合任务会并行使用两个 Agent。
 - **行程约束与装备协同**：把用户需求派生为带来源、硬度、状态的约束清单；生成逐日行程后推导装备清单，从对话/上文/长期记忆判断已有装备，只对缺口检索商品，并做预算、时间与装备齐全性校验。
-- **智能体编排**：LangGraph 按 `intent` 选择场景 Agent，按 `route` 选择执行范式，按 `retrieval` 选择 SQL、RAG 或混合检索，按 `sub_intent=gear_plan` 选择行程+装备链路。
+- **纯 LangGraph 编排**：顶层图按 `intent` 选场景、按 `route` 选执行范式、按 `retrieval` 选 SQL/RAG/混合、按 `sub_intent=gear_plan` 走行程+装备链路。依赖注入走 `context_schema` + `Runtime.context`，流式走 `astream(stream_mode=["custom","tasks"])`，节点超时/重试走原生 `timeout` / `retry_policy`，复合意图用并行边 + reducer 归约。详见 `smartlife-agent/docs/graph-architecture.md`。
 - **混合检索**：结合 NL2SQL、RAG、向量召回和 Cross-Encoder Rerank，分别处理结构化与非结构化数据。
 - **Agent 工具隔离**：电商、旅游和通用 Agent 拥有独立 Tool Registry，模型只能发现当前 Agent 的工具。
 - **MCP 协议服务**：支持 stdio 与 Streamable HTTP，可把每个 Agent 作为独立 MCP 能力面即插即用；跨 Agent 工具在注册、发现和执行层都会被拒绝。
@@ -20,6 +20,7 @@ SmartLife Agent 是一个面向电商导购、旅行规划、客服与通用任�
 - **数据导入**：支持商品、订单、用户、评价等 CSV 数据，以及 PDF、DOCX、Excel 和 Markdown 文档导入。
 - **可靠性机制**：包含超时、重试、熔断、缓存、节点执行策略和结果校验。
 - **可观测性**：提供执行日志、步骤时间线、Trace、Token 统计和敏感信息脱敏。
+- **统一设计 token 与主题**：`app/ui/tokens.py` 用 94 个 token 管理颜色、字体、间距、形状与布局，`app/ui/theme.py` 的样式只消费 token，`.streamlit/config.toml` 对齐控件底座；行程与装备结果由 `plan_result` 结构化事件渲染成约束清单、逐日行程、装备清单、预算占用、校验结果五块面板，Markdown 原文默认收起可展开。
 - **评测体系**：支持 RAG 评测、Rerank A/B、端到端并发基准和性能基线校验。
 - **敏感操作保护**：支付、退款和下单不在当前能力范围；记忆写入默认采用显式确认或审批机制。
 
@@ -87,7 +88,7 @@ derive（约束派生）→ plan（逐日行程）→ gear（装备推导）
       → repair（有限修复）→ finalize（输出）
 ```
 
-该链路的约束、行程、装备字段与规则见 `smartlife-agent/docs/trip-gear.md`。
+该链路的约束、行程、装备字段与规则见 `smartlife-agent/docs/trip-gear.md`；控制流实现在 `app/graphs/subgraphs/trip_gear.py`。
 
 路由字段承担不同职责：
 
@@ -480,6 +481,7 @@ venv312/bin/python scripts/run_e2e_benchmark.py \
 .
 ├── project-design-v5.md
 ├── smartlife-agent/
+│   ├── .streamlit/              # Streamlit 主题配置（与 design token 对齐）
 │   ├── app/
 │   │   ├── agents/              # ReAct、Plan & Execute 和场景智能体
 │   │   ├── evaluation/          # RAG、Rerank、A/B 与端到端评测
@@ -559,7 +561,7 @@ python data/init_db.py
 
 ## 延伸文档
 
-- `project-design-v5.md`：完整系统设计、技术方案和实现说明。
+- `project-design-v5.md`：历史设计稿 v5，**已过时**，仅留档，不作为实现依据；现状看本文件上方架构与实现章节。
 - `smartlife-agent/QUICKSTART.md`：详细环境配置、故障排查和评测说明。
 - `smartlife-agent/docs/trip-gear.md`：行程约束、装备协同、校验修复的实现说明。
 - `smartlife-agent/data/evaluation/README.md`：评测数据格式和运行方法。

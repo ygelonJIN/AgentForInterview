@@ -2,7 +2,8 @@
 
 import asyncio
 
-from app.trip_gear.graph import TripGearGraph
+from app.graphs.context import TurnContext
+from app.graphs.subgraphs.trip_gear import build_trip_gear_graph
 from app.trip_gear.models import DayPlan, GearItem, Itinerary, ItineraryItem
 
 PRICES = {
@@ -55,9 +56,25 @@ def _search(query: str = "", limit: int = 5):
     ]
 
 
-def _run(message: str, history_text: str = "", **kwargs):
-    graph = TripGearGraph(product_search=_search, **kwargs)
-    return asyncio.run(graph.run(message, "user-1", history_text=history_text))
+class _Services:
+    """装备子图只需要历史；其余依赖通过 context.extra 注入。"""
+
+    def __init__(self, chat_history=None):
+        self._history = list(chat_history or [])
+
+    def get_chat_history(self, thread_id):
+        return self._history
+
+
+def _run(message: str, history_text: str = "", chat_history=None, **kwargs):
+    extra = {"product_search": _search}
+    extra.update(kwargs)
+    services = _Services(chat_history)
+    ctx = TurnContext(services=services, trace_id="trip-gear").with_extra(**extra)
+    payload = {"user_message": message, "user_id": "user-1", "thread_id": "trip-gear"}
+    if history_text:
+        payload["history_text"] = history_text
+    return asyncio.run(build_trip_gear_graph().ainvoke(payload, context=ctx))
 
 
 def test_full_chain_renders_constraints_itinerary_and_gear():
@@ -122,9 +139,41 @@ def test_over_budget_repair_skips_optional_gear():
 def test_missing_core_fields_are_asked_back():
     state = _run("帮我列个装备清单")
 
-    assert state["status"] == "needs_info"
-    assert "目的地" in state["response"]
-    assert "天数" in state["response"]
+    interrupts = state.get("__interrupt__") or []
+    assert interrupts, "缺少核心信息时应中断并追问"
+    payload = interrupts[0].value
+    assert payload["missing"] == ["目的地", "天数"]
+    assert "目的地" in payload["question"]
+    assert "天数" in payload["question"]
+
+
+def test_clarify_resume_fills_missing_fields_and_continues():
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.types import Command
+
+    graph = build_trip_gear_graph(checkpointer=InMemorySaver())
+    cfg = {"configurable": {"thread_id": "trip-gear-resume"}}
+    ctx = TurnContext(
+        services=_Services(None),
+        trace_id="trip-gear",
+    ).with_extra(product_search=_search, planner=_Planner("到达杭州"))
+
+    first = asyncio.run(
+        graph.ainvoke(
+            {"user_message": "帮我列个装备清单", "user_id": "user-1", "thread_id": "trip-gear-resume"},
+            cfg,
+            context=ctx,
+        )
+    )
+    assert first.get("__interrupt__"), "第一轮应停下等补充"
+
+    second = asyncio.run(
+        graph.ainvoke(Command(resume="去杭州玩两天"), cfg, context=ctx)
+    )
+    assert second["status"] == "ok"
+    assert "## 行程" in second["response"]
+    assert "目的地：杭州" in second["response"]
+    assert "天数：2 天" in second["response"]
 
 
 def test_previous_turn_supplies_owned_items_and_destination():
@@ -135,7 +184,8 @@ def test_previous_turn_supplies_owned_items_and_destination():
     )
 
     assert state["status"] == "ok"
-    assert "目的地：莫干山（上文）" in state["response"]
+    assert "目的地：莫干山" in state["response"]
+    assert "来源：上文" in state["response"]
     assert "已有（上文）" in state["response"]
 
 

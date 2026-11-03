@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 from datetime import date
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -49,14 +49,6 @@ class BranchOutcome(BaseModel):
     @property
     def ok(self) -> bool:
         return self.status == "ok" and not self.error
-
-
-class CompositeOutcome(BaseModel):
-    shopping: BranchOutcome
-    travel: BranchOutcome
-    merged_response: str
-    shared_constraints: SharedConstraints = Field(default_factory=SharedConstraints)
-    synthesis_status: str = "fallback"
 
 
 _DESTINATIONS = (

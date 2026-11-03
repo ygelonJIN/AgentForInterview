@@ -1,18 +1,18 @@
+"""旅行领域服务。
+
+只提供**能力**：prompt、规划/审核模型调用、工具执行、上下文构建、轻量对话。
+控制流（需求抽取 → 证据 → 计划 → 审核 → 修订）在
+``app.graphs.subgraphs.travel`` 的图里。
 """
-Travel Agent - Plan & Execute 行程规划
-支持同步 + 异步流式两种调用方式
-"""
-import asyncio
 import os
 import re
 from datetime import date
-from functools import partial
-from typing import Dict, List, Any, Optional, AsyncGenerator
+from typing import Dict, List, Any, Optional
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 from app.config import create_llm, create_small_llm
 from app.memory.long_term import LongTermMemory
-from app.agents.travel_graph import TravelPlanGraph
+from app.llm_json import ainvoke_json, invoke_json
 from app.observability import extract_model_usage, timed_span
 from app.streaming import EventType
 from app.tools.travel_executor import TravelToolExecutor
@@ -25,18 +25,8 @@ class TravelReflection(BaseModel):
     suggestions: List[str] = Field(default_factory=list)
 
 
-class TravelPlan(BaseModel):
-    """旅行计划"""
-    destination: str = Field(description="目的地")
-    days: int = Field(description="天数")
-    budget: float = Field(description="预算")
-    itinerary: List[Dict[str, Any]] = Field(description="每日行程")
-    total_cost: float = Field(description="总费用")
-    tips: List[str] = Field(description="旅行建议")
-
-
-class TravelAgent:
-    """旅游 Agent - Plan & Execute 模式"""
+class TravelService:
+    """旅行领域服务：prompt、规划/审核调用、工具执行、上下文构建。"""
 
     def __init__(self, model_name: str = None):
         self.model_name = model_name
@@ -125,9 +115,9 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
 
     async def get_weather_context(self, user_input: str) -> str:
         """获取真实天气证据；没有真实数据时返回禁止猜测的明确状态。"""
-        from app.agents.travel_graph import TravelPlanGraph
+        from app.graphs.subgraphs.travel import extract_requirements
 
-        requirements = TravelPlanGraph._extract_requirements(user_input)
+        requirements = extract_requirements(user_input)
         destination = str(requirements.get("destination") or "").strip()
         if not destination:
             return ""
@@ -253,13 +243,17 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
         llm=None,
         trace_id: str = "",
     ):
-        chain = self.reflect_prompt | (llm or getattr(self, "reflect_llm", self.llm)).with_structured_output(TravelReflection)
+        reflect_llm = llm or getattr(self, "reflect_llm", self.llm)
         with timed_span(
             "model.travel_reflect_usage",
             trace_id=trace_id,
         ) as measurement:
-            result = await chain.ainvoke({"original_request": request, "plan": plan})
-            measurement.add_attributes(extract_model_usage(result))
+            result = await ainvoke_json(
+                reflect_llm,
+                self.reflect_prompt,
+                TravelReflection,
+                {"original_request": request, "plan": plan},
+            )
         return result
 
     async def _planner_sync_adapter(
@@ -282,8 +276,12 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
         return result.content
 
     async def _reflector_sync_adapter(self, request: str, plan: str):
-        chain = self.reflect_prompt | getattr(self, "reflect_llm", self.llm).with_structured_output(TravelReflection)
-        return chain.invoke({"original_request": request, "plan": plan})
+        return invoke_json(
+            getattr(self, "reflect_llm", self.llm),
+            self.reflect_prompt,
+            TravelReflection,
+            {"original_request": request, "plan": plan},
+        )
 
     async def _execute_plan_step(self, step: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, Any]:
         """执行真实天气和路线工具。"""
@@ -299,174 +297,6 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
             flags=re.DOTALL,
         ).strip()
 
-    # ========== 同步接口（兼容旧代码）==========
-
-    def plan_trip(
-        self,
-        user_input: str,
-        user_id: str = "user_001",
-        chat_history: Optional[List[Any]] = None,
-    ) -> Dict[str, Any]:
-        """同步规划旅行 - 与流式入口共享 TravelPlanGraph。"""
-        context = self._build_plan_context(user_input, user_id, chat_history)
-        graph = TravelPlanGraph(
-            planner=self._planner_sync_adapter,
-            reflector=self._reflector_sync_adapter,
-            executor=self._execute_plan_step,
-            max_revisions=3,
-        )
-        state = graph.run(
-            user_input,
-            user_id,
-            context,
-            thread_id=f"travel:{user_id}:sync",
-            chat_history=chat_history,
-        )
-        return {
-            "plan": self._remove_revision_notes(state["final_plan"]),
-            "agent": "travel",
-            "memories_used": 1 if context else 0,
-            "iterations": state["revision_count"] + 1,
-            "plan_versions": state["plan_versions"],
-            "evidence_steps": state.get("evidence_steps", []),
-            "reflection": state["reflection"],
-            "status": state["status"],
-        }
-
-    def chat(self, user_input: str, user_id: str = "user_001") -> Dict[str, Any]:
-        """同步旅游问答（非规划类）"""
-        guide_context = self._read_local_guides(user_input)
-        memory_context = self._get_memory_context(user_id, query=user_input)
-        parts = [user_input]
-        if guide_context:
-            parts.append("【参考攻略】\n" + guide_context)
-        if memory_context:
-            parts.append(memory_context)
-        full_input = "\n\n".join(parts)
-
-        messages = self.chat_prompt.format_messages(input=full_input)
-        response = self.llm.invoke(messages)
-
-        return {
-            "response": response.content,
-            "agent": "travel",
-            "memories_used": 1 if memory_context else 0
-        }
-
-    # ========== 异步流式接口 ==========
-
-    async def plan_trip_streaming(
-        self,
-        user_input: str,
-        user_id: str = "user_001",
-        queue=None,
-        chat_history: Optional[List[Any]] = None,
-        constraints: str = "",
-    ) -> str:
-        """
-        异步流式规划旅行
-
-        Args:
-            user_input: 用户输入
-            user_id: 用户ID
-            queue: EventQueue 事件队列
-
-        Returns:
-            str: 最终计划文本
-        """
-        if queue:
-            await queue.emit(EventType.STEP, {
-                "step": 2,
-                "total": 4,
-                "name": "资料检索与准备",
-                "description": "正在读取本地攻略、当前需求和长期跨场景 MD 记忆",
-                "status": "active",
-            }, step="retrieval")
-        context = self._build_plan_context(
-            user_input,
-            user_id,
-            chat_history,
-            constraints=constraints,
-        )
-        request_llm = create_llm(getattr(self, "model_name", None))
-        reflect_llm = getattr(self, "reflect_llm", request_llm)
-
-        async def on_token(token: str, stage: str):
-            if queue:
-                await queue.emit_token(token, step=stage)
-
-        emitted_steps = {2} if queue else set()
-
-        async def emit_step3(description: str, status: str):
-            # 一个步骤只广播一次 STEP，内部阶段变化由 token/reset 事件表达，
-            # 避免时间线重复插入同一个步骤。
-            if queue and 3 not in emitted_steps:
-                emitted_steps.add(3)
-                await queue.emit(EventType.STEP, {
-                    "step": 3,
-                    "total": 4,
-                    "name": "生成并审核回复",
-                    "description": description,
-                    "status": status,
-                }, step="generate")
-
-        async def on_event(event: str, data: Dict[str, Any]):
-            if not queue:
-                return
-            if event == "execution_log":
-                await queue.emit_execution_log({
-                    "event": event,
-                    "data": data,
-                    "step": data.get("step", ""),
-                })
-            elif event == "plan_started":
-                revision = int(data.get("revision", 0) or 0)
-                if revision:
-                    await emit_step3(f"发现严重硬错误，正在修订（第 {revision + 1}/3 次）", "active")
-                else:
-                    await emit_step3("正在生成完整行程，并准备宽松硬错误检查", "active")
-            elif event == "steps_built":
-                await emit_step3("只核对预算总额、天数、路线和明显无法执行的硬错误", "active")
-            elif event == "steps_executed":
-                await emit_step3("严重硬错误检查完成", "active")
-            elif event == "reflection":
-                if data.get("is_satisfactory"):
-                    await emit_step3("宽松审核通过，无严重硬错误", "completed")
-                else:
-                    await emit_step3("发现严重硬错误，准备按需修订", "active")
-            elif event == "revision":
-                await queue.emit("response_reset", {}, step="revise")
-                count = int(data.get("revision_count", 1) or 1)
-                await emit_step3(f"正在修订严重硬错误（第 {count}/3 次）", "active")
-            elif event == "finalized":
-                await emit_step3("最终行程已生成并通过宽松审核", "completed")
-            elif event == "clarification":
-                await queue.emit_token(data.get("message", ""), step="clarify")
-
-        graph = TravelPlanGraph(
-            planner=partial(
-                self._planner_streaming,
-                llm=request_llm,
-                trace_id=f"travel:{user_id}:stream",
-            ),
-            reflector=partial(
-                self._reflector_streaming,
-                llm=reflect_llm,
-                trace_id=f"travel:{user_id}:stream",
-            ),
-            executor=self._execute_plan_step,
-            on_event=on_event,
-            on_token=on_token,
-            max_revisions=3,
-        )
-        state = await graph.run_streaming(
-            user_input,
-            user_id,
-            context,
-            thread_id=f"travel:{user_id}:stream",
-            chat_history=chat_history,
-        )
-        return self._remove_revision_notes(state["final_plan"])
 
     async def chat_streaming(
         self,
@@ -480,7 +310,7 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
         Args:
             user_input: 用户输入
             user_id: 用户ID
-            queue: EventQueue 事件队列
+            queue: 事件出口（EventSink，由调用方节点提供）
 
         Returns:
             str: 回复文本

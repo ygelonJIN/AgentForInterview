@@ -299,6 +299,10 @@ _CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
 
 重要：只要涉及找商品、推荐商品、查价格，必须用 "mixed" 或 "sql_only"，绝不能用 "none"！
 
+sub_intent 取值：
+- 用户要的是"出行清单/装备清单/带什么东西/行程加装备一起规划"时，sub_intent 必须写 "gear_plan"；
+- 其他情况写一句不超过 8 字的简述（例如"商品比价"、"订单售后"）。
+
 严格返回JSON，不要其他文字：
 {{"route": "...", "intent": "...", "intents": ["..."], "primary_intent": "...", "intent_scores": {{"...": 0.X}}, "sub_intent": "...", "retrieval": "...", "confidence": 0.X, "reason": "..."}}"""),
             ("user", "对话上下文：{context}\n\n当前消息：{message}")
@@ -381,7 +385,9 @@ class UnifiedClassifier:
     @property
     def chain(self):
         if self._chain is None:
-            self._chain = _CLASSIFY_PROMPT | self.llm.with_structured_output(ClassificationResult)
+            # 不用 with_structured_output：部分 OpenAI 兼容服务不支持 response_format
+            # (json_schema) 会直接 400。提示词已要求严格 JSON，输出由 _result_data 解析。
+            self._chain = _CLASSIFY_PROMPT | self.llm
         return self._chain
 
     @property
@@ -393,7 +399,7 @@ class UnifiedClassifier:
     @property
     def arbiter_chain(self):
         if self._arbiter_chain is None:
-            self._arbiter_chain = _CLASSIFY_ARBITER_PROMPT | self.arbiter_llm.with_structured_output(ClassificationResult)
+            self._arbiter_chain = _CLASSIFY_ARBITER_PROMPT | self.arbiter_llm
         return self._arbiter_chain
 
     @staticmethod
@@ -509,10 +515,19 @@ class UnifiedClassifier:
             return result.model_dump()
         if isinstance(result, dict):
             return result
+        # 注意顺序：AIMessage 也是 pydantic 模型（有 model_dump），必须先按消息处理，
+        # 否则会把 {content, response_metadata, ...} 当成分类结果，字段全缺。
+        content = getattr(result, "content", None)
+        if isinstance(content, (str, list)):
+            if isinstance(content, list):
+                content = "".join(
+                    part.get("text", "") if isinstance(part, dict) else str(part)
+                    for part in content
+                )
+            return _parse_json_response(content)
         if hasattr(result, "model_dump"):
             return result.model_dump()
-        content = getattr(result, "content", result)
-        return _parse_json_response(content)
+        return _parse_json_response(str(result))
 
     def _arbiter_values(
         self,
@@ -756,7 +771,7 @@ class UnifiedClassifier:
     async def aclassify_streaming(
         self,
         message: str,
-        queue: 'EventQueue',
+        queue: 'EventSink',
         history: Optional[List[Dict[str, Any]]] = None,
         previous: Optional[ClassificationResult] = None,
     ) -> ClassificationResult:
@@ -894,7 +909,3 @@ def get_classifier() -> UnifiedClassifier:
     if _classifier is None:
         _classifier = UnifiedClassifier()
     return _classifier
-
-def classify_message(message: str) -> ClassificationResult:
-    """快速分类"""
-    return get_classifier().classify(message)

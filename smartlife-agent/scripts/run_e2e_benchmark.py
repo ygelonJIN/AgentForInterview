@@ -108,9 +108,9 @@ async def run(args) -> Dict[str, Any]:
     recorder.clear()
 
     if args.mode == "chat":
-        from app.agents.langgraph_orchestrator import get_langgraph_orchestrator
+        from app.graphs.orchestrator import get_turn_graph
 
-        orchestrator = get_langgraph_orchestrator()
+        orchestrator = get_turn_graph()
         runner = BenchmarkRunner(lambda workload: _run_chat_turn(orchestrator, workload))
     else:
         from app.retrieval.service import RetrievalService

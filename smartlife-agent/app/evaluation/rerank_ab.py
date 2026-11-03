@@ -3,16 +3,10 @@
 from __future__ import annotations
 
 import hashlib
-import math
 from dataclasses import asdict, dataclass
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
+from typing import Any, Callable, Dict, Mapping, Optional, Sequence
 
-from app.evaluation.rerank_eval import (
-    RankingCase,
-    calculate_metrics,
-    evaluate_strategy,
-    rank_vector,
-)
+from app.evaluation.rerank_eval import RankingCase, calculate_metrics, rank_vector
 
 
 Ranker = Callable[[RankingCase], Sequence[Mapping[str, Any]]]

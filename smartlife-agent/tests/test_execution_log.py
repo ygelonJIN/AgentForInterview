@@ -1,72 +1,14 @@
 """可见执行日志、重试事件和循环/分支记录测试。"""
 
 import asyncio
-import json
 from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
 
-from app.agents.shopping_graph import ShoppingGraph
-from app.agents.travel_graph import TravelPlanGraph
-from app.execution_log import build_execution_log, run_policy_node
-from app.reliability import NodePolicy, RetryableError, RetryPolicy
-from app.streaming import EventQueue
-
-
-def _sse_events(queue):
-    async def collect():
-        await queue.finish()
-        return [
-            json.loads(line.removeprefix("data: "))
-            async for line in queue.to_sse()
-        ]
-
-    return asyncio.run(collect())
-
-
-def test_policy_run_emits_limits_attempts_and_retry_schedule():
-    queue = EventQueue(trace_id="trace-policy")
-    policy = NodePolicy(
-        timeout_seconds=2,
-        retry_policy=RetryPolicy(max_attempts=2, base_delay_seconds=0, max_delay_seconds=0),
-        retryable_exceptions=(RetryableError,),
-    )
-    calls = []
-
-    async def operation(attempt):
-        calls.append(attempt)
-        if attempt == 1:
-            raise RetryableError("temporary")
-        return "ok"
-
-    result = asyncio.run(run_policy_node(
-        policy,
-        operation,
-        queue=queue,
-        graph="test",
-        node="classify",
-        step="classify",
-        branch="shopping",
-    ))
-
-    events = _sse_events(queue)
-    logs = [event["data"] for event in events if event["event"] == "execution_log"]
-    assert result == "ok"
-    assert calls == [1, 2]
-    assert logs[0]["kind"] == "node_started"
-    assert logs[0]["details"]["retry_max_attempts"] == 2
-    assert logs[0]["details"]["timeout_seconds"] == 2
-    assert any(
-        item["kind"] == "attempt_failed" and item["details"]["will_retry"] is True
-        for item in logs
-    )
-    assert any(
-        item["kind"] == "retry_scheduled" and item["details"]["next_attempt"] == 2
-        for item in logs
-    )
-    assert logs[-1]["kind"] == "node_succeeded"
-    assert logs[-1]["attempt"] == 2
-    assert logs[-1]["branch"] == "shopping"
+from app.execution_log import build_execution_log
+from app.graphs.context import TurnContext
+from app.graphs.subgraphs.shopping import build_shopping_graph
+from app.graphs.subgraphs.travel import build_travel_plan_graph
 
 
 def test_travel_graph_logs_branch_revision_and_step_iterations():
@@ -98,22 +40,34 @@ def test_travel_graph_logs_branch_revision_and_step_iterations():
             }],
         }
 
-    graph = TravelPlanGraph(
+    class _TravelService:
+        def _build_plan_context(self, *_args, **_kwargs):
+            return "上下文"
+
+        @staticmethod
+        def _remove_revision_notes(plan):
+            return plan
+
+    class _Services:
+        travel_service = _TravelService()
+        llm = None
+
+        def get_chat_history(self, thread_id):
+            return []
+
+    ctx = TurnContext(services=_Services(), trace_id="trace-travel").with_extra(
         planner=planner,
         reflector=reflector,
         executor=executor,
-        on_event=lambda event, data: events.append((event, data)),
         max_revisions=1,
-    )
+    ).bind_writer(events.append)
 
-    state = asyncio.run(graph.run_streaming(
-        "上海2天预算500元",
-        "user-1",
-        "",
-        thread_id="trace-travel",
+    state = asyncio.run(build_travel_plan_graph().ainvoke(
+        {"user_message": "上海2天预算500元", "user_id": "user-1", "thread_id": "trace-travel"},
+        context=ctx,
     ))
 
-    logs = [data for event, data in events if event == "execution_log"]
+    logs = [event["data"] for event in events if event["event"] == "execution_log"]
     assert state["status"] == "approved"
     assert any(
         item["kind"] == "branch_selected" and item["branch"] == "build_steps"
@@ -237,7 +191,7 @@ def test_shopping_graph_logs_retrieval_degradation_and_single_repair():
         async def plan_shopping_retrieval(self, _message, _classification, _queue):
             return {"needs_product": True, "needs_review": True}, "mixed"
 
-        async def retrieve_shopping_context(self, _message, _strategy, _needs, _queue):
+        async def retrieve_shopping_context(self, _message, _strategy, _needs, _queue, user_id=None):
             return {
                 "source_status": {"sql": "error", "rag": "ok"},
                 "source_errors": {"sql": "OpenAIConnectionError: Connection error."},
@@ -258,18 +212,20 @@ def test_shopping_graph_logs_retrieval_degradation_and_single_repair():
             if "真实跑鞋" not in response:
                 raise ValueError("必须引用真实商品")
 
-    queue = EventQueue(trace_id="trace-shopping")
-    graph = ShoppingGraph(Legacy())
+    collected = []
+    ctx = TurnContext(services=Legacy(), trace_id="trace-shopping").bind_writer(collected.append)
 
-    response = asyncio.run(graph.run_streaming(
-        "推荐跑鞋",
-        "user-1",
-        "user-1:shopping:test",
-        {"intent": "shopping", "route": "react"},
-        queue,
+    result = asyncio.run(build_shopping_graph().ainvoke(
+        {
+            "user_message": "推荐跑鞋",
+            "user_id": "user-1",
+            "thread_id": "user-1:shopping:test",
+            "classification": {"intent": "shopping", "route": "react"},
+        },
+        context=ctx,
     ))
-    events = _sse_events(queue)
-    logs = [event["data"] for event in events if event["event"] == "execution_log"]
+    response = result["response"]
+    logs = [event["data"] for event in collected if event["event"] == "execution_log"]
 
     assert response == "推荐真实跑鞋"
     degradation = next(item for item in logs if item["kind"] == "degradation")

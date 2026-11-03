@@ -1,0 +1,7 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "turn": "./app/graphs/studio_entry.py:turn_graph"
+  },
+  "env": ".env"
+}
