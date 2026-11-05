@@ -135,7 +135,8 @@ derive → plan → gear → owned → shop → verify ─┬→ repair（自动
 
 ## 商品目录
 
-`data/products.db` 是**自建目录**，不是外部电商数据：
+`data/products.db` 是**自建目录**，不是外部电商数据；它不进版本库，按 README「初始化示例数据库」
+的四条命令重建（init_db → migrate_product_specs → add_outdoor_products → generate_catalog）。
 
 | 来源 | 数量 | 说明 |
 |---|---|---|

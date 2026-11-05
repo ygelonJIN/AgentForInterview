@@ -124,9 +124,16 @@ pip install -r requirements.lock -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 ### 4. 初始化示例数据库
 
+商品库不进版本库（体积会随目录扩大），首次运行按下面四步重建：
+
 ```bash
-python data/init_db.py
+python data/init_db.py                    # 种子商品、评价、订单、用户
+python scripts/migrate_product_specs.py   # 加 specs / lead_time_days 列并回填
+python scripts/add_outdoor_products.py    # 补户外品类（防潮垫、头灯等）
+python scripts/generate_catalog.py        # 生成 2000 SKU + 10000 条评价（零 token）
 ```
+
+重建后约 2036 个 SKU。四个脚本都可重复执行：按名称判重，改库前自动备份。
 
 已有 `data/products.db` 时请勿重复初始化。确需重建时可执行：
 

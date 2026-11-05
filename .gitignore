@@ -12,6 +12,10 @@ smartlife-agent/.env
 smartlife-agent/.env.*
 *.pem
 *.key
+# 商品库：由 data/init_db.py + scripts/migrate_product_specs.py +
+# scripts/add_outdoor_products.py + scripts/generate_catalog.py 重建。
+# 体积会随目录扩大（当前 2 MB），不进版本库。
+smartlife-agent/data/products.db
 smartlife-agent/data/checkpoints.db
 smartlife-agent/data/conversations.db
 smartlife-agent/data/import_history.db
