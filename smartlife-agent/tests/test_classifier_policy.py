@@ -194,3 +194,40 @@ def test_current_message_keyword_evidence_is_not_supplemented_by_history():
     assert result.intent == "shopping"
     assert "关键词" not in result.reason
     assert classifier._chain.calls[0]["context"] == "user: 推荐一款手机"
+
+
+def test_travel_with_owned_item_routes_to_gear_plan():
+    from app.classifier import ClassificationResult, UnifiedClassifier
+
+    message = "我要去上海旅游，玩一周，预算1万块。我有一条西装裤子。"
+    base = ClassificationResult(
+        route="react",
+        intent="shopping",
+        intents=["shopping", "travel"],
+        sub_intent="search+qa",
+        retrieval="mixed",
+        confidence=0.9,
+    )
+
+    result = UnifiedClassifier.apply_scene_constraint(base, "general", message)
+
+    assert result.intent == "travel"
+    assert result.effective_intents == ["travel"]
+    assert result.sub_intent == "gear_plan"
+    assert result.retrieval == "rag_only"
+    assert result.route == "plan_and_execute"
+
+
+def test_explicit_purchase_keeps_composite_intents():
+    from app.classifier import UnifiedClassifier, _keyword_classify
+
+    message = "推荐一双800元的跑鞋，再给我一份杭州玩两天的计划"
+    raw = _keyword_classify(message)
+    assert raw is not None and set(raw["intents"]) == {"shopping", "travel"}
+
+    from app.classifier import ClassificationResult
+
+    result = UnifiedClassifier.apply_scene_constraint(
+        ClassificationResult.model_validate(raw), "general", message
+    )
+    assert set(result.effective_intents) == {"shopping", "travel"}

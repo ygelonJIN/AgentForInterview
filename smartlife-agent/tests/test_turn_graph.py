@@ -162,7 +162,9 @@ def test_composite_intent_runs_parallel_branches_and_reduces():
     )
     events = _run_graph(services)
     done = next(event for event in events if event["event"] == "done")
-    assert "合并[" in done["data"]["response"]
+    # 关键：购物分支的正文必须真的传进合成，不能再退回“分支缺失”默认值
+    assert "合并[ok/" in done["data"]["response"]
+    assert "failed/failed" not in done["data"]["response"]
 
 
 def test_classification_is_recorded_in_state_not_in_orchestrator():

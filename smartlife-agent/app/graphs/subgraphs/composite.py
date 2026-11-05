@@ -15,7 +15,7 @@ from langgraph.runtime import Runtime
 from app.services.task_models import SharedConstraints, branch_outcome
 from app.classifier import ClassificationResult
 from app.graphs.context import TurnContext
-from app.graphs.state import TurnState
+from app.graphs.state import TurnState, branch_key
 from app.graphs.subgraphs.shopping import build_shopping_graph
 from app.graphs.subgraphs.travel import build_travel_graph
 
@@ -70,9 +70,14 @@ async def travel_branch(state: TurnState, runtime: Runtime[TurnContext]) -> Dict
     return await _run_branch(state, runtime, "travel", build_travel_graph())
 
 
+def branch_outcomes(state: TurnState) -> Dict[str, Dict[str, Any]]:
+    """按分支名归并结果；兼容 name / branch 两种键。"""
+    return {branch_key(item): item for item in state.get("branch_results") or []}
+
+
 async def synthesize(state: TurnState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
     ctx = runtime.context
-    outcomes = {item.get("branch"): item for item in state.get("branch_results") or []}
+    outcomes = branch_outcomes(state)
     constraints = SharedConstraints.model_validate(state.get("constraints") or {})
     response = await ctx.services.synthesize_composite_response(
         state["user_message"],

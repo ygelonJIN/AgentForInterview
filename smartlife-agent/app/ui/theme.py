@@ -80,6 +80,7 @@ p {{ line-height: var(--lh-normal); }}
 ::selection {{ background: var(--c-select-bg); color: var(--c-select-text); }}
 
 #MainMenu, footer, [data-testid="stMainMenuButton"], [data-testid="stBaseButton-header"] {{ visibility: hidden !important; }}
+[data-testid="stSkillsNudgeAnchor"] {{ display: none !important; }}
 [data-testid="stHeader"] {{
   height: 0 !important; min-height: 0 !important; background: transparent !important;
   overflow: visible !important; z-index: 120;
@@ -768,10 +769,11 @@ def tag(text: Any, tone: str = "") -> str:
 
 
 def alert_html(kind: str, title: str, body: str = "") -> str:
-    icon = {"ok": "✓", "warn": "!", "danger": "×"}.get(kind, "i")
+    icon = {"ok": "✓", "warn": "!", "danger": "×"}.get(kind, "·")
+    cls = f"sl-alert sl-alert--{kind}" if kind else "sl-alert"
     body_html = f"<p>{_e(body)}</p>" if body else ""
     return (
-        f'<div class="sl-alert sl-alert--{kind}"><span class="ico">{icon}</span>'
+        f'<div class="{cls}"><span class="ico">{icon}</span>'
         f"<div><b>{_e(title)}</b>{body_html}</div></div>"
     )
 
@@ -1112,15 +1114,27 @@ def plan_panels_html(payload: Dict[str, Any]) -> str:
         )
     )
 
+    # 商品库未覆盖的装备不是约束冲突，单独并成一条提示，避免刷屏。
+    unmatched = [item for item in issues if "未匹配" in str(item.get("hint") or "")]
+    violations = [item for item in issues if item not in unmatched]
+
     alerts = []
-    if not issues:
+    if not violations:
         alerts.append(alert_html("ok", "未发现硬约束冲突", "预算、时间重叠、天数一致性与必备装备均已通过确定性校验。"))
     else:
-        for issue in issues[:4]:
+        for issue in violations[:4]:
             detail = issue.get("hint") or ""
             if issue.get("actual") is not None and issue.get("limit") is not None:
                 detail = f"实际 {issue.get('actual')}，上限 {issue.get('limit')}。{detail}"
             alerts.append(alert_html("warn", issue.get("constraint", "未满足约束"), detail))
+    if unmatched:
+        names = "、".join(str(item.get("constraint", "")).replace("装备：", "") for item in unmatched[:6])
+        more = f" 等 {len(unmatched)} 项" if len(unmatched) > 6 else ""
+        alerts.append(alert_html(
+            "",
+            f"{len(unmatched)} 项装备商品库未覆盖",
+            f"{names}{more}；未编造价格，也未计入预算。",
+        ))
     for phrase in ambiguous[:3]:
         alerts.append(alert_html("warn", "待确认", f"你提到过「{phrase}」，但没说具体物品，暂未算作已有。"))
     if alerts:

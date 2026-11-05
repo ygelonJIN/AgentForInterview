@@ -195,6 +195,9 @@ def test_composite_branch_failure_is_preserved_for_partial_merge():
 
         async def synthesize_composite_response(self, message, shopping, travel, constraints, queue):
             assert shopping["status"] == "failed"
+            # 失败原因来自真实异常，而不是“键取不到”的占位文案
+            assert "分支缺失" not in str(shopping.get("error"))
+            assert "分支缺失" not in str(travel.get("error"))
             return "购物未完成；旅行计划：" + str(travel.get("response") or travel.get("error"))
 
     async def run():
@@ -214,3 +217,39 @@ def _raise(message):
         raise RuntimeError(message)
 
     return run
+
+
+def test_shared_constraints_parse_wan_and_week():
+    """“预算1万块 / 玩一周”必须解析成 10000 元 / 7 天。"""
+    from app.services.task_models import extract_shared_constraints, parse_budget, parse_days
+
+    message = "我要去上海旅游，玩一周，预算1万块。我有一条西装裤子。"
+    constraints = extract_shared_constraints(message)
+    assert constraints.budget == 10000
+    assert constraints.days == 7
+    assert constraints.destination == "上海"
+
+    assert parse_budget("预算一万块") == 10000
+    assert parse_budget("预算 1.5万") == 15000
+    assert parse_budget("1万5") == 15000
+    assert parse_budget("3千") == 3000
+    assert parse_days("两周") == 14
+    assert parse_days("半个月") == 15
+
+
+def test_branch_outcomes_keep_both_branches_by_name():
+    """BranchOutcome 字段是 name；合并后必须能按分支名取回两份结果。"""
+    from app.graphs.state import merge_branch_results
+    from app.graphs.subgraphs.composite import branch_outcomes
+    from app.services.task_models import branch_outcome
+
+    merged = merge_branch_results(
+        [branch_outcome("shopping", "推荐西装裤").model_dump()],
+        [branch_outcome("travel", "上海七日行程").model_dump()],
+    )
+    outcomes = branch_outcomes({"branch_results": merged})
+
+    assert set(outcomes) == {"shopping", "travel"}
+    assert outcomes["shopping"]["response"] == "推荐西装裤"
+    assert outcomes["travel"]["response"] == "上海七日行程"
+    assert outcomes["travel"]["status"] == "ok"

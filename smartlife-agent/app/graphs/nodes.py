@@ -16,6 +16,7 @@ from app.classifier import ClassificationResult, UnifiedClassifier
 from app.graphs.context import TurnContext
 from app.graphs.state import TurnState
 from app.observability import log_exception
+from app.streaming import EventType
 from app.session import build_thread_id
 
 
@@ -39,16 +40,32 @@ async def prepare(state: TurnState, runtime: Runtime[TurnContext]) -> Dict[str, 
 async def classify(state: TurnState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
     """统一分类 + 场景约束 + 关键词安全网（全部在服务层完成）。"""
     ctx = runtime.context
-    classification = await ctx.services.classify(
+    raw = await ctx.services.classify(
         state["user_message"],
         state["thread_id"],
         ctx.sink_for(runtime),
     )
     classification = UnifiedClassifier.apply_scene_constraint(
-        ClassificationResult.model_validate(classification.model_dump()),
+        ClassificationResult.model_validate(raw.model_dump()),
         state.get("scene", "general"),
         state["user_message"],
     )
+    # 场景策略纠正过意图时补发一条分类事件，避免界面上的意图与实际路由不一致。
+    if (
+        classification.intent != raw.intent
+        or classification.effective_intents != raw.effective_intents
+        or classification.sub_intent != raw.sub_intent
+    ):
+        await ctx.sink_for(runtime).emit(EventType.CLASSIFY, {
+            "route": classification.route,
+            "intent": classification.intent,
+            "intents": classification.effective_intents,
+            "sub_intent": classification.sub_intent,
+            "retrieval": classification.retrieval,
+            "confidence": classification.confidence,
+            "reason": classification.reason,
+            "method": "policy",
+        }, step="classify")
     return {
         "classification": classification.model_dump(),
         "agent_used": getattr(classification, "agent_label", classification.intent),

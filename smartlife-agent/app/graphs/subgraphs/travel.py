@@ -18,6 +18,7 @@ from langgraph.types import RetryPolicy
 from app.execution_log import build_execution_log
 from app.graphs._util import resolve
 from app.graphs.context import TurnContext
+from app.services.task_models import extract_shared_constraints
 from app.observability import timed_span
 from app.reliability import RetryableError
 from app.streaming import EventType
@@ -156,19 +157,14 @@ async def _emit_step3(sink, state: TravelPlanState, description: str, status: st
 
 
 def extract_requirements(request: str) -> Dict[str, Any]:
-    text = request or ""
-    destinations = ["杭州", "北京", "上海", "成都", "三亚", "西安", "丽江", "大理"]
-    destination = next((item for item in destinations if item in text), None)
-    day_match = re.search(r"(\d+)\s*(?:天|日)", text)
-    date_match = re.search(r"(\d{4}-\d{2}-\d{2})", text)
-    budget_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:元|块|¥)", text)
-    people_match = re.search(r"(\d+)\s*人", text)
+    """复用共享约束解析：预算/天数口径与 composite、trip_gear 保持一致。"""
+    shared = extract_shared_constraints(request or "")
     return {
-        "destination": destination,
-        "days": int(day_match.group(1)) if day_match else None,
-        "budget": float(budget_match.group(1)) if budget_match else None,
-        "people": int(people_match.group(1)) if people_match else 1,
-        "start_date": date_match.group(1) if date_match else None,
+        "destination": shared.destination,
+        "days": shared.days,
+        "budget": shared.budget,
+        "people": shared.people,
+        "start_date": shared.start_date.isoformat() if shared.start_date else None,
     }
 
 

@@ -137,8 +137,33 @@ _GENERIC_SHOPPING_SIGNALS = {
     "找", "搜", "推荐", "哪个好", "哪个更好", "对比", "比较", "区别",
 }
 _TRAVEL_DURATION_RE = re.compile(
-    r"(?:玩|游|待|停留)\s*\d+\s*(?:天|日)|\d+\s*(?:天|日)\s*(?:游|行程|攻略)"
+    r"(?:玩|游|待|停留|去)\s*(?:\d+|[一两二三四五六七八九十])\s*(?:天|日|周|星期|礼拜)"
+    r"|\d+\s*(?:天|日)\s*(?:游|行程|攻略)"
 )
+
+# 购买动作：只有出现这些词，物品名词才算“想买”；
+# 单纯说“我有一条西装裤子”是在描述已有物品，不是购物意图。
+_PURCHASE_VERBS = (
+    "买", "购", "下单", "预订", "预定", "搜", "找", "推荐", "比价",
+    "多少钱", "价格", "哪个好", "哪个更好", "对比", "比较", "区别", "值得",
+)
+_OWNED_ITEM_RE = re.compile(r"(我有|我带了|我买了|已经买了|家里有|手头有|已有)")
+
+
+def _has_purchase_verb(message: str) -> bool:
+    return any(verb in message for verb in _PURCHASE_VERBS)
+
+
+def _mentions_product_target(message: str) -> bool:
+    return any(
+        keyword in message
+        for keyword in _INTENT_KEYWORDS["shopping"]
+        if keyword not in _GENERIC_SHOPPING_SIGNALS
+    )
+
+
+def _mentions_owned_item(message: str) -> bool:
+    return bool(_OWNED_ITEM_RE.search(message))
 
 
 def _has_strong_shopping_signal(message: str) -> bool:
@@ -606,12 +631,52 @@ class UnifiedClassifier:
         )
 
     @staticmethod
+    def _apply_travel_gear_policy(
+        classification: ClassificationResult,
+        message: str,
+    ) -> ClassificationResult:
+        """旅游 + 已有物品：走行程装备协同，不拆出无购买动作的购物分支。"""
+        if not _has_travel_signal(message):
+            return classification
+        intents = list(classification.effective_intents)
+        dropped = False
+        if (
+            "shopping" in intents
+            and _mentions_product_target(message)
+            and not _has_purchase_verb(message)
+        ):
+            intents = [item for item in intents if item != "shopping"] or ["travel"]
+            dropped = True
+        owns = _mentions_owned_item(message)
+        if not dropped and not (owns and set(intents) <= {"travel"}):
+            return classification
+
+        needs_plan = (
+            classification.route == "plan_and_execute"
+            or bool(_TRAVEL_DURATION_RE.search(message))
+            or owns
+        )
+        return classification.model_copy(update={
+            "intent": "travel",
+            "intents": intents or ["travel"],
+            "route": "plan_and_execute" if needs_plan else classification.route,
+            "sub_intent": "gear_plan" if owns else ("plan_trip" if needs_plan else "qa"),
+            "retrieval": "rag_only",
+            "reason": (
+                "旅游 + 已有物品：改走行程装备协同"
+                if owns
+                else f"旅游场景下忽略无购买动作的商品名词（{classification.intent} -> travel）"
+            ),
+        })
+
+    @staticmethod
     def apply_scene_constraint(
         classification: ClassificationResult,
         scene: str,
         message: str,
     ) -> ClassificationResult:
         """让 UI 场景成为路由约束，防止通用金额词跨场景误判。"""
+        classification = UnifiedClassifier._apply_travel_gear_policy(classification, message)
         if scene != "travel":
             return classification
 

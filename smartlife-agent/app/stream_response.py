@@ -2,6 +2,18 @@
 from typing import Any, Dict, List
 
 
+def looks_like_failure_stub(text: str) -> bool:
+    """判断收束正文是不是“全部分支失败”的占位文案。"""
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    if not lines:
+        return False
+    if "分支缺失" in (text or ""):
+        return True
+    if len(lines) > 4:
+        return False
+    return all(("未能完成" in line) or line.startswith("【") for line in lines)
+
+
 def _event_type_value(event_type: Any) -> str:
     return str(getattr(event_type, "value", event_type))
 
@@ -41,10 +53,7 @@ class StreamResponseBuffer:
         elif event_type == "done":
             self.set_done(data.get("response", ""))
 
-    @property
-    def text(self) -> str:
-        if self._done_response:
-            return self._done_response
+    def _buffered_text(self) -> str:
         parts: List[str] = []
         plain = "".join(self._tokens)
         if plain:
@@ -59,3 +68,13 @@ class StreamResponseBuffer:
                 if body:
                     parts.append(body)
         return "\n\n".join(parts)
+
+    @property
+    def text(self) -> str:
+        buffered = self._buffered_text()
+        if self._done_response:
+            # 收束文案只剩失败桩时，不要把已经流出来的正文覆盖掉。
+            if buffered and looks_like_failure_stub(self._done_response):
+                return buffered
+            return self._done_response
+        return buffered

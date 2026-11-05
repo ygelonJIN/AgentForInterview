@@ -7,14 +7,24 @@ from __future__ import annotations
 from typing import Annotated, Any, Dict, List, TypedDict
 
 
+def branch_key(item: Dict[str, Any]) -> str:
+    """分支结果的唯一键。
+
+    ``BranchOutcome`` 的字段名是 ``name``，早期写法用 ``branch``；
+    两边都认，避免再出现“结果都在、却按错键取不到”的问题。
+    """
+    if isinstance(item, dict):
+        key = item.get("name") or item.get("branch")
+        if key:
+            return str(key)
+    return str(id(item))
+
+
 def merge_branch_results(left: List[Dict[str, Any]], right: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """并行分支结果合并；保持稳定顺序，重复分支名以后写入为准。"""
     merged: Dict[str, Dict[str, Any]] = {}
     for item in list(left or []) + list(right or []):
-        if isinstance(item, dict) and item.get("branch"):
-            merged[str(item["branch"])] = item
-        elif isinstance(item, dict):
-            merged[str(id(item))] = item
+        merged[branch_key(item)] = item
     return list(merged.values())
 
 
