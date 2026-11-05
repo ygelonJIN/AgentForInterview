@@ -16,7 +16,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from app.trip_gear.gear import OPTIONAL
-from app.trip_gear.models import GearItem
+from app.trip_gear.itinerary import lodging_cost_for
+from app.trip_gear.models import DayPlan, GearItem, Itinerary, TripFacts
 from app.trip_gear.shopping import ALIASES, normalize_gear_name
 
 # 即使预算超了也不能通过"省略"消失的装备：安全、合规与行程成立的前提。
@@ -36,12 +37,15 @@ FindAlternatives = Callable[..., List[dict]]
 class RepairAction:
     """一次修复动作。"""
 
-    kind: str                      # downgrade / skip
+    kind: str                      # downgrade / skip / change_lodging / soften_activity
     name: str
     saving: float
     reason: str
     replacement: Optional[Dict[str, Any]] = None
     meta: Dict[str, Any] = field(default_factory=dict)
+    # 会不会改动用户明说过的条件（比如把"露营"改成住民宿）。为 True 的动作
+    # 不能自动执行，只能作为选项摆给用户。
+    requires_confirm: bool = False
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -50,6 +54,7 @@ class RepairAction:
             "saving": round(self.saving, 2),
             "reason": self.reason,
             "replacement": self.replacement,
+            "requires_confirm": self.requires_confirm,
         }
 
 
@@ -166,13 +171,101 @@ def _downgrade_for(
     )
 
 
+# 露营三大件：换住宿时它们才真正不必买，所以省下的钱要一次性算进来。
+CAMPING_GEAR = ("帐篷", "睡袋", "防潮垫")
+
+# 砍掉一个收费项目至少得省这么多钱才值得牺牲体验。
+MIN_ACTIVITY_COST = 50.0
+
+
+def _lodging_swap_action(
+    facts: TripFacts,
+    itinerary: Itinerary,
+    gear: List[GearItem],
+    products: Dict[str, Dict[str, Any]],
+) -> Optional[RepairAction]:
+    """露营改住民宿：省下露营三大件，代价是住宿费变贵。
+
+    这是唯一能"用装备换行程"的动作——不买帐篷睡袋防潮垫，改付住宿费。
+    只有净省为正才提出来，否则等于花钱买罪受。它改了用户明说的住宿方式，
+    所以必须用户点头，不能自动执行。
+    """
+    if not facts.is_camping:
+        return None
+
+    camping = [
+        item for item in gear
+        if item.name in CAMPING_GEAR and item.status == "need_buy"
+    ]
+    if not camping:
+        return None
+
+    gear_saving = sum(
+        float((products.get(item.name) or {}).get("price") or 0) * item.qty
+        for item in camping
+    )
+    nights = max(1, len(itinerary.days))
+    old_lodging = sum(float(day.lodging_cost or 0) for day in itinerary.days)
+    if old_lodging <= 0:
+        old_lodging = lodging_cost_for("camp", facts.people, nights)
+    new_lodging = lodging_cost_for("hotel", facts.people, nights)
+    net = round(gear_saving - (new_lodging - old_lodging), 2)
+    if net <= 0:
+        return None
+
+    return RepairAction(
+        kind="change_lodging",
+        name="露营改住民宿",
+        saving=net,
+        reason=(
+            f"不买{'、'.join(item.name for item in camping)}省 {gear_saving:.0f} 元，"
+            f"住宿多花 {new_lodging - old_lodging:.0f} 元，净省 {net:.0f} 元；"
+            "但这改变了你原本的露营安排"
+        ),
+        requires_confirm=True,
+        meta={
+            "from": "camp",
+            "to": "hotel",
+            "nights": nights,
+            "gear_saving": round(gear_saving, 2),
+            "lodging_delta": round(new_lodging - old_lodging, 2),
+        },
+    )
+
+
+def _soften_action(itinerary: Itinerary) -> Optional[RepairAction]:
+    """砍掉最贵的一项收费活动：不花钱、不推翻住宿，只是少玩一个项目。"""
+    candidates = [
+        (day, item)
+        for day in itinerary.days
+        for item in day.items
+        if float(item.cost or 0) >= MIN_ACTIVITY_COST
+    ]
+    if not candidates:
+        return None
+    day, item = max(candidates, key=lambda pair: float(pair[1].cost or 0))
+    return RepairAction(
+        kind="soften_activity",
+        name=str(item.activity),
+        saving=float(item.cost or 0),
+        reason=f"预算紧张，去掉第 {day.day} 天的收费项目「{item.activity}」",
+        meta={"day": day.day, "activity": item.activity},
+    )
+
+
 def repair_candidates(
     gear: List[GearItem],
     products: Dict[str, Dict[str, Any]],
     find_alternatives: Optional[FindAlternatives] = None,
     limit: int = 8,
+    facts: Optional[TripFacts] = None,
+    itinerary: Optional[Itinerary] = None,
 ) -> List[RepairAction]:
-    """按可省金额降序给出修复候选；keep_priority=True 时降档排前。"""
+    """按可省金额降序给出修复候选。
+
+    传了 ``facts`` 与 ``itinerary`` 才会给出"改行程"类动作（换住宿、砍收费项目）：
+    没有行程就无从判断改它能省多少。
+    """
     actions: List[RepairAction] = []
     for item in gear:
         if item.status != "need_buy":
@@ -192,6 +285,15 @@ def repair_candidates(
                 )
             )
 
+    if facts is not None and itinerary is not None:
+        swap = _lodging_swap_action(facts, itinerary, gear, products)
+        if swap:
+            actions.append(swap)
+    if itinerary is not None:
+        soften = _soften_action(itinerary)
+        if soften:
+            actions.append(soften)
+
     actions.sort(key=lambda action: (action.saving, action.kind == "downgrade"), reverse=True)
     return actions[:limit]
 
@@ -200,8 +302,41 @@ def apply_action(
     action: RepairAction,
     gear: List[GearItem],
     products: Dict[str, Dict[str, Any]],
+    itinerary: Optional[Itinerary] = None,
+    facts: Optional[TripFacts] = None,
+    force: bool = False,
 ) -> None:
-    """把候选动作落到数据上；原地修改 gear 与 products。"""
+    """把候选动作落到数据上；原地修改 gear / products / itinerary。
+
+    ``force=False`` 时拒绝执行需要用户确认的动作——改掉用户明说的条件
+    不能悄悄发生，那和偷换需求没区别。
+    """
+    if action.requires_confirm and not force:
+        raise PermissionError(f"{action.kind} 需要用户确认，不能自动执行")
+
+    if action.kind == "change_lodging" and itinerary is not None:
+        people = facts.people if facts else 1
+        for day in itinerary.days:
+            day.lodging = "hotel"
+            day.lodging_cost = lodging_cost_for("hotel", people)
+        # 三大件不必买了：标记为不需要，并从待购里移除，避免继续计价。
+        for item in gear:
+            if item.name in CAMPING_GEAR:
+                item.status = "skipped"
+                item.reason = (item.reason + "；改住民宿后不必购买").strip("；")
+                products.pop(item.name, None)
+        return
+
+    if action.kind == "soften_activity" and itinerary is not None:
+        target_day = (action.meta or {}).get("day")
+        for day in itinerary.days:
+            if target_day is not None and day.day != target_day:
+                continue
+            day.items = [item for item in day.items if item.activity != action.name]
+            if target_day is not None:
+                break
+        return
+
     if action.kind == "downgrade" and action.replacement:
         products[action.name] = action.replacement
         for item in gear:

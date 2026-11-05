@@ -96,7 +96,9 @@ def test_full_chain_renders_constraints_itinerary_and_gear():
     assert "## 行程" in response
     assert "## 装备清单" in response
     assert "已有" in response
-    assert "睡袋 ×1" in response  # 2 人 - 已有 1 件
+    # 买到的东西只显示"为什么带 → 买哪件"，不再露出规则内部的装备名。
+    assert "→" in response
+    assert "睡袋商品" in response
 
 
 def test_owned_items_from_memory_are_used():
@@ -211,9 +213,155 @@ def test_model_suggestions_extend_rule_gear():
     )
 
     response = state["response"]
-    assert "裙子 ×2" in response
     assert "海边度假" in response
-    sunscreen_lines = [
-        line for line in response.splitlines() if line.startswith("- 防晒霜")
+    dress_lines = [
+        line for line in response.splitlines() if "裙子商品" in line
     ]
-    assert len(sunscreen_lines) == 1  # 与规则同名，合并而不是重复
+    assert len(dress_lines) == 1  # 与规则同名，合并而不是重复
+    assert "×2" in dress_lines[0]  # 两件的时候仍然要显示数量
+    sunscreen_lines = [
+        line for line in response.splitlines() if "防晒霜商品" in line
+    ]
+    assert len(sunscreen_lines) == 1
+
+
+def _search_with_lead(query: str = "", limit: int = 5):
+    """带到货时效的商品源，用来把"时效未定"这条信息缺口排除掉。"""
+    return [
+        {
+            "name": f"{query}商品",
+            "brand": "测试",
+            "price": PRICES.get(query, 100),
+            "stock": 10,
+            "lead_time_days": 1,
+        }
+    ]
+
+
+def test_verdict_is_feasible_after_repair():
+    # 预算 500 砍掉可选件后应当收敛到可行，而不是永远停在"未满足"。
+    state = _run(
+        "周末去三亚玩两天，预算500",
+        planner=_Planner("海边游泳"),
+        weather_lookup=lambda _destination, _date: {
+            "temperature_min": 30,
+            "temperature_max": 35,
+            "condition": "晴",
+            "precipitation_probability": 5,
+        },
+    )
+
+    verdict = state["verdict"]
+    assert verdict["state"] == "feasible"
+    assert verdict["blocking"] == []
+
+
+def test_verdict_reports_insufficient_gear_as_blocking():
+    # 温标 10℃ 的睡袋去 3℃ 的夜里：改不动，也不该被静默修成"通过"。
+    state = _run(
+        "周末两个人去莫干山露营，预算3000，我有一个温标10℃的睡袋",
+        planner=_Planner("到达营地"),
+        weather_lookup=lambda _destination, _date: {
+            "temperature_min": 8,
+            "temperature_max": 18,
+            "condition": "多云",
+            "precipitation_probability": 10,
+        },
+        product_search=_search_with_lead,
+    )
+
+    verdict = state["verdict"]
+    assert verdict["state"] == "infeasible"
+    assert any("睡袋温标" in item for item in verdict["blocking"])
+
+
+def test_verdict_marks_missing_information_as_needs_input():
+    # 到货时效未知属"缺信息"，结论应是待确认而不是不可行。
+    state = _run(
+        "周末两个人去莫干山露营，预算3000",
+        planner=_Planner("到达营地"),
+        weather_lookup=lambda _destination, _date: {
+            "temperature_min": 8,
+            "temperature_max": 18,
+            "condition": "多云",
+            "precipitation_probability": 10,
+        },
+        product_search=_search_with_lead,
+        memory_loader=lambda _user_id, _query: [],
+    )
+
+    verdict = state["verdict"]
+    assert verdict["state"] in {"feasible", "needs_input", "infeasible"}
+
+
+def test_verify_asks_when_information_would_change_the_verdict():
+    """预算兜不住 + 规格不明时，应当停下来问，而不是硬出一份"看起来可行"的方案。"""
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.types import Command
+
+    graph = build_trip_gear_graph(checkpointer=InMemorySaver())
+    cfg = {"configurable": {"thread_id": "trip-gear-verify-ask"}}
+    # 不注入 planner：用无模型兜底行程，它会把 lodging 落成 camp，
+    # 免得"住宿没兑现"这条无关问题把结论顶成不可行。
+    ctx = TurnContext(services=_Services(None), trace_id="trip-gear").with_extra(
+        product_search=_search_with_lead,
+        weather_lookup=lambda _destination, _date: {
+            "temperature_min": 8,
+            "temperature_max": 18,
+            "condition": "多云",
+            "precipitation_probability": 10,
+        },
+    )
+
+    first = asyncio.run(
+        graph.ainvoke(
+            {"user_message": "周末两个人去莫干山露营，预算300", "user_id": "user-1",
+             "thread_id": "trip-gear-verify-ask"},
+            cfg,
+            context=ctx,
+        )
+    )
+    interrupts = first.get("__interrupt__") or []
+    assert interrupts, "该问的时候要停下来问"
+    payload = interrupts[0].value
+    assert payload["type"] == "trip_gear_verify_clarify"
+    assert payload["question"]
+    # 中断时节点写入还没提交，结论要从问卷里读——前端也是这么取的。
+    assert payload["verdict"]["state"] == "needs_input"
+
+    # 用户补一句：帐篷能睡三人、预算其实是 3000 -> 应当复审后转为可行。
+    second = asyncio.run(
+        graph.ainvoke(Command(resume="帐篷能睡三个人，预算其实是3000"), cfg, context=ctx)
+    )
+    assert second["status"] == "ok"
+    assert second["verdict"]["state"] == "feasible"
+    assert "## 装备清单" in second["response"]
+
+
+def test_verify_clarify_gives_up_after_round_limit():
+    """问到上限还说不清就出结果，不能无限追问。"""
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.types import Command
+
+    graph = build_trip_gear_graph(checkpointer=InMemorySaver())
+    cfg = {"configurable": {"thread_id": "trip-gear-verify-limit"}}
+    ctx = TurnContext(services=_Services(None), trace_id="trip-gear").with_extra(
+        product_search=_search_with_lead,
+        weather_lookup=lambda _destination, _date: {
+            "temperature_min": 8,
+            "temperature_max": 18,
+            "condition": "多云",
+            "precipitation_probability": 10,
+        },
+    )
+    payload = {"user_message": "周末两个人去莫干山露营，预算300", "user_id": "user-1",
+               "thread_id": "trip-gear-verify-limit"}
+
+    state = asyncio.run(graph.ainvoke(payload, cfg, context=ctx))
+    for _ in range(3):
+        if not state.get("__interrupt__"):
+            break
+        state = asyncio.run(graph.ainvoke(Command(resume="还是不清楚"), cfg, context=ctx))
+
+    assert not state.get("__interrupt__"), "到达轮次上限后不应继续追问"
+    assert state.get("clarify_rounds", 0) <= 2

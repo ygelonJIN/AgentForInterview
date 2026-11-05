@@ -66,7 +66,9 @@ def test_extract_candidates_uses_cleaning_and_diag_reports_counts():
         existing_contents=[],
     )
 
-    assert candidates == [{"content": "事实A", "category": "general", "confidence": "high"}]
+    assert candidates == [{
+        "content": "事实A", "category": "general", "confidence": "high", "durability": "durable",
+    }]
     assert cleaned == candidates
     assert "候选 2 条，去重过滤后 1 条" in diag
 
@@ -107,3 +109,51 @@ def test_extraction_exception_is_reported_as_failure():
     assert result.status == "error"
     assert result.should_display is True
     assert "small model unavailable" in result.diagnostic
+
+
+class TestDurability:
+    """一次性行程事实不该每轮都弹确认，长期偏好才值得记。"""
+
+    def test_一次性行程事实标为临时(self):
+        from app.memory.extractor import MemoryExtractor
+
+        assert MemoryExtractor._durability("目的地为杭州") == "transient"
+        assert MemoryExtractor._durability("预算为5000元") == "transient"
+        assert MemoryExtractor._durability("周末去莫干山露营") == "transient"
+
+    def test_稳定偏好标为长期(self):
+        from app.memory.extractor import MemoryExtractor
+
+        assert MemoryExtractor._durability("我喜欢弹吉他") == "durable"
+        assert MemoryExtractor._durability("我一般住民宿") == "durable"
+        assert MemoryExtractor._durability("我对花生过敏") == "durable"
+
+    def test_默认过滤一次性事实(self):
+        extractor = _extractor()
+        extractor.chain = _Chain(
+            '[{"content":"目的地为杭州","category":"travel","confidence":"high"},'
+            '{"content":"我喜欢弹吉他","category":"general","confidence":"high"}]'
+        )
+        result = extractor.extract_candidates_result([{"role": "user", "content": "去杭州"}])
+        assert [c["content"] for c in result.candidates] == ["我喜欢弹吉他"]
+
+    def test_显式要求时才保留一次性事实(self):
+        extractor = _extractor()
+        extractor.chain = _Chain(
+            '{"candidates":[{"content":"目的地为杭州","category":"travel","confidence":"high"}]}'
+        )
+        result = extractor.extract_candidates_result(
+            [{"role": "user", "content": "去杭州"}], include_transient=True
+        )
+        assert [c["content"] for c in result.candidates] == ["目的地为杭州"]
+
+    def test_兜底事实默认不弹(self):
+        # 模型没输出时，正则兜底抽出的就是"目的地/天数/预算"这三类，
+        # 它们全是临时事实，默认应当一条都不提示。
+        extractor = _extractor()
+        extractor.chain = _Chain("")
+        result = extractor.extract_candidates_result(
+            [{"role": "user", "content": "周末去杭州玩两天，预算5000"}]
+        )
+        assert result.candidates == []
+        assert result.status == "no_content"

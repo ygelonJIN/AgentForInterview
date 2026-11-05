@@ -18,6 +18,7 @@ ALIASES = {
     "保暖层": "羽绒",
     "换洗衣物": "T恤",
     "儿童衣物": "T恤",
+    "儿童衣物": "儿童",
     "裙子": "连衣裙",
     "裙装": "连衣裙",
     # 模型补充的长尾装备名，收敛后映射到库里真实存在的品类
@@ -91,8 +92,13 @@ def canonical_gear_name(name: str) -> str:
 
 
 class GearShopper:
-    def __init__(self, search: Optional[Callable[..., List[dict]]] = None):
+    def __init__(
+        self,
+        search: Optional[Callable[..., List[dict]]] = None,
+        preferred_brands: Optional[List[str]] = None,
+    ):
         self.search = search
+        self.preferred_brands = list(preferred_brands or [])
 
     def fill(
         self,
@@ -134,22 +140,68 @@ class GearShopper:
         item: GearItem,
         remaining_budget: Optional[float],
     ) -> Optional[Dict[str, Any]]:
+        """挑一个商品；挑不到就返回 None，绝不拿库里没有的东西顶上。
+
+        两个硬规则：
+        1. **无货不当候选**。旧实现写的是 ``... if stock > 0] or rows``，
+           全都没货时又把整表退回来，等于把无货商品当成了推荐。
+        2. **近似替代要标出来**。库里没有"保暖层"，命中"轻薄羽绒外套"
+           是合理的，但必须注明这是替代，否则用户会以为库里真有这件东西。
+        """
         for query in self._queries(item):
             try:
                 rows = list(self.search(query=query, limit=5) or [])
             except Exception:
                 rows = []
-            rows = [row for row in rows if isinstance(row, dict) and row.get("name")]
+            rows = [
+                row for row in rows
+                if isinstance(row, dict) and row.get("name") and (row.get("stock") or 0) > 0
+            ]
             if not rows:
                 continue
-            rows = [row for row in rows if (row.get("stock") or 0) > 0] or rows
-            rows.sort(key=lambda row: float(row.get("price") or 0))
+            # 品牌偏好只做同档优先：先按价格分档（10% 内视为同档），再让偏好品牌胜出。
+            rows.sort(key=lambda row: self._sort_key(row))
+            chosen = None
             if remaining_budget is not None:
                 affordable = [
                     row for row in rows
                     if float(row.get("price") or 0) * item.qty <= remaining_budget
                 ]
-                if affordable:
-                    return affordable[0]
-            return rows[0]
+                chosen = affordable[0] if affordable else None
+            if chosen is None:
+                chosen = rows[0]
+            product = dict(chosen)
+            product["match"] = self._match_meta(item, product, query)
+            return product
         return None
+
+    def _sort_key(self, row: Dict[str, Any]) -> tuple:
+        price = float(row.get("price") or 0)
+        brand = str(row.get("brand") or "")
+        preferred = bool(self.preferred_brands) and brand in self.preferred_brands
+        # 偏好品牌相当于把价格放宽 10% 参与同档比较，不至于为了品牌多花一倍钱。
+        return (round(price * 0.9, 2) if preferred else price, -float(row.get("rating") or 0))
+
+    def _match_meta(self, item: GearItem, product: Dict[str, Any], query: str) -> Dict[str, Any]:
+        """记录这次命中是"同名"还是"替代"，以及替代用的是什么词。"""
+        name = normalize_gear_name(item.name)
+        product_name = str(product.get("name") or "")
+        exact = bool(name) and name in product_name
+        brand = str(product.get("brand") or "")
+        meta = {
+            "gear": item.name,
+            "query": query,
+            "kind": "exact" if exact else "substitute",
+            "alias": "",
+            "by_preference": bool(self.preferred_brands) and brand in self.preferred_brands,
+        }
+        if exact:
+            return meta
+        # 替代时报告“换成了库里哪个品类”，而不是把用户的词重复一遍。
+        alias = (
+            ALIASES.get(strip_modifiers(item.name))
+            or ALIASES.get(normalize_gear_name(item.name))
+            or query
+        )
+        meta["alias"] = alias
+        return meta

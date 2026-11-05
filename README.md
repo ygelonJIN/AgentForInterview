@@ -4,7 +4,7 @@
 
 SmartLife Agent 是一个面向电商导购、旅行规划、客服与通用任务的全栈智能体平台，也是本毕业设计的工程基础。项目基于 Python、Streamlit、LangChain、LangGraph、ChromaDB 和 MCP，演示了任务路由、智能体编排、混合检索、工具调用、长期记忆、审批机制、流式输出及评测能力。
 
-本设计在通用平台之上聚焦一条纵向链路：把一句出行需求派生为可追溯的约束清单，生成结构化逐日行程，由行程推导装备清单，结合对话与长期记忆判断已有装备，只对缺口调用商品检索，最后做预算、时间与装备齐全性校验，并在有限轮次内修复。实现见 `smartlife-agent/app/trip_gear/`，说明见 `smartlife-agent/docs/trip-gear.md`。
+本设计在通用平台之上聚焦一条纵向链路：把一句出行需求派生为可追溯的约束清单，生成结构化逐日行程，由行程推导装备清单，结合对话与长期记忆判断已有装备，只对缺口调用商品检索，最后做预算、时间与装备齐全性校验，并在有限轮次内修复。实现见 `smartlife-agent/app/trip_gear/`，说明见 `docs/architecture.md`。
 
 > 项目代码位于 `smartlife-agent/` 目录。
 
@@ -12,7 +12,7 @@ SmartLife Agent 是一个面向电商导购、旅行规划、客服与通用任�
 
 - **混合语义路由**：关键词快筛、上下文沿用、小模型语义分类和主模型仲裁共同判断意图；选择购物、旅游、客服或通用 Agent，并决定 ReAct / Plan & Execute。明确的电商+旅游复合任务会并行使用两个 Agent。
 - **行程约束与装备协同**：把用户需求派生为带来源、硬度、状态的约束清单；生成逐日行程后推导装备清单，从对话/上文/长期记忆判断已有装备，只对缺口检索商品，并做预算、时间与装备齐全性校验。
-- **纯 LangGraph 编排**：顶层图按 `intent` 选场景、按 `route` 选执行范式、按 `retrieval` 选 SQL/RAG/混合、按 `sub_intent=gear_plan` 走行程+装备链路。依赖注入走 `context_schema` + `Runtime.context`，流式走 `astream(stream_mode=["custom","tasks"])`，节点超时/重试走原生 `timeout` / `retry_policy`，复合意图用并行边 + reducer 归约。详见 `smartlife-agent/docs/graph-architecture.md`。
+- **纯 LangGraph 编排**：顶层图按 `intent` 选场景、按 `route` 选执行范式、按 `retrieval` 选 SQL/RAG/混合、按 `sub_intent=gear_plan` 走行程+装备链路。依赖注入走 `context_schema` + `Runtime.context`，流式走 `astream(stream_mode=["custom","tasks"])`，节点超时/重试走原生 `timeout` / `retry_policy`，复合意图用并行边 + reducer 归约。详见 `docs/architecture.md`。
 - **混合检索**：结合 NL2SQL、RAG、向量召回和 Cross-Encoder Rerank，分别处理结构化与非结构化数据。
 - **Agent 工具隔离**：电商、旅游和通用 Agent 拥有独立 Tool Registry，模型只能发现当前 Agent 的工具。
 - **MCP 协议服务**：支持 stdio 与 Streamable HTTP，可把每个 Agent 作为独立 MCP 能力面即插即用；跨 Agent 工具在注册、发现和执行层都会被拒绝。
@@ -42,63 +42,20 @@ SmartLife Agent 是一个面向电商导购、旅行规划、客服与通用任�
 
 ## 系统架构
 
-```text
-                         ┌──────────────────────┐
-                         │    Streamlit Web UI   │
-                         └──────────┬───────────┘
-                                    │
-                         ┌──────────▼───────────┐
-                         │ LangGraph Prepare     │
-                         └──────────┬───────────┘
-                                    │
-                    ┌───────────────▼────────────────┐
-                    │ UnifiedClassifier               │
-                    │ 关键词 → 上下文 → 小模型 → 仲裁   │
-                    │ intents / route / retrieval      │
-                    └───────────────┬────────────────┘
-                                    │
-                    ┌───────────────▼────────────────┐
-                    │ LangGraph Conditional Router    │
-                    └───┬────────┬────────┬────────┬──┘
-                        │        │        │        │
-                 ┌──────▼───┐ ┌──▼─────┐ ┌▼──────────────┐ ┌─▼────────────┐
-                 │ Shopping │ │ Travel │ │ Shopping+Travel│ │ Customer /   │
-                 │  Agent   │ │ Agent  │ │ 并行执行并合并   │ │ General/React│
-                 └──────┬───┘ └──┬─────┘ └┬──────────────┘ └─┬────────────┘
-                        │        │        │                   │
-               ┌────────▼────────▼────────▼───────────────────▼────────┐
-               │ Agent 专属 Tool Registry / MCP 能力面                  │
-               │ 工具隔离 bind_tools + 执行时越权拒绝                    │
-               └────────────┬──────────────────────────┬──────────────┘
-                            │                          │
-                 ┌──────────▼──────────┐    ┌──────────▼──────────┐
-                 │ Hybrid Retrieval     │    │ Memory / Approval    │
-                 │ NL2SQL + RAG + Rank  │    │ Short / Long / MD    │
-                 └─────────────────────┘    └─────────────────────┘
-
-旁路能力（不在主聊天消息链中）：
-外部 MCP Client ─→ shopping / travel / general 独立 MCP Server
-```
-
-装备类请求（`sub_intent=gear_plan`）不走上面的并行分支，而是进入单独的 `trip_gear` 节点：
+一句话：UI 只驱动一张编译后的 LangGraph 图，业务能力（分类、检索、生成、记忆）下沉为无编排的服务层。
 
 ```text
-derive（约束派生）→ plan（逐日行程）→ gear（装备推导）
-      → owned（已有判定）→ shop（缺口检索）→ verify（校验）
-      → repair（有限修复）→ finalize（输出）
+Streamlit UI → prepare → classify（关键词/上下文/小模型/仲裁）
+             → 条件边 ┬ shopping / travel / composite（并行）/ customer / general / react
+                      └ trip_gear（sub_intent=gear_plan，装备类请求专线）
+             → finalize →（可选）extract_memory
 ```
 
-该链路的约束、行程、装备字段与规则见 `smartlife-agent/docs/trip-gear.md`；控制流实现在 `app/graphs/subgraphs/trip_gear.py`。
+`classify` 输出四个信号，各管一件事：`intents` 选 Agent，`route` 选 ReAct 还是 Plan & Execute，`retrieval` 选 SQL/RAG/混合，`sub_intent=gear_plan` 进 `trip_gear`。多意图最多保留两个，只有 `shopping + travel` 走并行分支。
 
-路由字段承担不同职责：
+分层是 `app/main.py` → `app/graphs/orchestrator.py` → `app/graphs/subgraphs/*` → `app/services/*`；依赖注入、流式、重试/超时、节点计时、并发复合、人机中断全部用 LangGraph 原生能力。
 
-- `intents` / `primary_intent`：决定使用哪个 Agent；
-- `route`：决定使用 ReAct 还是 Plan & Execute；
-- `retrieval`：决定使用 SQL、RAG、混合检索或不检索。
-
-装备类请求额外使用 `sub_intent=gear_plan` 作为第四种路由信号，直接进入 `trip_gear` 节点；`intents`、`route`、`retrieval` 的原职责不变。
-
-多意图最多保留两个。只有 `shopping + travel` 会进入并行双 Agent 分支，其他请求以 `primary_intent` 对应的 Agent 为主。
+完整全景图、五个原生约束、行程子系统（四态结论、代价、四类修复动作、规格匹配、采购可履约）与评测口径，见 **[`docs/architecture.md`](docs/architecture.md)**。
 
 ## 智能路由与多意图
 
@@ -157,6 +114,12 @@ pip install -r requirements.lock
 
 ```bash
 pip install -r requirements.txt
+```
+
+国内网络慢时可以换镜像源：
+
+```bash
+pip install -r requirements.lock -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
 ### 4. 初始化示例数据库
@@ -232,6 +195,15 @@ streamlit run app/main.py
 http://localhost:8501
 ```
 
+### 方案 B：简化版（无需 LangChain）
+
+只跑一个最小可用界面时：
+
+```bash
+pip install openai streamlit pydantic python-dotenv
+streamlit run app/simple_main.py
+```
+
 ## 主要场景
 
 ### 智能导购
@@ -274,7 +246,7 @@ http://localhost:8501
 周末两个人去莫干山露营，预算 1500，我有帐篷和睡袋。
 ```
 
-说明见 [`smartlife-agent/docs/trip-gear.md`](smartlife-agent/docs/trip-gear.md)。
+说明见 [`docs/architecture.md`](docs/architecture.md)。
 
 ### 客服与通用规划
 
@@ -479,7 +451,11 @@ venv312/bin/python scripts/run_e2e_benchmark.py \
 
 ```text
 .
-├── project-design-v5.md
+├── docs/
+│   ├── architecture.md          # 唯一的实现说明
+│   └── generated/               # 生成物（流程图、全链路规格），勿手改
+├── 经验文档/                    # 可公开的操作经验，一领域一篇
+├── 归档/                        # 历史文档，不代表现状
 ├── smartlife-agent/
 │   ├── .streamlit/              # Streamlit 主题配置（与 design token 对齐）
 │   ├── app/
@@ -495,7 +471,6 @@ venv312/bin/python scripts/run_e2e_benchmark.py \
 │   │   ├── main.py              # Web 应用入口
 │   │   └── reliability.py       # 超时、重试、熔断和缓存
 │   ├── data/                    # 示例数据、模板、数据库和评测数据
-│   ├── docs/                    # 项目文档
 │   ├── memory_docs/             # 本地记忆 Markdown
 │   ├── scripts/                 # 导入、评测、MCP 和检查脚本
 │   ├── tests/                   # 自动化测试
@@ -559,10 +534,25 @@ smartlife-agent/data/products.db
 python data/init_db.py
 ```
 
+### SSL 证书错误
+
+```bash
+pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org <package>
+```
+
+### PyYAML 安装失败
+
+```bash
+pip install PyYAML --no-build-isolation
+```
+
+### 多个 Python 版本冲突
+
+用虚拟环境隔离，并确保虚拟环境已激活（`which python` 应指向 `venv312/bin/python`）。
+
 ## 延伸文档
 
-- `project-design-v5.md`：历史设计稿 v5，**已过时**，仅留档，不作为实现依据；现状看本文件上方架构与实现章节。
-- `smartlife-agent/QUICKSTART.md`：详细环境配置、故障排查和评测说明。
-- `smartlife-agent/docs/trip-gear.md`：行程约束、装备协同、校验修复的实现说明。
-- `smartlife-agent/data/evaluation/README.md`：评测数据格式和运行方法。
+- `docs/architecture.md`：**唯一的实现说明**——分层、顶层图、行程子系统（四态结论、代价、四类修复动作、规格匹配、采购可履约）、评测口径、文件速查。
+- `经验文档/`：可公开的操作经验，一领域一篇（环境依赖、LangGraph 调试、行程子系统与评测）。
+- `归档/`：历史文档（含旧版设计稿与已合并的子系统文档），**只作查证用，不作为实现依据**。
 - `smartlife-agent/data/import_templates/README.md`：数据导入格式说明。

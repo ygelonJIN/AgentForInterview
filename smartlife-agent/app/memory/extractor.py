@@ -70,6 +70,17 @@ class MemoryExtractor:
     _VALID_CATEGORIES = {"shopping", "travel", "general"}
     _VALID_CONFIDENCE = {"high", "medium", "low"}
     _LOW_VALUE_PREFIXES = ("我觉得", "我认为", "可能", "也许", "好像", "听说", "据说")
+
+    # 一次性行程事实：这趟去杭州、玩两天、预算 5000。对本轮有用，
+    # 但对"下次"没有意义，默认不该进长期记忆，否则每聊一次行程就弹一次确认。
+    _TRANSIENT_PATTERNS = (
+        r"目的地为", r"旅行天数为", r"预算为",
+        r"^这[次趟]", r"^本次", r"^今天", r"^明天", r"^周末",
+    )
+    _DURABLE_HINTS = (
+        "喜欢", "习惯", "通常", "总是", "偏好", "不吃", "忌口", "过敏",
+        "常住", "家住", "工作在", "我是", "我有", "每次", "一般",
+    )
     _DESTINATIONS = (
         "上海", "杭州", "北京", "成都", "西安", "云南", "大理", "丽江",
         "三亚", "厦门", "桂林", "张家界", "西藏", "新疆",
@@ -143,11 +154,26 @@ class MemoryExtractor:
                 "content": content,
                 "category": category if category in self._VALID_CATEGORIES else "general",
                 "confidence": confidence if confidence in self._VALID_CONFIDENCE else "medium",
+                "durability": self._durability(content),
             })
             seen.append(normalized_key)
             if len(accepted) >= 10:
                 break
         return accepted
+
+    @classmethod
+    def _durability(cls, content: str) -> str:
+        """判断这条记下来是"长期有用"还是"只对本轮有用"。
+
+        先看稳定偏好线索，再看一次性事实特征；两边都不像时按长期处理，
+        并保留置信度让用户自己决定。
+        """
+        text = str(content or "")
+        if any(hint in text for hint in cls._DURABLE_HINTS):
+            return "durable"
+        if any(re.search(pattern, text) for pattern in cls._TRANSIENT_PATTERNS):
+            return "transient"
+        return "durable"
 
     @classmethod
     def _explicit_fact_fallback(cls, text: str) -> List[Dict[str, Any]]:
@@ -206,7 +232,11 @@ class MemoryExtractor:
                 payload = extract_json_object(text)
             except JsonExtractionError:
                 return text
-            return payload.get("candidates", payload)
+            if isinstance(payload, list):
+                return payload
+            if isinstance(payload, dict):
+                return payload.get("candidates", payload)
+            return payload
         if hasattr(result, "model_dump"):
             payload = result.model_dump()
             return payload.get("candidates", payload)
@@ -223,8 +253,13 @@ class MemoryExtractor:
         messages: List[Dict[str, str]],
         existing_contents: Optional[List[str]] = None,
         excluded_contents: Optional[List[str]] = None,
+        include_transient: bool = False,
     ) -> MemoryExtractionResult:
-        """提取候选记忆，并明确区分“没有内容”和“执行失败”。"""
+        """提取候选记忆，并明确区分“没有内容”和“执行失败”。
+
+        ``include_transient=False``（默认）会丢掉只对本轮有用的事实，
+        比如"目的地为杭州"——这些写进长期记忆既占地方又每次都要用户点确认。
+        """
         if not messages:
             return MemoryExtractionResult(diagnostic="无对话历史", status="no_content")
 
@@ -248,6 +283,9 @@ class MemoryExtractor:
                     existing_contents,
                     excluded_contents,
                 )
+                if not include_transient:
+                    # 兜底抽出来的全是"目的地/天数/预算"这类一次性事实，默认不提示。
+                    fallback = [c for c in fallback if c.get("durability") != "transient"]
                 if fallback:
                     return MemoryExtractionResult(
                         candidates=fallback,
@@ -262,16 +300,18 @@ class MemoryExtractor:
             parsed = raw if isinstance(raw, list) else self._parse_json(str(raw))
             if not isinstance(parsed, list):
                 return MemoryExtractionResult(
-                    diagnostic=f"记忆提取失败：小模型返回非列表。原始输出:\n{raw[:300]}",
+                    diagnostic=f"记忆提取失败：小模型返回非列表。原始输出:\n{str(raw)[:300]}",
                     status="error",
                 )
             if not parsed and isinstance(raw, str) and not re.search(r"\[\s*\]", raw):
                 return MemoryExtractionResult(
-                    diagnostic=f"记忆提取失败：无法解析小模型返回的 JSON。原始输出:\n{raw[:300]}",
+                    diagnostic=f"记忆提取失败：无法解析小模型返回的 JSON。原始输出:\n{str(raw)[:300]}",
                     status="error",
                 )
 
             candidates = self._clean_candidates(parsed, existing_contents, excluded_contents)
+            if not include_transient:
+                candidates = [c for c in candidates if c.get("durability") != "transient"]
             diagnostic = (
                 f"小模型已执行。输入 {len(messages)} 条消息。"
                 f"候选 {len(parsed)} 条，去重过滤后 {len(candidates)} 条。"

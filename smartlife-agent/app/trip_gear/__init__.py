@@ -16,7 +16,9 @@ from app.trip_gear.models import (
     Itinerary,
     ItineraryItem,
     OwnedItem,
+    Requirement,
     TripFacts,
+    Verdict,
 )
 
 __all__ = [
@@ -27,7 +29,9 @@ __all__ = [
     "Itinerary",
     "ItineraryItem",
     "OwnedItem",
+    "Requirement",
     "TripFacts",
+    "Verdict",
     "derive_constraints",
     "derive_gear",
     "enrich_weather",

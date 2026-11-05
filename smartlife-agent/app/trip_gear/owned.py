@@ -10,6 +10,7 @@ import re
 from typing import Any, Iterable, List
 
 from app.trip_gear.models import GearItem, OwnedItem
+from app.trip_gear.spec_match import parse_specs
 
 _OWNED_RE = re.compile(
     r"(?:带了|带的有|买了|买过|购入了|准备了|(?<![没不缺少无])有)\s*([^，。；;！？\n]{1,40})"
@@ -29,7 +30,7 @@ def _clean_name(name: str) -> str:
     return cleaned.strip(" 的了")
 
 
-def _parse_item(raw: str) -> tuple[str, int]:
+def _parse_item(raw: str) -> tuple[str, int, dict]:
     text = str(raw or "").strip()
     qty = 1
     match = _QTY_RE.match(text)
@@ -40,7 +41,9 @@ def _parse_item(raw: str) -> tuple[str, int]:
         elif raw_qty in _CN_NUM:
             qty = _CN_NUM[raw_qty]
         text = text[match.end():].strip()
-    return _clean_name(text), qty
+    name = _clean_name(text)
+    # 名称与描述分开传："-5℃ 的睡袋"要把温度落成温标，而不是只留个名字。
+    return name, qty, parse_specs(text, name)
 
 
 def extract_owned(text: str, source: str = "对话") -> List[OwnedItem]:
@@ -49,13 +52,13 @@ def extract_owned(text: str, source: str = "对话") -> List[OwnedItem]:
     for match in _OWNED_RE.finditer(str(text or "")):
         captured = match.group(1)
         for part in _SPLIT_RE.split(captured):
-            name, qty = _parse_item(part)
+            name, qty, specs = _parse_item(part)
             if len(name) < 2 or name in _GENERIC:
                 continue
             # "一堆装备""那些东西"是泛称，没有可购买的具体品类，跳过并留给确认入口。
             if name.endswith(("装备", "东西", "物品", "用品", "家伙什")):
                 continue
-            found.append(OwnedItem(name=name, qty=qty, source=source))
+            found.append(OwnedItem(name=name, qty=qty, source=source, specs=specs))
     return _dedupe(found)
 
 
@@ -112,6 +115,9 @@ def _dedupe(items: List[OwnedItem]) -> List[OwnedItem]:
         existing = merged.get(item.name)
         if existing:
             existing.qty = max(existing.qty, item.qty)
+            # 同一件东西可能一次说名字、一次说规格，两处都要留下。
+            for key, value in (item.specs or {}).items():
+                existing.specs.setdefault(key, value)
         else:
             merged[item.name] = item
     return list(merged.values())
@@ -138,9 +144,16 @@ def apply_owned(gear: List[GearItem], owned: List[OwnedItem]) -> List[GearItem]:
                 continue
             if own.qty >= item.qty:
                 item.status = "owned"
+                # 规格必须跟着走：只标"已有睡袋"而不带温标，校验就只能判未知。
+                for key, value in (own.specs or {}).items():
+                    item.specs.setdefault(key, value)
                 item.reason = _append(item.reason, f"已有（{own.source}）")
             else:
                 item.qty -= own.qty
+                # 数量不足时规格也要留下：扔掉规格等于把"已有的那件够不够用"
+                # 这条信息一起丢了。剩下的缺口仍按待购处理，不拿旧规格冒充新商品。
+                for key, value in (own.specs or {}).items():
+                    item.specs.setdefault(key, value)
                 item.reason = _append(
                     item.reason,
                     f"已有 {own.qty} 件（{own.source}），还差 {item.qty} 件",

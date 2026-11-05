@@ -3,9 +3,15 @@ SmartLife Agent - 数据库初始化脚本
 创建 SQLite 数据库并插入种子数据
 """
 import argparse
+import json
 import os
 import sqlite3
 from datetime import datetime
+
+try:  # 直接运行 data/init_db.py
+    from product_specs import lead_time_for, specs_for
+except ImportError:  # 以模块方式运行
+    from data.product_specs import lead_time_for, specs_for
 
 def init_database(force: bool = False):
     data_dir = os.path.dirname(os.path.abspath(__file__))
@@ -39,6 +45,8 @@ def init_database(force: bool = False):
         stock INTEGER DEFAULT 100,
         description TEXT,
         rating REAL DEFAULT 0,
+        specs TEXT,
+        lead_time_days INTEGER DEFAULT 3,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     CREATE TABLE reviews (
@@ -117,6 +125,18 @@ def init_database(force: bool = False):
         "INSERT INTO products (name, category, subcategory, price, waterproof, brand, stock, description, rating) VALUES (?,?,?,?,?,?,?,?,?)",
         products
     )
+
+    # 规格目录：温标、容量、防水这些"够不够用"的字段，统一由
+    # data/product_specs.py 提供，别在这里再写一份。
+    for row in products:
+        name, category = row[0], row[1]
+        specs = specs_for(name)
+        if not specs:
+            continue
+        c.execute(
+            "UPDATE products SET specs = ?, lead_time_days = ? WHERE name = ?",
+            (json.dumps(specs, ensure_ascii=False, sort_keys=True), lead_time_for(category), name),
+        )
     
     # 插入用户 (10)
     users = [

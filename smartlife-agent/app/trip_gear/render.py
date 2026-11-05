@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from app.trip_gear.budget import snapshot as budget_snapshot
 from app.trip_gear.itinerary import total_cost
 from app.trip_gear.models import Constraint, GearItem, Issue, Itinerary, TripFacts
 from app.trip_gear.verify import gear_cost
@@ -10,6 +11,11 @@ from app.trip_gear.verify import gear_cost
 
 def _money(value: float) -> str:
     return f"¥{float(value or 0):g}"
+
+
+def remaining_ratio_text(snap) -> str:
+    ratio = snap.ratio_left
+    return f"{ratio:.0%}" if ratio is not None else "一部分"
 
 
 _STATUS_LABELS = {
@@ -21,15 +27,33 @@ _STATUS_LABELS = {
 
 
 def _gear_line(item: GearItem, products: Dict[str, Dict[str, Any]]) -> str:
+    """一行装备。
+
+    买到的东西只显示「为什么带 → 买哪件」，不再显示规则内部的装备名
+    （"保暖层""防水鞋"是系统说法，用户看商品名就够了）；没买到的才需要
+    显示装备名，否则用户不知道缺什么。
+    """
+    product = products.get(item.name) if item.status == "need_buy" else None
+
+    if product:
+        brand = str(product.get("brand") or "")
+        name = str(product.get("name") or "")
+        # 商品名里已经带品牌时别再前缀一次，否则会出现"黑鹿 黑鹿帐篷 双人"。
+        label = name if (brand and brand in name) else f"{brand} {name}".strip()
+        reason = f"（{item.reason}）" if item.reason else ""
+        qty = f" ×{item.qty}" if item.qty > 1 else ""
+        head = f"- {reason} → {label} {_money(product.get('price') or 0)}{qty}"
+        match = product.get("match") or {}
+        if match.get("by_preference"):
+            head += "（按你偏好的品牌）"
+        if match.get("kind") == "substitute":
+            alias = match.get("alias") or ""
+            head += f"（库里没有同名商品，这是替代款{f'：{alias}' if alias else ''}）"
+        return head
+
     head = f"- {item.name} ×{item.qty}"
     if item.reason:
         head += f"（{item.reason}）"
-    product = products.get(item.name)
-    if item.status == "need_buy" and product:
-        head += (
-            f" → {product.get('brand', '')} {product.get('name', '')}"
-            f" {_money(product.get('price') or 0)}"
-        )
     return head
 
 
@@ -41,6 +65,7 @@ def render(
     products: Dict[str, Dict[str, Any]],
     issues: List[Issue],
     ambiguous_owned: Optional[List[str]] = None,
+    spend: Optional[Dict[str, Any]] = None,
 ) -> str:
     lines: List[str] = []
 
@@ -117,15 +142,35 @@ def render(
         if facts.gear_budget is not None:
             lines.append(f"装备单独预算 {_money(facts.gear_budget)}")
     else:
-        remaining = float(facts.budget) - total
+        snap = budget_snapshot(facts, itinerary, gear, products)
+        remaining = snap.remaining or 0.0
         if remaining >= 0:
+            ratio = snap.ratio_left
             tail = f"剩余 {_money(remaining)}"
+            if ratio is not None:
+                tail += f"（预算的 {ratio:.0%}）"
         else:
             tail = f"超出 {_money(-remaining)}"
         lines.append(
             f"行程 {_money(trip)} + 装备 {equipment_label} = {_money(total)}"
             f" / 预算 {_money(facts.budget)}（含装备），{tail}"
         )
+        upgrades = list((spend or {}).get("upgrades") or [])
+        if upgrades:
+            lines.append(f"为用满预算做了 {len(upgrades)} 处升级：")
+            for upgrade in upgrades:
+                # 商品名自身已经说明是什么，不再前缀内部装备名。
+                lines.append(
+                    f"- {upgrade['from']} {_money(upgrade['from_price'])} → "
+                    f"{upgrade['to']} {_money(upgrade['to_price'])}"
+                    f"（多花 {_money(upgrade['delta'])}）"
+                )
+        elif snap.underused:
+            reason = (spend or {}).get("reason") or "没有可升级的款"
+            lines.append(
+                f"预算还剩 {remaining_ratio_text(snap)}（{_money(remaining)}），"
+                f"但{reason}。"
+            )
 
     if issues:
         lines.append("")

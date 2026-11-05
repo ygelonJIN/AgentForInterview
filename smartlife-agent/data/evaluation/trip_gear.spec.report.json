@@ -1,0 +1,119 @@
+{
+  "generated_at": "2026-11-05T14:19:31",
+  "scenarios_file": "data/evaluation/trip_gear.spec.jsonl",
+  "summary": {
+    "scenarios": 10,
+    "judged": 9,
+    "skipped": 1,
+    "new_accuracy": 1.0,
+    "legacy_accuracy": 0.4444,
+    "new_distribution": {
+      "ok": 4,
+      "insufficient": 3,
+      "unknown": 2,
+      "skip": 1
+    },
+    "new_missed_insufficient": [],
+    "legacy_false_accept": [
+      "camp-cold-weak-bag",
+      "camp-cold-unknown-bag",
+      "camp-winter-weak-bag",
+      "camp-buy-unknown-product",
+      "camp-buy-weak-product"
+    ],
+    "legacy_reported_insufficient": 0,
+    "spec_unknown_rate": 0.2222
+  },
+  "rows": [
+    {
+      "id": "camp-cold-weak-bag",
+      "expect": "insufficient",
+      "new": "insufficient",
+      "legacy": "pass",
+      "new_hit": true,
+      "legacy_hit": false,
+      "note": "夜间 3℃ 要求温标 ≤ -2℃，10℃ 睡袋不够"
+    },
+    {
+      "id": "camp-cold-good-bag",
+      "expect": "ok",
+      "new": "ok",
+      "legacy": "pass",
+      "new_hit": true,
+      "legacy_hit": true,
+      "note": "-5℃ 温标满足 ≤ -2℃"
+    },
+    {
+      "id": "camp-cold-unknown-bag",
+      "expect": "unknown",
+      "new": "unknown",
+      "legacy": "pass",
+      "new_hit": true,
+      "legacy_hit": false,
+      "note": "有睡袋但没温标，不能当通过"
+    },
+    {
+      "id": "camp-mild-good-bag",
+      "expect": "ok",
+      "new": "ok",
+      "legacy": "pass",
+      "new_hit": true,
+      "legacy_hit": true,
+      "note": "夜间 12℃ 要求 ≤ 7℃，5℃ 刚够"
+    },
+    {
+      "id": "camp-winter-weak-bag",
+      "expect": "insufficient",
+      "new": "insufficient",
+      "legacy": "pass",
+      "new_hit": true,
+      "legacy_hit": false,
+      "note": "夜间 -8℃ 要求 ≤ -13℃，-5℃ 睡袋不够"
+    },
+    {
+      "id": "camp-winter-strong-bag",
+      "expect": "ok",
+      "new": "ok",
+      "legacy": "pass",
+      "new_hit": true,
+      "legacy_hit": true,
+      "note": "-15℃ 满足 ≤ -13℃"
+    },
+    {
+      "id": "hotel-no-bag-needed",
+      "expect": "skip",
+      "new": "skip",
+      "legacy": "skip",
+      "new_hit": true,
+      "legacy_hit": true,
+      "note": "住酒店不产生睡袋温标要求"
+    },
+    {
+      "id": "camp-buy-from-catalog",
+      "expect": "ok",
+      "new": "ok",
+      "legacy": "pass",
+      "new_hit": true,
+      "legacy_hit": true,
+      "note": "待购选到 -5℃ 商品，够用"
+    },
+    {
+      "id": "camp-buy-unknown-product",
+      "expect": "unknown",
+      "new": "unknown",
+      "legacy": "pass",
+      "new_hit": true,
+      "legacy_hit": false,
+      "note": "商品没有温标字段，不能默认够用"
+    },
+    {
+      "id": "camp-buy-weak-product",
+      "expect": "insufficient",
+      "new": "insufficient",
+      "legacy": "pass",
+      "new_hit": true,
+      "legacy_hit": false,
+      "note": "待购选到 10℃ 商品，夜间 3℃ 不够"
+    }
+  ]
+}

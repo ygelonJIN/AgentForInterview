@@ -63,3 +63,26 @@ venv312/bin/python scripts/export_ab_ranking_cases.py \
 `node.shopping:retrieve`、`node.shopping:generate` 和
 `node.langgraph:classify`。每条 sample 的原始值保留在
 `samples[].metadata.node_durations_ms`，便于按 workload 回溯。
+
+## 装备规格评测（温标够不够用）
+
+`trip_gear.spec.jsonl` 是露营/亲子场景集，一行一个场景，`expect` 为**人工
+标注**的期望结论（`ok` / `insufficient` / `unknown` / `skip`），不是被测代码
+算出来的。`products` 字段内联商品，避免评测依赖数据库当时的状态。
+
+```bash
+venv312/bin/python scripts/eval_trip_gear_specs.py
+```
+
+脚本把每个场景还原成事实、行程、装备与温标约束，跑真实校验器，再与"只查
+理由里有没有'温标'两个字"的旧逻辑对照，输出 `trip_gear.spec.report.json`。
+
+关键指标：
+
+- `new_accuracy` / `legacy_accuracy`：与人工标注的一致率；
+- `legacy_reported_insufficient`：旧逻辑判出"不够用"的次数，恒为 0（结构上做不到）；
+- `legacy_false_accept`：旧逻辑把"不够/未知"判成通过的场景；
+- `spec_unknown_rate`：规格缺失比例，这部分应当进澄清而不是默认放行。
+
+报告是确定性的：不调模型、不联网，同一份场景集每次结果一致，可直接进论文附录。
+

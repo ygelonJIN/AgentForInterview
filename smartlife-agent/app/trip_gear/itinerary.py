@@ -8,6 +8,16 @@ from app.trip_gear.models import DayPlan, Issue, Itinerary, ItineraryItem, TripF
 
 DAY_WINDOW_MIN = 840  # 8:00-22:00
 
+# 住宿估算价（元/人/晚）。没有供应商数据，只能给保守估价；凡是展示到
+# 用户面前的数字都要带"估算"，不能当成报价。
+LODGING_PRICE = {"camp": 50.0, "hotel": 400.0}
+
+
+def lodging_cost_for(lodging: str, people: int, nights: int = 1) -> float:
+    """按住宿类型算一晚的人均费用；认不出的类型按 0（当作不需要花钱）。"""
+    price = LODGING_PRICE.get(str(lodging or "").strip().lower(), 0.0)
+    return round(price * max(1, int(people)) * max(1, int(nights)), 2)
+
 _TIME_RE = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*$")
 
 
@@ -21,10 +31,13 @@ def activities_text(itinerary: Itinerary) -> str:
 
 
 def total_cost(itinerary: Itinerary) -> float:
-    return round(
-        sum(float(item.cost or 0) for day in itinerary.days for item in day.items),
-        2,
-    )
+    """行程总费用 = 条目花费 + 住宿费。
+
+    住宿单列一项而不是摊进条目里：换住宿时要能单独算出"这一项变了多少"。
+    """
+    items = sum(float(item.cost or 0) for day in itinerary.days for item in day.items)
+    lodging = sum(float(day.lodging_cost or 0) for day in itinerary.days)
+    return round(items + lodging, 2)
 
 
 def _parse_time(value: str) -> Optional[int]:
@@ -107,5 +120,12 @@ def fallback_itinerary(facts: TripFacts) -> Itinerary:
                 ItineraryItem(time="14:00", activity=f"{place}下午活动", duration_min=180, cost=100),
                 ItineraryItem(time="18:00", activity="晚餐", duration_min=90, cost=80),
             ]
-        plans.append(DayPlan(day=day, items=items, lodging=facts.lodging))
+        plans.append(
+            DayPlan(
+                day=day,
+                items=items,
+                lodging=facts.lodging,
+                lodging_cost=lodging_cost_for(facts.lodging, facts.people),
+            )
+        )
     return Itinerary(destination=place, days=plans)

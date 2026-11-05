@@ -29,6 +29,10 @@ from app.trip_gear.owned import (
 from app.trip_gear.render import render
 from app.trip_gear.repair import RepairAction, apply_action, repair_candidates
 from app.trip_gear.shopping import GearShopper
+from app.trip_gear.preferences import extract_preferences
+from app.trip_gear.spend import upgrade_within_budget
+from app.trip_gear.spec_match import parse_specs
+from app.trip_gear.verdict import judge
 from app.trip_gear.verify import verify
 
 CONSTRAINT_INFER_TIMEOUT = 6.0
@@ -67,6 +71,15 @@ class TripGearState(TypedDict, total=False):
     revision: int
     # 修复候选：verify 节点算好，repair 每轮消费一条
     repair_options: List[Dict[str, Any]]
+    # 校验结论：走哪条路（feasible / repairable / needs_input / infeasible）
+    verdict: Dict[str, Any]
+    tau: float
+    # 校验后追问的轮数：问得出价值才问，且最多两轮
+    clarify_rounds: int
+    # 从长期记忆里抽出的选品偏好（品牌、住宿倾向），只做软提示
+    preferences: Dict[str, Any]
+    # 预算利用：把该花的钱花掉，记下升级了哪几处
+    spend: Dict[str, Any]
 
     # 输出
     response: str
@@ -251,6 +264,7 @@ async def owned(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str
     )
     items = [GearItem.model_validate(item) for item in state["gear"]]
     apply_owned(items, owned_items)
+    preferences = extract_preferences(memories)
 
     # "我有装备"这类模糊说法既不能算已有（会漏买），也不能当没说（会重复买），
     # 单独收集起来，在结果里给用户一个确认入口。
@@ -269,6 +283,7 @@ async def owned(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str
         "gear": [item.model_dump() for item in items],
         "owned": [item.model_dump() for item in owned_items],
         "owned_ambiguous": ambiguous,
+        "preferences": preferences.as_dict(),
         "status": "owned_resolved",
     }
 
@@ -288,13 +303,38 @@ async def shop(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str,
     products = dict(state.get("products") or {})
     product_search = _dep(runtime, "product_search", "_search")
     if product_search:
-        GearShopper(product_search).fill(
+        preferred = (state.get("preferences") or {}).get("brands") or []
+        GearShopper(product_search, preferred_brands=preferred).fill(
             items, products, remaining_budget=_remaining_budget(facts, itinerary)
         )
-    await _notify(runtime, "shop", f"已匹配 {len(products)} 件商品")
+
+    # 预算不是上限而是计划：选完商品还有额度，就在同品类里换更好的款。
+    spend: Dict[str, Any] = {}
+    if product_search and facts.budget is not None:
+        left = _remaining_budget(facts, itinerary)
+        if left is not None:
+            for item in items:
+                if item.status != "need_buy":
+                    continue
+                product = products.get(item.name)
+                if product:
+                    left -= float(product.get("price") or 0) * item.qty
+            # 没有专门的替代检索时，退回到商品检索本身——它能按 query 找同类。
+            find_alternatives = (
+                _dep(runtime, "alternatives", "_alternatives") or product_search
+            )
+            spend = upgrade_within_budget(
+                facts, items, products, round(left, 2), find_alternatives
+            ).as_dict()
+    await _notify(
+        runtime, "shop",
+        f"已匹配 {len(products)} 件商品"
+        + (f"，为用满预算升级 {len(spend.get('upgrades') or [])} 处" if spend else ""),
+    )
     return {
         "gear": [item.model_dump() for item in items],
         "products": products,
+        "spend": spend,
         "status": "shopped",
     }
 
@@ -304,47 +344,134 @@ async def verify_node(state: TripGearState, runtime: Runtime[TurnContext]) -> Di
     constraints = [Constraint.model_validate(item) for item in state["constraints"]]
     itinerary = Itinerary.model_validate(state["itinerary"])
     items = [GearItem.model_validate(item) for item in state["gear"]]
-    issues = verify(facts, constraints, itinerary, items, state.get("products") or {})
+    # 替代检索只在"赶不上/无货"时才真的被调用，这里先拿到回调。
+    find_alternatives = (
+        _dep(runtime, "alternatives", "_alternatives")
+        or _dep(runtime, "product_search", "_search")
+    )
+    issues = verify(
+        facts, constraints, itinerary, items, state.get("products") or {},
+        find_alternatives=find_alternatives,
+    )
     repair_options: List[Dict[str, Any]] = []
     budget_blocked = any(
         str(issue.constraint).startswith(("预算", "装备预算")) and issue.severity == "critical"
         for issue in issues
     )
     if budget_blocked:
-        find_alternatives = _dep(runtime, "alternatives", "_alternatives")
+        candidates = repair_candidates(
+            items,
+            state.get("products") or {},
+            find_alternatives=find_alternatives,
+            facts=facts,
+            itinerary=itinerary,
+        )
+        # 能自动执行的才进修复队列；要用户点头的（改住宿）只作为选项摆出来。
         repair_options = [
-            action.as_dict()
-            for action in repair_candidates(
-                items,
-                state.get("products") or {},
-                find_alternatives=find_alternatives,
-            )
+            action.as_dict() for action in candidates if not action.requires_confirm
         ]
+        confirm_options = [
+            action.as_dict() for action in candidates if action.requires_confirm
+        ]
+    else:
+        confirm_options = []
+    verdict = judge(
+        constraints,
+        issues,
+        repair_options=repair_options,
+        tau=state.get("tau"),
+    )
+    if confirm_options:
+        # 需要确认的改法也递出去，让界面能问"要不要改成住民宿"。
+        verdict.alternatives = list(verdict.alternatives) + confirm_options
     await _notify(
         runtime, "verify",
-        f"发现 {len(issues)} 个问题，{len(repair_options)} 个可修复动作",
+        f"发现 {len(issues)} 个问题，{len(repair_options)} 个可修复动作；"
+        f"结论 {verdict.state}",
     )
     return {
         "issues": [issue.model_dump() for issue in issues],
         "constraints": [item.model_dump() for item in constraints],
         "repair_options": repair_options,
+        "verdict": verdict.model_dump(),
         "status": "verified",
     }
 
 
 def after_verify(state: TripGearState) -> str:
-    budget_issue = any(
-        str(issue.get("constraint", "")).startswith(("预算", "装备预算"))
-        and issue.get("severity") == "critical"
-        for issue in state.get("issues", [])
-    )
+    """三条出路：能修就修；缺的是信息就问；其余直接出结果。
+
+    判断依据从"有没有预算问题"换成"结论是哪一种"：温标不够、无货这类
+    修不动的问题不会再被送进修复空转两轮。
+    """
+    verdict = state.get("verdict") or {}
+    state_name = verdict.get("state")
+
     if (
-        budget_issue
+        state_name == "repairable"
         and int(state.get("revision", 0)) < int(state.get("max_repairs", 2))
         and state.get("repair_options")
     ):
         return "repair"
+
+    if state_name == "needs_input" and int(state.get("clarify_rounds", 0)) < MAX_VERIFY_CLARIFY_ROUNDS:
+        return "verify_clarify"
+
     return "finalize"
+
+
+async def verify_clarify(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
+    """结论是"待确认"时发起一次有价值提问；补充后回校验复审。
+
+    与 ``derive`` 后的 ``clarify`` 分工不同：那个补的是"能不能开始规划"的
+    槽位（目的地、天数），这个补的是"方案到底行不行"的判断依据（温标、
+    预算口径）。后者只有算过一遍方案才知道该问什么。
+    """
+    verdict = state.get("verdict") or {}
+    ask = verdict.get("ask") or {}
+    missing = list(ask.get("missing") or [])
+    question = str(ask.get("question") or "还差一点信息才能判断，能补充一下吗？")
+    rounds = int(state.get("clarify_rounds", 0))
+
+    answer = interrupt(
+        {
+            "type": "trip_gear_verify_clarify",
+            "missing": missing,
+            "question": question,
+            "verdict": verdict,
+            "round": rounds,
+        }
+    )
+
+    text = str(answer or "").strip()
+    if not text:
+        await _notify(runtime, "verify", "未收到补充信息，按当前结论输出")
+        return {"status": "clarify_pending", "response": question}
+
+    facts = TripFacts.model_validate(state["facts"])
+    extra_facts, extra_constraints = derive_constraints(text)
+    # 这一问是请用户改条件，所以补充可以覆盖原值。
+    merged = _merge_facts(facts, extra_facts, overwrite=True)
+    constraints = _merge_constraints(
+        [Constraint.model_validate(item) for item in state.get("constraints", [])],
+        extra_constraints,
+    )
+    items = [GearItem.model_validate(item) for item in state["gear"]]
+    _apply_specs_from_text(items, text)
+
+    await _notify(runtime, "verify", f"已收到补充，重新校验（第 {rounds + 1} 轮）")
+    return {
+        "facts": merged.model_dump(),
+        "constraints": [item.model_dump() for item in constraints],
+        "gear": [item.model_dump() for item in items],
+        "clarify_rounds": rounds + 1,
+        "status": "verify_clarified",
+    }
+
+
+def after_verify_clarify(state: TripGearState) -> str:
+    """补充了就回校验复审；没补充就结束本轮，把问题直接回给用户。"""
+    return "verify" if state.get("status") == "verify_clarified" else "end"
 
 
 async def repair(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
@@ -362,12 +489,17 @@ async def repair(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[st
         saving=float(raw.get("saving") or 0),
         reason=str(raw.get("reason") or ""),
         replacement=raw.get("replacement"),
+        meta=dict(raw.get("meta") or {}),
+        requires_confirm=bool(raw.get("requires_confirm")),
     )
-    apply_action(action, items, products)
+    facts = TripFacts.model_validate(state["facts"])
+    itinerary = Itinerary.model_validate(state["itinerary"])
+    apply_action(action, items, products, itinerary=itinerary, facts=facts)
     await _notify(runtime, "repair", action.reason or f"已调整 {action.name}")
     return {
         "gear": [item.model_dump() for item in items],
         "products": products,
+        "itinerary": itinerary.model_dump(),
         "revision": int(state.get("revision", 0)) + 1,
         "repair_options": options[1:],
         "status": "repaired",
@@ -383,6 +515,7 @@ async def finalize(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[
         state.get("products") or {},
         [Issue.model_validate(item) for item in state.get("issues", [])],
         list(state.get("owned_ambiguous") or []),
+        spend=state.get("spend") or {},
     )
     await _notify(runtime, "finalize", "完成")
     sink = runtime.context.sink_for(runtime)
@@ -397,6 +530,7 @@ async def finalize(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[
             "products": state.get("products") or {},
             "issues": [item.model_dump() for item in map(Issue.model_validate, state.get("issues", []))],
             "owned_ambiguous": list(state.get("owned_ambiguous") or []),
+            "verdict": state.get("verdict") or {},
             "revision": int(state.get("revision", 0)),
         }, step="finalize")
     except Exception:
@@ -404,6 +538,67 @@ async def finalize(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[
     for start in range(0, len(text), 80):
         await sink.emit_token(text[start:start + 80], step="generate")
     return {"response": text, "status": "ok"}
+
+
+MAX_VERIFY_CLARIFY_ROUNDS = 2
+
+
+def _merge_facts(base: TripFacts, extra: TripFacts, overwrite: bool = False) -> TripFacts:
+    """把补充信息并回事实。
+
+    默认只填空槽位，不覆盖用户说过的话；``overwrite=True`` 用于"校验后追问"
+    的回复——那一问本身就是请用户改条件（"放宽预算还是减内容"），
+    这时新给的预算不是补充而是修正，必须采纳。
+    """
+    merged = base.model_copy(deep=True)
+    if (not merged.destination or overwrite) and extra.destination:
+        merged.destination = extra.destination
+    if (not merged.days or overwrite) and extra.days:
+        merged.days = extra.days
+    if (merged.people <= 1 and extra.people > 1) or (overwrite and extra.people > 0):
+        merged.people = extra.people
+    if (merged.budget is None and extra.budget is not None) or (overwrite and extra.budget is not None):
+        merged.budget = extra.budget
+        merged.budget_scope = extra.budget_scope
+    if (not merged.lodging or overwrite) and extra.lodging:
+        merged.lodging = extra.lodging
+    if (not merged.transport or overwrite) and extra.transport:
+        merged.transport = extra.transport
+    if extra.with_kids and (not merged.with_kids or overwrite):
+        merged.with_kids = True
+    return merged
+
+
+def _merge_constraints(
+    current: List[Constraint],
+    extra: List[Constraint],
+) -> List[Constraint]:
+    """新约束按 key 去重后追加，保持原有顺序。"""
+    known_keys = {item.key for item in current if item.key}
+    merged = list(current)
+    for constraint in extra:
+        if constraint.key and constraint.key in known_keys:
+            continue
+        merged.append(constraint)
+        if constraint.key:
+            known_keys.add(constraint.key)
+    return merged
+
+
+def _apply_specs_from_text(gear: List[GearItem], text: str) -> None:
+    """把用户补充的规格落到对应装备上。
+
+    问"睡袋温标多少"，用户答"零下十度"，这段文本不会变成约束，
+    只有挂回装备本身，下一轮校验才看得见。
+    """
+    raw = str(text or "")
+    if not raw:
+        return
+    for item in gear:
+        if not item.name or item.name not in raw:
+            continue
+        for key, value in parse_specs(raw, item.name).items():
+            item.specs.setdefault(key, value)
 
 
 def after_derive(state: TripGearState) -> str:
@@ -447,22 +642,7 @@ async def clarify(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[s
 
     # 用补充文本重新派生，只填空缺槽位，不覆盖用户已说过的信息
     extra_facts, extra_constraints = derive_constraints(text)
-    merged = facts.model_copy(deep=True)
-    if not merged.destination and extra_facts.destination:
-        merged.destination = extra_facts.destination
-    if not merged.days and extra_facts.days:
-        merged.days = extra_facts.days
-    if merged.people <= 1 and extra_facts.people > 1:
-        merged.people = extra_facts.people
-    if merged.budget is None and extra_facts.budget is not None:
-        merged.budget = extra_facts.budget
-        merged.budget_scope = extra_facts.budget_scope
-    if not merged.lodging and extra_facts.lodging:
-        merged.lodging = extra_facts.lodging
-    if not merged.transport and extra_facts.transport:
-        merged.transport = extra_facts.transport
-    if not merged.with_kids and extra_facts.with_kids:
-        merged.with_kids = True
+    merged = _merge_facts(facts, extra_facts)
 
     constraints = [Constraint.model_validate(item) for item in state.get("constraints", [])]
     known_keys = {item.key for item in constraints if item.key}
@@ -527,7 +707,17 @@ def build_trip_gear_plan_graph(checkpointer: Optional[Any] = None):
     graph.add_edge("gear", "owned")
     graph.add_edge("owned", "shop")
     graph.add_edge("shop", "verify")
-    graph.add_conditional_edges("verify", after_verify, {"repair": "repair", "finalize": "finalize"})
+    graph.add_node("verify_clarify", verify_clarify, timeout=5)
+    graph.add_conditional_edges(
+        "verify",
+        after_verify,
+        {"repair": "repair", "verify_clarify": "verify_clarify", "finalize": "finalize"},
+    )
+    graph.add_conditional_edges(
+        "verify_clarify",
+        after_verify_clarify,
+        {"verify": "verify", "end": END},
+    )
     graph.add_edge("repair", "verify")
     graph.add_edge("finalize", END)
     return graph.compile(checkpointer=checkpointer)

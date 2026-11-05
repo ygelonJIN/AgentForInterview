@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DOCS = ROOT / "docs"
+DOCS = ROOT.parent / "docs"
 SOURCE = DOCS / "orchestration-flow.graph.json"
 TEMPLATE = DOCS / "orchestration-flow.template.html"
 HTML_OUT = DOCS / "orchestration-flow-review.html"

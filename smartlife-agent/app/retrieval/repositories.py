@@ -54,7 +54,7 @@ class ProductRepository:
         params.append(limit)
         sql = f"""
             SELECT id, name, category, subcategory, price, waterproof, brand,
-                   stock, description, rating, created_at
+                   stock, description, rating, created_at, specs, lead_time_days
             FROM products
             {where}
             ORDER BY rating DESC, price ASC, id ASC
