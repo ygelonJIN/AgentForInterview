@@ -961,23 +961,32 @@ def _day_html(day: Dict[str, Any]) -> str:
     )
 
 
+def _gear_counts(gear: Sequence[Dict[str, Any]]) -> tuple[int, int]:
+    """清单只由商品库决定：库里没有的条目在 shop 阶段就已被移除。"""
+    owned = sum(1 for item in gear if item.get("status") == "owned")
+    need = sum(1 for item in gear if item.get("status") == "need_buy")
+    return owned, need
+
+
 def _gear_columns(gear: Sequence[Dict[str, Any]], products: Dict[str, Any]) -> tuple[str, str]:
-    groups: Dict[str, List[Dict[str, Any]]] = {"owned": [], "need_buy": [], "self_provided": [], "skipped": []}
-    for item in gear:
-        groups.setdefault(str(item.get("status", "need_buy")), []).append(item)
+    """已有 / 待购两列；没有内容的分组不输出占位列。"""
+    owned = [item for item in gear if item.get("status") == "owned"]
+    need = [item for item in gear if item.get("status") == "need_buy"]
+    skipped = [item for item in gear if item.get("status") == "skipped"]
 
     columns = []
-    for key in ("owned", "need_buy", "self_provided"):
-        items = groups.get(key) or []
+    for key, items in (("owned", owned), ("need_buy", need)):
+        if not items:
+            continue
         rows = []
         for item in items:
             product = products.get(item.get("name")) or {}
             price_html = "—"
-            if key == "need_buy":
-                if product.get("price"):
-                    price_html = f'{_money(product.get("price"))}<small>{_e(product.get("brand", "") or "自选")}</small>'
-                else:
-                    price_html = '未匹配<small>未计入</small>'
+            if key == "need_buy" and product.get("price"):
+                price_html = (
+                    f'{_money(product.get("price"))}'
+                    f'<small>{_e(product.get("brand", "") or "自选")}</small>'
+                )
             reason = item.get("reason") or ""
             qty = item.get("qty") or 1
             rows.append(
@@ -986,19 +995,23 @@ def _gear_columns(gear: Sequence[Dict[str, Any]], products: Dict[str, Any]) -> t
                 f'<span class="sl-gear-price">{price_html}</span>'
                 f'<span class="sl-gear-reason">{_e(reason)}</span></div>'
             )
-        if not rows:
-            rows.append('<div class="sl-gear-row"><span class="sl-gear-name">—</span><span class="sl-gear-price">—</span></div>')
         columns.append(
             f'<div class="sl-gear-col"><div class="sl-gear-head">{GEAR_STATUS_LABEL[key]}'
             f'<span class="n">{len(items)}</span></div>{"".join(rows)}</div>'
         )
 
-    foot = ""
-    skipped = groups.get("skipped") or []
+    html = f'<div class="sl-gear">{"".join(columns)}</div>' if columns else ""
+
+    foot_lines = []
+    budget_blocked = [item for item in need if "预算不足" in (item.get("reason") or "")]
+    if budget_blocked:
+        foot_lines.append(
+            "预算不足，未选款：" + "、".join(str(item.get("name", "")) for item in budget_blocked)
+        )
     if skipped:
-        names = "、".join(str(item.get("name", "")) for item in skipped)
-        foot = f'<div class="sl-gear-foot">已按预算省略：{_e(names)}</div>'
-    return f'<div class="sl-gear">{"".join(columns)}</div>', foot
+        foot_lines.append("已按预算省略：" + "、".join(str(item.get("name", "")) for item in skipped))
+    foot = "".join(f'<div class="sl-gear-foot">{_e(line)}</div>' for line in foot_lines)
+    return html, foot
 
 
 def plan_panels_html(payload: Dict[str, Any]) -> str:
@@ -1021,18 +1034,17 @@ def plan_panels_html(payload: Dict[str, Any]) -> str:
                 pass
 
     gear_total = 0.0
-    missing = 0
     for item in gear:
         if item.get("status") != "need_buy":
             continue
         product = products.get(item.get("name")) or {}
-        if product.get("price"):
-            try:
-                gear_total += float(product["price"]) * float(item.get("qty") or 1)
-            except (TypeError, ValueError):
-                missing += 1
-        else:
-            missing += 1
+        if not product.get("price"):
+            # 库里没有的不计价，也不单独占一行（装备清单里已用一句话说明）
+            continue
+        try:
+            gear_total += float(product["price"]) * float(item.get("qty") or 1)
+        except (TypeError, ValueError):
+            continue
     total = trip_total + gear_total
     budget = facts.get("budget")
     has_budget = isinstance(budget, (int, float))
@@ -1064,17 +1076,16 @@ def plan_panels_html(payload: Dict[str, Any]) -> str:
 
     if gear:
         columns, foot = _gear_columns(gear, products)
-        owned = sum(1 for item in gear if item.get("status") == "owned")
-        need = sum(1 for item in gear if item.get("status") == "need_buy")
-        provided = sum(1 for item in gear if item.get("status") == "self_provided")
-        parts.append(
-            panel_html(
-                "03",
-                "装备清单",
-                f"{len(gear)} 项 · 已有 {owned} / 待购 {need} / 自备 {provided}",
-                f'{columns}{foot}',
+        owned, need = _gear_counts(gear)
+        if columns or foot:
+            parts.append(
+                panel_html(
+                    "03",
+                    "装备清单",
+                    f"已有 {owned} / 待购 {need}",
+                    f'{columns}{foot}',
+                )
             )
-        )
 
     over = remaining is not None and remaining < 0
     delta_class = "sl-delta sl-delta--over" if over else "sl-delta"
@@ -1085,8 +1096,6 @@ def plan_panels_html(payload: Dict[str, Any]) -> str:
     bar_class = "sl-bar-fill sl-bar-fill--over" if over else "sl-bar-fill"
     scope = "含装备" if (facts.get("budget_scope") or "trip_and_gear") != "trip_only" else "不含装备"
     side_rows = [("行程", _money(trip_total)), ("装备", _money(gear_total))]
-    if missing:
-        side_rows.append(("未匹配", f"{missing} 项"))
     side_rows.append(("预算口径", scope))
     kv = "".join(f'<div class="sl-kv-row"><span>{_e(k)}</span><b>{_e(v)}</b></div>' for k, v in side_rows)
     parts.append(

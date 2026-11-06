@@ -762,6 +762,9 @@ def _plan_lead_html(payload):
         parts.append(f"{days} 天")
     if facts.get("people"):
         parts.append(f"{facts.get('people')} 人")
+    elif facts:
+        # 人数没说：显示"未指定"，不要静默当成 1 人
+        parts.append("人数未指定")
     if facts.get("destination"):
         parts.append(str(facts["destination"]))
     head = " · ".join(parts) if parts else "方案"

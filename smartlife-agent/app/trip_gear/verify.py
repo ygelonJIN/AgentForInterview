@@ -383,7 +383,7 @@ def check_constraints(
             else:
                 _check_bag(constraint, bag, facts, products, issues)
         elif key == "rain":
-            if facts.rain_probability is not None and facts.rain_probability >= 40 and "雨具" not in names:
+            if facts.rain_probability is not None and facts.rain_probability >= 40 and not any("雨" in name for name in names):
                 _violate(
                     constraint, issues,
                     actual=f"降水概率 {facts.rain_probability:g}%", limit="应备雨具",

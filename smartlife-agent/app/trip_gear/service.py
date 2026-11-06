@@ -19,6 +19,7 @@ from app.llm_json import ainvoke_json, extract_json_object as _extract_json, mes
 from app.observability import log_exception
 from app.retrieval.repositories import ProductRepository
 from app.tools.travel_executor import TravelToolExecutor
+from app.trip_gear.catalog import catalog_digest
 from app.trip_gear.itinerary import fallback_itinerary
 from app.trip_gear.models import (
     Constraint,
@@ -78,11 +79,12 @@ _JSON_SCHEMA_HINT = """只输出一个 JSON 对象，不要任何解释文字，
     }
   ],
   "gear": [
-    {"name": "装备名", "qty": 1, "reason": "为什么带"}
+    {"name": "商品品类词", "qty": 1, "reason": "为什么带"}
   ]
 }
 要求：days 的数量必须等于给定天数；items 至少 3 条；cost 为整数元，免费或不确定写 0；
-gear 只列这次出行需要准备的物品，不要身份证/手机/充电器这类通用物品。"""
+gear 的 name 必须取自【我们商品库里现有的品类】里出现过的词（如 帐篷、睡袋、羽绒服、T恤、登山鞋）；
+目录里没有的品类不要写。也不要写身份证/手机/充电器这类通用物品。"""
 
 
 class _InferredConstraint(BaseModel):
@@ -125,7 +127,12 @@ class TripGearService:
 4. 行程要贴合事实：住宿方式、天气、同行人、预算都要考虑；
 5. 天数必须与给定天数一致；
 6. 同时给出这次出行的装备建议（gear）：名称、数量、为什么带，覆盖衣物、鞋、洗护、药品、活动装备，不要列身份证/手机/充电器这类通用物品；
-7. 装备要贴合场景：商务见客户要正装皮鞋，海边度假要裙装/泳衣/防晒，露营要帐篷睡袋。
+7. 装备要贴合场景：海边度假要泳衣/防晒，露营要帐篷睡袋，寒冷要羽绒服；
+8. 装备只能从下面的商品库目录里选：目录没有的品类一律不写，写了也买不到；
+9. 命名尽量用目录示例里出现过的词（写"羽绒服"而不是"保暖层"，写"登山鞋"而不是"防水鞋"）；
+10. 目录是动态的，以它为准，不要凭常识补充目录外的品类。
+
+{catalog}
 """),
             ("user", "{facts}"),
         ])
@@ -148,7 +155,7 @@ class TripGearService:
             [
                 f"目的地：{facts.destination}",
                 f"天数：{facts.days}",
-                f"人数：{facts.people}",
+                f"人数：{facts.people if facts.people is not None else '未指定（按 1 人计）'}",
                 f"预算：{facts.budget if facts.budget is not None else '未指定'}"
                 f"（{'含装备' if facts.budget_scope == 'all_in' else '不含装备'}）",
                 f"住宿：{facts.lodging or '未指定'}",
@@ -159,13 +166,7 @@ class TripGearService:
             ]
         )
 
-        messages = [
-            SystemMessage(content=self.plan_prompt.messages[0].prompt.template),
-            SystemMessage(content=_JSON_SCHEMA_HINT),
-            HumanMessage(
-                content=self.plan_prompt.messages[1].prompt.template.replace("{facts}", facts_text)
-            ),
-        ]
+        messages = self._plan_messages(facts_text)
 
         # 两轮：首轮直接要 JSON；失败后把错误回灌，要求只输出 JSON 再试一次。
         last_error = ""
@@ -202,6 +203,17 @@ class TripGearService:
             {"attempts": 2},
         )
         return fallback_itinerary(facts), []
+
+    def _plan_messages(self, facts_text: str) -> List[Any]:
+        """拼提示词：事实 + 商品库目录。目录为空时退回"只用规则"的写法。"""
+        catalog = catalog_digest() or "【我们商品库里现有的品类】（目录不可用，仅按通用常识给建议）"
+        system = self.plan_prompt.messages[0].prompt.template.replace("{catalog}", catalog)
+        human = self.plan_prompt.messages[1].prompt.template.replace("{facts}", facts_text)
+        return [
+            SystemMessage(content=system),
+            SystemMessage(content=_JSON_SCHEMA_HINT),
+            HumanMessage(content=human),
+        ]
 
     @staticmethod
     def _from_plan_output(
@@ -265,6 +277,18 @@ class TripGearService:
             log_exception("trip_gear.infer_constraints", exc)
             return []
         return [item.model_dump() for item in result.constraints]
+
+    async def _select_products(self, entries, facts, remaining):
+        """模型挑款（候选已由打分器裁剪）；失败返回空字典，由打分兜底。"""
+        from app.trip_gear.select_by_model import choose_products
+
+        return await choose_products(entries, facts, remaining)
+
+    async def _assist_slots(self, message: str, missing) -> Dict[str, Any]:
+        """槽位补全兜底（默认关闭，见 app/services/slot_assist.py）。"""
+        from app.services.slot_assist import assist_slots
+
+        return await assist_slots(message, missing)
 
     async def _weather(self, destination: str, date_str: str) -> Optional[Dict[str, Any]]:
         try:

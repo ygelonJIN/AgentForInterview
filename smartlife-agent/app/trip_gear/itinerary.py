@@ -13,10 +13,14 @@ DAY_WINDOW_MIN = 840  # 8:00-22:00
 LODGING_PRICE = {"camp": 50.0, "hotel": 400.0}
 
 
-def lodging_cost_for(lodging: str, people: int, nights: int = 1) -> float:
-    """按住宿类型算一晚的人均费用；认不出的类型按 0（当作不需要花钱）。"""
+def lodging_cost_for(lodging: str, people=None, nights: int = 1) -> float:
+    """按住宿类型算一晚的人均费用；认不出的类型按 0（当作不需要花钱）。
+
+    ``people`` 允许为 None（用户没说人数），此时按 1 人计。
+    """
     price = LODGING_PRICE.get(str(lodging or "").strip().lower(), 0.0)
-    return round(price * max(1, int(people)) * max(1, int(nights)), 2)
+    count = max(1, int(people or 1))
+    return round(price * count * max(1, int(nights)), 2)
 
 _TIME_RE = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*$")
 
@@ -125,7 +129,7 @@ def fallback_itinerary(facts: TripFacts) -> Itinerary:
                 day=day,
                 items=items,
                 lodging=facts.lodging,
-                lodging_cost=lodging_cost_for(facts.lodging, facts.people),
+                lodging_cost=lodging_cost_for(facts.lodging, facts.effective_people),
             )
         )
     return Itinerary(destination=place, days=plans)

@@ -16,7 +16,10 @@ _OWNED_RE = re.compile(
     r"(?:带了|带的有|买了|买过|购入了|准备了|(?<![没不缺少无])有)\s*([^，。；;！？\n]{1,40})"
 )
 _SPLIT_RE = re.compile(r"[、,，和及与]|还有|以及")
-_QTY_RE = re.compile(r"^\s*([一两二三四五六七八九十\d]+)\s*(个|顶|双|件|套|条|台|把|瓶|盒)")
+_QTY_RE = re.compile(
+    r"^\s*([一两二三四五六七八九十\d]+)\s*"
+    r"(个|顶|双|件|套|条|台|把|瓶|盒|支|只|张|根|副|包|枚|罐|袋|副|辆|块)"
+)
 _CN_NUM = {
     "一": 1, "两": 2, "二": 2, "三": 3, "四": 4, "五": 5,
     "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
@@ -129,6 +132,11 @@ def merge_owned(*groups: Iterable[OwnedItem]) -> List[OwnedItem]:
 
 
 def _names_match(owned: str, gear: str) -> bool:
+    """只做词形包含判断：不维护"西装外套→正装"这种别名表。
+
+    商品词一多，别名表就维护不动；归属判断交给商品检索（见 GearShopper），
+    这里只负责"用户说的是不是同一件东西"。
+    """
     left = re.sub(r"\s+", "", owned)
     right = re.sub(r"\s+", "", gear)
     if len(left) < 2 or len(right) < 2:
@@ -137,11 +145,18 @@ def _names_match(owned: str, gear: str) -> bool:
 
 
 def apply_owned(gear: List[GearItem], owned: List[OwnedItem]) -> List[GearItem]:
-    """把已有物品映射回装备清单；数量不够时只补缺口。"""
+    """把已有物品映射回装备清单；数量不够时只补缺口。
+
+    规则推导不出来的"已有"（用户有一件西装外套，但正式场合规则只写"正装"）
+    在匹配不上的情况下**补进清单**并标 owned——否则用户说了等于没说，
+    界面上永远是"已有 0"。
+    """
+    matched: set = set()
     for item in gear:
-        for own in owned:
+        for index, own in enumerate(owned):
             if not _names_match(own.name, item.name):
                 continue
+            matched.add(index)
             if own.qty >= item.qty:
                 item.status = "owned"
                 # 规格必须跟着走：只标"已有睡袋"而不带温标，校验就只能判未知。
@@ -159,6 +174,19 @@ def apply_owned(gear: List[GearItem], owned: List[OwnedItem]) -> List[GearItem]:
                     f"已有 {own.qty} 件（{own.source}），还差 {item.qty} 件",
                 )
             break
+
+    for index, own in enumerate(owned):
+        if index in matched:
+            continue
+        gear.append(
+            GearItem(
+                name=own.name,
+                qty=own.qty,
+                reason=f"已有（{own.source}）",
+                status="owned",
+                specs=dict(own.specs or {}),
+            )
+        )
     return gear
 
 

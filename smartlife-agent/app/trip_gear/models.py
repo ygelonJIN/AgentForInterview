@@ -136,11 +136,15 @@ class Issue(BaseModel):
 
 
 class TripFacts(BaseModel):
-    """整趟出行的已知事实；装备规则只读这些，不读条目标签。"""
+    """整趟出行的已知事实；装备规则只读这些，不读条目标签。
+
+    ``people`` 为 ``None`` 表示用户没说人数——计算时按 1 人处理，
+    但不能把它当成"用户说了 1 人"，展示和追问要区分这两种情况。
+    """
 
     destination: str = ""
     days: Optional[int] = None
-    people: int = 1
+    people: Optional[int] = None
     budget: Optional[float] = None
     gear_budget: Optional[float] = None
     budget_scope: str = "all_in"  # all_in / trip_only
@@ -155,3 +159,8 @@ class TripFacts(BaseModel):
     @property
     def is_camping(self) -> bool:
         return self.lodging == "camp"
+
+    @property
+    def effective_people(self) -> int:
+        """计算用人数：没说就按 1 人。"""
+        return self.people or 1

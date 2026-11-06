@@ -47,8 +47,8 @@ def _gear_line(item: GearItem, products: Dict[str, Dict[str, Any]]) -> str:
         if match.get("by_preference"):
             head += "（按你偏好的品牌）"
         if match.get("kind") == "substitute":
-            alias = match.get("alias") or ""
-            head += f"（库里没有同名商品，这是替代款{f'：{alias}' if alias else ''}）"
+            query = match.get("query") or ""
+            head += f"（库里没有同名商品，这是按「{query}」检索到的同类款）"
         return head
 
     head = f"- {item.name} ×{item.qty}"
@@ -94,9 +94,9 @@ def render(
                     text += f" · {_money(item.cost)}"
                 lines.append(f"- {text}")
 
+    # 清单里的每条都必须对应一个真实商品；库里没有的已经在 shop 阶段被移除了。
     owned = [item for item in gear if item.status == "owned"]
     need = [item for item in gear if item.status == "need_buy"]
-    self_provided = [item for item in gear if item.status == "self_provided"]
     skipped = [item for item in gear if item.status == "skipped"]
 
     lines.append("")
@@ -107,18 +107,16 @@ def render(
     if need:
         lines.append("**待购**")
         lines.extend(_gear_line(item, products) for item in need)
-    if self_provided:
-        names = "、".join(item.name for item in self_provided)
-        lines.append(f"**自备**：{names}")
     if skipped:
         names = "、".join(item.name for item in skipped)
         lines.append(f"**已按预算省略**：{names}")
+    budget_blocked = [item for item in need if "预算不足" in (item.reason or "")]
+    if budget_blocked:
+        lines.append("**预算不足，未选款**：" + "、".join(item.name for item in budget_blocked))
 
     trip = total_cost(itinerary)
-    equipment, unknown = gear_cost(gear, products)
+    equipment, _unknown = gear_cost(gear, products)
     equipment_label = _money(equipment)
-    if unknown:
-        equipment_label += f"（{len(unknown)} 项未匹配，未计入）"
     total = round(trip + equipment, 2)
     if ambiguous_owned:
         lines.append("")

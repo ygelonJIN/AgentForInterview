@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import date
 from typing import Any, Callable, Dict, List, Optional, TypedDict
 
@@ -15,7 +16,13 @@ from langgraph.types import interrupt
 from app.graphs._util import resolve
 from app.graphs.context import TurnContext
 from app.streaming import EventType
-from app.trip_gear.constraints import derive_constraints, enrich_weather, merge_inferred
+from app.trip_gear.constraints import (
+    apply_assisted,
+    derive_constraints,
+    drop_owned_duplicates,
+    enrich_weather,
+    merge_inferred,
+)
 from app.trip_gear.gear import derive_gear, merge_suggestions
 from app.trip_gear.itinerary import fallback_itinerary, total_cost
 from app.trip_gear.models import Constraint, GearItem, Issue, Itinerary, TripFacts
@@ -27,6 +34,8 @@ from app.trip_gear.owned import (
     merge_owned,
 )
 from app.trip_gear.render import render
+from app.trip_gear import select_by_model
+from app.trip_gear.select import rank as rank_products
 from app.trip_gear.repair import RepairAction, apply_action, repair_candidates
 from app.trip_gear.shopping import GearShopper
 from app.trip_gear.preferences import extract_preferences
@@ -36,6 +45,10 @@ from app.trip_gear.verdict import judge
 from app.trip_gear.verify import verify
 
 CONSTRAINT_INFER_TIMEOUT = 6.0
+# 槽位补全只在地名/天数抽不到时触发，属于反问前的最后一次兜底，给 4.5s 上限。
+SLOT_ASSIST_TIMEOUT = 4.5
+# 模型挑款是锦上添花：超时就用打分结果，不能拖住整轮。
+MODEL_SELECT_TIMEOUT = 9.0
 
 STEP_LABELS = {
     "derive": (1, "约束派生"),
@@ -128,7 +141,7 @@ async def derive(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[st
         if not facts.days and prior.days:
             facts.days = prior.days
             inherited.append(f"天数：{prior.days} 天")
-        if facts.people == 1 and prior.people > 1:
+        if facts.people is None and prior.people:
             facts.people = prior.people
             inherited.append(f"人数：{prior.people} 人")
         if facts.budget is None and prior.budget is not None:
@@ -154,6 +167,21 @@ async def derive(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[st
             facts.start_date = prior.start_date
         for text in reversed(inherited):
             constraints.insert(0, Constraint(text=text, source="上文"))
+
+    # 规则没抽到目的地/天数时，先给可选的小模型兜底一次再决定要不要反问
+    missing_fields = [name for name in ("destination", "days") if not getattr(facts, name)]
+    if missing_fields:
+        assist = _dep(runtime, "slot_assist", "_assist_slots")
+        if assist:
+            try:
+                assisted = await asyncio.wait_for(
+                    resolve(assist(state["user_message"], missing_fields)),
+                    timeout=SLOT_ASSIST_TIMEOUT,
+                )
+                if assisted:
+                    facts, constraints = apply_assisted(facts, constraints, assisted)
+            except Exception:
+                assisted = None
 
     missing = []
     if not facts.destination:
@@ -266,6 +294,12 @@ async def owned(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str
     apply_owned(items, owned_items)
     preferences = extract_preferences(memories)
 
+    # 已经有"已有"条目了，再把"记得带用户已有的 X"当约束摆出来就是重复
+    constraints = [
+        Constraint.model_validate(item) for item in state.get("constraints", [])
+    ]
+    constraints = drop_owned_duplicates(constraints, [item.name for item in owned_items])
+
     # "我有装备"这类模糊说法既不能算已有（会漏买），也不能当没说（会重复买），
     # 单独收集起来，在结果里给用户一个确认入口。
     ambiguous: List[str] = []
@@ -281,6 +315,7 @@ async def owned(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str
     )
     return {
         "gear": [item.model_dump() for item in items],
+        "constraints": [item.model_dump() for item in constraints],
         "owned": [item.model_dump() for item in owned_items],
         "owned_ambiguous": ambiguous,
         "preferences": preferences.as_dict(),
@@ -304,9 +339,40 @@ async def shop(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str,
     product_search = _dep(runtime, "product_search", "_search")
     if product_search:
         preferred = (state.get("preferences") or {}).get("brands") or []
-        GearShopper(product_search, preferred_brands=preferred, facts=facts).fill(
-            items, products, remaining_budget=_remaining_budget(facts, itinerary)
-        )
+        shopper = GearShopper(product_search, preferred_brands=preferred, facts=facts)
+        remaining = _remaining_budget(facts, itinerary)
+
+        # 先让模型在已经打分裁剪过的候选里挑；没得挑、超时、选错都由打分兜底
+        select_products = _dep(runtime, "product_select", "_select_products")
+        if select_products:
+            entries = select_by_model.build_entries(
+                items,
+                shopper.candidates_for,
+                rank_products,
+                facts=facts,
+                remaining=remaining,
+                preferred_brands=preferred,
+            )
+            if entries:
+                try:
+                    chosen = await asyncio.wait_for(
+                        resolve(select_products(entries, facts, remaining)),
+                        timeout=MODEL_SELECT_TIMEOUT,
+                    )
+                except Exception:
+                    chosen = {}
+                for name, product in (chosen or {}).items():
+                    item = next((entry for entry in items if entry.name == name), None)
+                    if item is None:
+                        continue
+                    products[name] = {
+                        **product,
+                        "match": {**(product.get("match") or {}), "by": "model"},
+                    }
+                    if remaining is not None:
+                        remaining -= float(product.get("price") or 0) * item.qty
+
+        shopper.fill(items, products, remaining_budget=remaining)
 
     # 预算不是上限而是计划：选完商品还有额度，就在同品类里换更好的款。
     spend: Dict[str, Any] = {}
@@ -555,7 +621,7 @@ def _merge_facts(base: TripFacts, extra: TripFacts, overwrite: bool = False) -> 
         merged.destination = extra.destination
     if (not merged.days or overwrite) and extra.days:
         merged.days = extra.days
-    if (merged.people <= 1 and extra.people > 1) or (overwrite and extra.people > 0):
+    if extra.people is not None and (merged.people is None or overwrite):
         merged.people = extra.people
     if (merged.budget is None and extra.budget is not None) or (overwrite and extra.budget is not None):
         merged.budget = extra.budget

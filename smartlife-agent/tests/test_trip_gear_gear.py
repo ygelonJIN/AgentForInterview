@@ -33,7 +33,7 @@ def test_camping_rules_cover_tent_bag_pad_and_lamp():
     assert gear["睡袋"].qty == 2
     assert gear["防潮垫"].qty == 2
     assert gear["头灯"].qty == 2
-    assert gear["身份证"].status == "self_provided"
+    assert "身份证" not in gear  # 只派生商品词，不再有"自备"清单
 
 
 def test_rain_and_formal_occasion_add_gear():
@@ -46,9 +46,9 @@ def test_rain_and_formal_occasion_add_gear():
     )
     gear = _by_name(derive_gear(facts, _itinerary("见客户", "晚餐")))
 
-    assert "正装" in gear and "皮鞋" in gear
-    assert "雨具" in gear and "防水鞋" in gear
-    assert "保暖层" in gear
+    assert "西装" in gear and "皮鞋" in gear
+    assert "雨伞" in gear and "登山鞋" in gear
+    assert "羽绒服" in gear
 
 
 def test_formal_occasion_is_kept_even_when_itinerary_wording_is_generic():
@@ -57,14 +57,14 @@ def test_formal_occasion_is_kept_even_when_itinerary_wording_is_generic():
         derive_gear(facts, _itinerary("自由活动"), extra_text="明天见客户")
     )
 
-    assert "正装" in gear and "皮鞋" in gear
+    assert "西装" in gear and "皮鞋" in gear
 
 
 def test_long_trip_derives_clothing_quantity():
     facts = TripFacts(destination="成都", days=4, people=1)
     gear = _by_name(derive_gear(facts, _itinerary("逛博物馆", days=4)))
 
-    assert gear["换洗衣物"].qty == 3
+    assert gear["T恤"].qty == 3
     assert gear["洗衣袋"].qty == 1
 
 

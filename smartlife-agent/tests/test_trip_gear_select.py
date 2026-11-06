@@ -99,14 +99,14 @@ class TestPreference:
 
 class TestSpecSchema:
     def test_品类参数表按品类分开(self):
-        # 保暖层有蓬松度，睡袋没有这个"越大越好"以外的同名字段语义，两者共用同一套打分会互相污染。
+        # 羽绒服有蓬松度，睡袋没有这个"越大越好"以外的同名字段语义，两者共用同一套打分会互相污染。
         from app.trip_gear.spec_schema import schema_for
 
-        assert "fill_power" in schema_for("保暖层")
+        assert "fill_power" in schema_for("羽绒服")
         assert "fill_power" in schema_for("睡袋")
         assert "cpu_score" in schema_for("手机")
         assert schema_for("帐篷") and "cpu_score" not in schema_for("帐篷")
-        assert subcategory_for("保暖层") == "服装"
+        assert subcategory_for("羽绒服") == "服装"
         assert subcategory_for("帐篷") == "露营"
 
     def test_低值更好的字段方向正确(self):

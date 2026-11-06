@@ -128,13 +128,13 @@ def spec_requirements(
             )
         )
 
-    if "帐篷" in names and facts.people:
+    if "帐篷" in names and facts.people is not None:
         requirements.append(
             SpecRequirement(
                 gear="帐篷",
                 key="capacity_persons",
                 op=">=",
-                value=float(facts.people),
+                value=float(facts.effective_people),
                 reason=f"同行 {facts.people} 人，帐篷要睡得下",
             )
         )

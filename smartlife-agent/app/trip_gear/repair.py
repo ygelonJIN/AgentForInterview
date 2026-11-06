@@ -18,7 +18,6 @@ from typing import Any, Callable, Dict, List, Optional
 from app.trip_gear.gear import OPTIONAL
 from app.trip_gear.itinerary import lodging_cost_for
 from app.trip_gear.models import DayPlan, GearItem, Itinerary, TripFacts
-from app.trip_gear.shopping import ALIASES, normalize_gear_name
 
 # 即使预算超了也不能通过"省略"消失的装备：安全、合规与行程成立的前提。
 PROTECTED_SKIP = {
@@ -62,59 +61,6 @@ def _price(product: Optional[Dict[str, Any]]) -> float:
     return float((product or {}).get("price") or 0)
 
 
-# 降档的品类词表：替代品名称必须命中其中之一，才算"同一类东西"。
-# 只按子品类换会把帐篷换成卡式炉、把防水鞋换成登山杖，所以显式列出。
-FAMILY_KEYWORDS = {
-    "帐篷": ("帐篷",),
-    "睡袋": ("睡袋",),
-    "防潮垫": ("垫",),
-    "保暖层": ("羽绒", "外套", "冲锋衣"),
-    "防水鞋": ("鞋",),
-    "登山鞋": ("鞋",),
-    "跑步鞋": ("鞋",),
-    "雨具": ("雨伞",),
-    "雨伞": ("雨伞",),
-    "帽子": ("帽",),
-    "墨镜": ("墨镜", "眼镜"),
-    "防晒霜": ("防晒",),
-    "双肩包": ("背包",),
-    "背包": ("背包",),
-    "换洗衣物": ("T恤", "上衣", "衬衫"),
-    "儿童衣物": ("T恤", "上衣", "衬衫"),
-    "T恤": ("T恤",),
-    "裙子": ("裙",),
-    "裙装": ("裙",),
-    "速干衣": ("速干",),
-    "登山杖": ("登山杖",),
-    "营地灯": ("灯",),
-    "头灯": ("灯",),
-    "洗衣袋": ("袋",),
-    "防水袋": ("袋",),
-    "液体分装瓶": ("瓶",),
-}
-
-
-def _family_match(item_name: str, candidate_name: str) -> bool:
-    """替代品是否与装备属于同一类。
-
-    模型补充的装备名常带修饰词（防水运动鞋、便携洗漱包），先规范化再查表；
-    表里没有的一律不降档——宁可如实披露超支，也不换错东西。
-    """
-    keywords: tuple = ()
-    for key in (item_name, normalize_gear_name(item_name)):
-        if key in FAMILY_KEYWORDS:
-            keywords = FAMILY_KEYWORDS[key]
-            break
-        alias = ALIASES.get(key)
-        if alias and alias in FAMILY_KEYWORDS:
-            keywords = FAMILY_KEYWORDS[alias]
-            break
-    if not keywords:
-        return False
-    name = str(candidate_name or "")
-    return any(word in name for word in keywords)
-
-
 def _can_skip(item: GearItem) -> bool:
     return item.name in OPTIONAL and item.name not in PROTECTED_SKIP
 
@@ -150,7 +96,6 @@ def _downgrade_for(
         and row.get("name") != current.get("name")
         and (row.get("stock") or 0) > 0
         and _price(row) < _price(current)
-        and _family_match(item.name, str(row.get("name") or ""))
     ]
     if not rows:
         return None
@@ -207,8 +152,8 @@ def _lodging_swap_action(
     nights = max(1, len(itinerary.days))
     old_lodging = sum(float(day.lodging_cost or 0) for day in itinerary.days)
     if old_lodging <= 0:
-        old_lodging = lodging_cost_for("camp", facts.people, nights)
-    new_lodging = lodging_cost_for("hotel", facts.people, nights)
+        old_lodging = lodging_cost_for("camp", facts.effective_people, nights)
+    new_lodging = lodging_cost_for("hotel", facts.effective_people, nights)
     net = round(gear_saving - (new_lodging - old_lodging), 2)
     if net <= 0:
         return None
@@ -315,7 +260,7 @@ def apply_action(
         raise PermissionError(f"{action.kind} 需要用户确认，不能自动执行")
 
     if action.kind == "change_lodging" and itinerary is not None:
-        people = facts.people if facts else 1
+        people = facts.effective_people if facts else 1
         for day in itinerary.days:
             day.lodging = "hotel"
             day.lodging_cost = lodging_cost_for("hotel", people)

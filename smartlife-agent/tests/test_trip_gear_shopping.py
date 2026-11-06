@@ -46,13 +46,13 @@ class TestMatchKind:
         shopper.fill([GearItem(name="睡袋", status="need_buy")], products)
         assert products["睡袋"]["match"]["kind"] == "exact"
 
-    def test_靠别名命中标为替代并写明替代了什么(self):
+    def test_不同名但同类命中的标为替代并写明检索词(self):
         shopper = GearShopper(lambda **_: _rows({"name": "轻薄羽绒外套", "price": 599, "stock": 5}))
         products = {}
-        shopper.fill([GearItem(name="保暖层", status="need_buy")], products)
-        match = products["保暖层"]["match"]
+        shopper.fill([GearItem(name="羽绒服", status="need_buy")], products)
+        match = products["羽绒服"]["match"]
         assert match["kind"] == "substitute"
-        assert match["alias"] == "羽绒"
+        assert match["query"] == "羽绒服"
 
     def test_预算不够时退到最便宜的那件(self):
         rows = _rows(
