@@ -157,6 +157,12 @@ export SMARTLIFE_SMALL_API_KEY="your-small-model-api-key"
 export SMARTLIFE_EMBEDDING_API_KEY="your-embedding-api-key"
 ```
 
+可选开关：规则抽不到目的地/天数时，让小模型再读一遍原话（默认关闭，开启后多一次调用）：
+
+```bash
+export SMARTLIFE_SLOT_ASSIST=1
+```
+
 模型地址和模型名称可通过 Web UI 的配置页面填写，或复制模板后进行配置：
 
 ```bash
