@@ -20,6 +20,7 @@ from typing import Dict, Any, List, Literal, Optional
 from pydantic import BaseModel, Field, model_validator
 from langchain_core.prompts import ChatPromptTemplate
 from app.config import create_llm, create_small_llm
+from app.nlu import signals
 from app.observability import extract_model_usage, log_exception, timed_span
 
 
@@ -100,201 +101,97 @@ class ClassificationResult(BaseModel):
         return "+".join(self.effective_intents)
 
 
-# 快速规则：关键词匹配（零延迟，处理明确场景）
-_ROUTE_KEYWORDS = {
-    "plan_and_execute": [
-        "规划", "计划", "清单", "安排", "预算分配", "帮我列", "行程", "装修",
-        "准备", "策划", "方案", "统筹", "编排", "设计路线"
-    ]
-}
+# 关键词层：词表和权重都在 app.nlu，这里只负责"够不够硬"的阈值与输出格式。
+# 旧实现按"命中几个词"数数，同义词/否定/跨度重复都会算错；现在按加权打分，
+# 阈值仍然是确定性的，模糊边界照旧交给小模型。
+_TRAVEL_DURATION_RE = signals.TRAVEL_DURATION
 
-_INTENT_KEYWORDS = {
-    "shopping": [
-        "买", "找", "搜", "推荐", "商品",
-        # 产品名词 - 用户提到这些词就是在找商品
-        "鞋", "衣服", "手机", "电脑", "平板", "耳机", "背包", "帐篷",
-        "冲锋衣", "睡袋", "泳衣", "T恤", "衬衫", "裤子", "外套",
-        "连衣裙", "裙子", "跑步鞋", "登山鞋", "运动鞋",
-        "哪个好", "哪个更好", "对比", "比较", "区别",
-        # 品牌名
-        "小米", "iPhone", "苹果", "华为", "Nike", "Adidas", "阿迪",
-        "优衣库", "ZARA", "波司登", "Salomon", "迪卡侬", "安踏", "李宁",
-    ],
-    "travel": [
-        "旅行", "旅游", "酒店", "景点", "机票", "出行", "度假", "目的地", "行程", "攻略",
-        "好玩", "风景", "景区", "民宿", "住宿", "路线", "几天", "天游",
-        "杭州", "北京", "上海", "成都", "西安", "云南", "大理", "丽江",
-        "三亚", "厦门", "桂林", "张家界", "西藏", "新疆",
-        "规划", "两天", "三天", "一日游", "自驾游", "周边游",
-    ],
-    "customer_service": ["退", "换", "订单", "物流", "投诉", "退款", "售后", "查订单", "订单状态"],
-}
-
-_SHOPPING_WEAK_KEYWORDS = [
-    "价格", "便宜", "贵", "打折", "优惠", "多少钱", "元的", "块钱", "预算",
-]
-_GENERIC_SHOPPING_SIGNALS = {
-    "找", "搜", "推荐", "哪个好", "哪个更好", "对比", "比较", "区别",
-}
-_TRAVEL_DURATION_RE = re.compile(
-    r"(?:玩|游|待|停留|去)\s*(?:\d+|[一两二三四五六七八九十])\s*(?:天|日|周|星期|礼拜)"
-    r"|\d+\s*(?:天|日)\s*(?:游|行程|攻略)"
-)
-
-# 购买动作：只有出现这些词，物品名词才算“想买”；
-# 单纯说“我有一条西装裤子”是在描述已有物品，不是购物意图。
-_PURCHASE_VERBS = (
-    "买", "购", "下单", "预订", "预定", "搜", "找", "推荐", "比价",
-    "多少钱", "价格", "哪个好", "哪个更好", "对比", "比较", "区别", "值得",
-)
-_OWNED_ITEM_RE = re.compile(r"(我有|我带了|我买了|已经买了|家里有|手头有|已有)")
+_PRIORITY = {"shopping": 0, "travel": 1, "customer_service": 2}
 
 
 def _has_purchase_verb(message: str) -> bool:
-    return any(verb in message for verb in _PURCHASE_VERBS)
+    return signals.has_purchase_verb(message)
 
 
 def _mentions_product_target(message: str) -> bool:
-    return any(
-        keyword in message
-        for keyword in _INTENT_KEYWORDS["shopping"]
-        if keyword not in _GENERIC_SHOPPING_SIGNALS
-    )
+    return signals.mentions_product_target(message)
 
 
 def _mentions_owned_item(message: str) -> bool:
-    return bool(_OWNED_ITEM_RE.search(message))
+    return signals.mentions_owned_item(message)
 
 
 def _has_strong_shopping_signal(message: str) -> bool:
-    return any(
-        keyword in message
-        for keyword in _INTENT_KEYWORDS["shopping"]
-        if keyword not in _GENERIC_SHOPPING_SIGNALS
-    )
+    return signals.has_strong_shopping_signal(message)
 
 
 def _has_travel_signal(message: str) -> bool:
-    return (
-        any(keyword in message for keyword in _INTENT_KEYWORDS["travel"])
-        or bool(_TRAVEL_DURATION_RE.search(message))
-    )
+    return signals.has_travel_signal(message)
+
+
+def _sub_intent_for(intent: str, route: str) -> str:
+    if intent == "travel":
+        return "plan_trip" if route == "plan_and_execute" else "qa"
+    if intent in {"shopping", "customer_service"}:
+        return "search"
+    return "chat"
 
 
 def _keyword_classify(message: str) -> Optional[Dict[str, Any]]:
-    """关键词快速分类（零延迟）"""
-    route = "react"
-    if (
-        any(kw in message for kw in _ROUTE_KEYWORDS.get("plan_and_execute", []))
-        or _TRAVEL_DURATION_RE.search(message)
-    ):
-        route = "plan_and_execute"
+    """关键词快速分类（零延迟）。打分明细见 ``app.nlu.signals``。"""
+    signal = signals.score_intents(message)
+    route = signal.route
+    weak_count = len(signal.weak_hits.get("shopping") or [])
 
-    intent = "general"
-    max_match = 0
-    strong_match_counts = {
-        intent_type: sum(1 for kw in keywords if kw in message)
-        for intent_type, keywords in _INTENT_KEYWORDS.items()
-    }
-    travel_match_count = (
-        strong_match_counts["travel"] + bool(_TRAVEL_DURATION_RE.search(message))
-    )
-    shopping_weak_match_count = sum(
-        1 for kw in _SHOPPING_WEAK_KEYWORDS if kw in message
-    )
-    match_counts = dict(strong_match_counts)
-    match_counts["shopping"] += shopping_weak_match_count
+    candidates: Dict[str, float] = {}
+    if signal.shopping_ready:
+        candidates["shopping"] = signal.shopping
+    if signal.travel_ready:
+        candidates["travel"] = signal.travel
+    if signal.service_ready:
+        candidates["customer_service"] = signal.service
 
-    # 明确的复合意图：多个类别都达到独立证据阈值时，保留多个意图。
-    # 购物必须有强购物词，不能只靠价格/预算弱词；Travel 必须至少有两个信号。
-    candidate_scores = {}
-    shopping_strong_count = sum(
-        1 for kw in _INTENT_KEYWORDS["shopping"]
-        if kw in message and kw not in _GENERIC_SHOPPING_SIGNALS
-    )
-    shopping_total_count = strong_match_counts["shopping"] + shopping_weak_match_count
-    if shopping_total_count >= 2 and shopping_strong_count > 0:
-        candidate_scores["shopping"] = shopping_total_count
-    if travel_match_count >= 2:
-        candidate_scores["travel"] = travel_match_count
-    if strong_match_counts["customer_service"] >= 2:
-        candidate_scores["customer_service"] = strong_match_counts["customer_service"]
-    if len(candidate_scores) >= 2:
-        priority = {"shopping": 0, "travel": 1, "customer_service": 2}
-        ordered = sorted(
-            candidate_scores,
-            key=lambda item: (-candidate_scores[item], priority[item]),
-        )[:2]
+    if not candidates:
+        return None
+
+    scores = {key: float(value) for key, value in candidates.items()}
+
+    # 明确的复合意图：两类都达到独立证据阈值时保留两个，只有 shopping+travel 并行。
+    if len(candidates) >= 2:
+        ordered = sorted(candidates, key=lambda item: (-candidates[item], _PRIORITY[item]))[:2]
         retrieval = "mixed" if "shopping" in ordered else "rag_only"
-        sub_intents = []
-        for item in ordered:
-            if item == "travel":
-                sub_intents.append("plan_trip" if route == "plan_and_execute" else "qa")
-            elif item in {"shopping", "customer_service"}:
-                sub_intents.append("search")
-            else:
-                sub_intents.append("chat")
+        sub_intents = [_sub_intent_for(item, route) for item in ordered]
         return {
             "route": route,
             "intent": ordered[0],
             "intents": ordered,
-            "intent_scores": {key: float(value) for key, value in candidate_scores.items()},
+            "intent_scores": scores,
             "sub_intent": "+".join(sub_intents),
             "retrieval": retrieval,
             "confidence": 0.9,
-            "reason": (
-                "多意图关键词匹配: "
-                + ", ".join(f"{key}={candidate_scores[key]}" for key in ordered)
-            ),
+            "reason": "多意图关键词匹配: "
+            + ", ".join(f"{key}={candidates[key]:g}" for key in ordered),
             "from": "keyword",
         }
 
-    # 金额/预算词既可能属于购物，也可能属于旅行。没有商品动作或商品名词时，
-    # 不能让这些弱购物信号覆盖目的地、游玩天数等明确旅游信号。
-    if travel_match_count >= 2 and not _has_strong_shopping_signal(message):
-        intent = "travel"
-        max_match = travel_match_count
-    else:
-        for intent_type in _INTENT_KEYWORDS:
-            match_count = match_counts[intent_type]
-            if intent_type == "travel":
-                match_count = travel_match_count
-            if match_count > max_match:
-                max_match = match_count
-                intent = intent_type
-
-    # 两个弱价格词不能单独把任意请求升级成购物；至少需要一个商品/购物强信号。
-    shopping_has_required_strong_signal = (
-        intent != "shopping" or strong_match_counts["shopping"] > 0
-    )
-    if max_match >= 2 and shopping_has_required_strong_signal:
-        # 购物意图必须有检索策略
-        retrieval = "none"
-        if intent == "shopping":
-            retrieval = "mixed"
-        elif intent == "travel":
-            retrieval = "rag_only"
-        return {
-            "route": route,
-            "intent": intent,
-            "sub_intent": (
-                "plan_trip"
-                if intent == "travel" and route == "plan_and_execute"
-                else "qa"
-                if intent == "travel"
-                else "search"
-                if intent in {"shopping", "customer_service"}
-                else "chat"
-            ),
-            "retrieval": retrieval,
-            "confidence": 0.85,
-            "reason": (
-                f"关键词匹配 ({max_match} 个关键词命中"
-                f"{', 含弱购物词 ' + str(shopping_weak_match_count) if shopping_weak_match_count else ''})"
-            ),
-            "from": "keyword"
-        }
-    return None
+    intent = max(candidates, key=lambda item: (candidates[item], -_PRIORITY[item]))
+    retrieval = {"shopping": "mixed", "travel": "rag_only", "customer_service": "none"}[intent]
+    hits = len(signal.hits.get(intent) or [])
+    reason = f"关键词匹配 ({hits} 个关键词命中"
+    if weak_count and intent != "shopping":
+        reason += f", 含弱购物词 {weak_count}"
+    reason += ")"
+    # 单意图不额外塞 intents/intent_scores：事件载荷保持与旧版一致，
+    # 下游由 ClassificationResult 的校验器补默认值。
+    return {
+        "route": route,
+        "intent": intent,
+        "sub_intent": _sub_intent_for(intent, route),
+        "retrieval": retrieval,
+        "confidence": 0.85,
+        "reason": reason,
+        "from": "keyword",
+    }
 
 
 # 小模型分类 prompt
@@ -338,6 +235,11 @@ _CLASSIFY_ARBITER_PROMPT = ChatPromptTemplate.from_messages([
 
 只允许输出一个严格 JSON 对象，必须包含：
 route、intent、intents、primary_intent、intent_scores、sub_intent、retrieval、confidence、reason。
+
+判定口径（与主分类器一致，不要自行发明）：
+- route: 单步查询、导购、客服、闲聊 -> react；多日行程、采购清单、预算分配、跨场景任务、需要用户确认计划 -> plan_and_execute
+- intent: 有明确商品品类且要买/比价 -> shopping；有目的地或出行场景 -> travel；订单/退换/物流 -> customer_service；其余 general
+- retrieval 只是提示：真正的 SQL/RAG 由证据需求决定，不要为了"看起来完整"硬填 mixed
 
 枚举限制：
 - route: react / plan_and_execute
@@ -449,11 +351,7 @@ class UnifiedClassifier:
     @staticmethod
     def _has_task_switch_signal(message: str) -> bool:
         """明确的新任务信号不应被上一轮分类锁死。"""
-        return (
-            _has_strong_shopping_signal(message)
-            or _has_travel_signal(message)
-            or any(keyword in message for keyword in _INTENT_KEYWORDS["customer_service"])
-        )
+        return signals.has_task_switch_signal(message)
 
     def _context_fallback(
         self,
@@ -618,7 +516,43 @@ class UnifiedClassifier:
         )
 
     @staticmethod
-    def _fallback(error: str) -> ClassificationResult:
+    def _fallback(error: str, message: str = "") -> ClassificationResult:
+        """分类失败时的确定性兜底：有关键词证据就按关键词走，没有才回 general。"""
+        signal = signals.score_intents(message) if message else None
+        if signal is not None:
+            candidates = []
+            if signal.shopping_ready:
+                candidates.append(("shopping", signal.shopping))
+            if signal.travel_ready:
+                candidates.append(("travel", signal.travel))
+            if signal.service_ready:
+                candidates.append(("customer_service", signal.service))
+            if candidates:
+                intent = max(candidates, key=lambda item: item[1])[0]
+                sub_intent = (
+                    "plan_trip"
+                    if intent == "travel" and signal.route == "plan_and_execute"
+                    else "qa"
+                    if intent == "travel"
+                    else "search"
+                    if intent in {"shopping", "customer_service"}
+                    else "chat"
+                )
+                retrieval = {
+                    "shopping": "mixed",
+                    "travel": "rag_only",
+                    "customer_service": "none",
+                }[intent]
+                return ClassificationResult(
+                    route=signal.route,
+                    intent=intent,
+                    intents=[intent],
+                    intent_scores={intent: candidates[0][1]},
+                    sub_intent=sub_intent,
+                    retrieval=retrieval,
+                    confidence=0.4,
+                    reason=f"模型分类失败，按关键词兜底: {error[:50]}",
+                )
         return ClassificationResult(
             route="react",
             intent="general",
@@ -767,7 +701,7 @@ class UnifiedClassifier:
                 )
             except Exception as arbiter_error:
                 log_exception("classifier.arbiter.sync", arbiter_error, {"message": message})
-                return self._fallback(f"{e}; 仲裁失败: {arbiter_error}")
+                return self._fallback(f"{e}; 仲裁失败: {arbiter_error}", message)
 
     async def aclassify(
         self,
@@ -831,7 +765,7 @@ class UnifiedClassifier:
                 )
             except Exception as arbiter_error:
                 log_exception("classifier.arbiter.async", arbiter_error, {"message": message})
-                return self._fallback(f"{e}; 仲裁失败: {arbiter_error}")
+                return self._fallback(f"{e}; 仲裁失败: {arbiter_error}", message)
 
     async def aclassify_streaming(
         self,
@@ -959,7 +893,7 @@ class UnifiedClassifier:
             return result
         except Exception as e:
             log_exception("classifier.streaming", e, {"message": message})
-            fallback = self._fallback(str(e))
+            fallback = self._fallback(str(e), message)
             await queue.emit(EventType.ERROR, {
                 "message": f"分类失败，使用默认值: {str(e)[:80]}"
             }, step="classify")

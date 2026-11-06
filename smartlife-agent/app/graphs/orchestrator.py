@@ -18,7 +18,7 @@ from langgraph.types import Command
 from app.graphs.context import TurnContext, build_turn_context
 from app.graphs.events import to_sse
 from app.graphs.memory import MemoryExtractionRunner, MemoryCenter
-from app.graphs.nodes import classify, extract_memory, finalize, prepare, route
+from app.graphs.nodes import classify, finalize, prepare, route
 from app.graphs.state import TurnState
 from app.graphs.subgraphs.composite import build_composite_graph
 from app.graphs.subgraphs.customer_service import build_customer_service_graph
@@ -57,25 +57,16 @@ def build_turn_graph(checkpointer: Optional[Any] = None):
     graph.add_node("react", build_react_graph())
     graph.add_node("general_chat", build_general_chat_graph())
     graph.add_node("finalize", finalize, timeout=10)
-    graph.add_node("extract_memory", extract_memory, timeout=30)
 
     graph.add_edge(START, "prepare")
     graph.add_edge("prepare", "classify")
     graph.add_conditional_edges("classify", route, ROUTE_TARGETS)
     for scene_node in ROUTE_TARGETS.values():
         graph.add_edge(scene_node, "finalize")
-    # 记忆提取图挂在 finalize 之后，由入口按需触发（默认不进关键路径）。
-    graph.add_conditional_edges(
-        "finalize",
-        _maybe_extract_memory,
-        {"extract_memory": "extract_memory", "done": END},
-    )
-    graph.add_edge("extract_memory", END)
+    # 记忆提取不进关键路径：由 UI 在流结束后单独跑 MemoryExtractionRunner，
+    # 原来那条"state["extract_memory"] 为真才走"的分支从来没有被置真过。
+    graph.add_edge("finalize", END)
     return graph.compile(checkpointer=checkpointer)
-
-
-def _maybe_extract_memory(state: TurnState) -> str:
-    return "extract_memory" if state.get("extract_memory") else "done"
 
 
 class TurnGraph:

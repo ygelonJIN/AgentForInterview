@@ -6,9 +6,11 @@
 """
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import re
+from datetime import date
 from typing import Any, Dict, List, Optional, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -320,11 +322,34 @@ async def build_context(state: TravelPlanState, runtime: Runtime[TurnContext]) -
 
 async def extract_requirements_node(state: TravelPlanState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
     sink = runtime.context.sink_for(runtime)
-    requirements = extract_requirements(state.get("original_request") or state.get("user_message", ""))
+    request = state.get("original_request") or state.get("user_message", "")
+    requirements = extract_requirements(request)
     clarifications = [
         name for name, key in (("目的地", "destination"), ("天数", "days"))
         if requirements.get(key) is None
     ]
+
+    # 缺字段时先让可选的小模型兜底一次，再决定是否反问（默认关闭）
+    if clarifications:
+        from app.services.slot_assist import TIMEOUT_SECONDS, assist_slots
+
+        missing = ["destination" if name == "目的地" else "days" for name in clarifications]
+        try:
+            assisted = await asyncio.wait_for(
+                assist_slots(request, missing, today=date.today().isoformat()),
+                timeout=TIMEOUT_SECONDS + 0.5,
+            )
+        except Exception:
+            assisted = {}
+        if assisted:
+            requirements = {
+                **requirements,
+                **{key: value for key, value in assisted.items() if requirements.get(key) is None},
+            }
+            clarifications = [
+                name for name, key in (("目的地", "destination"), ("天数", "days"))
+                if requirements.get(key) is None
+            ]
     await sink.emit("requirements", {"requirements": requirements, "clarifications": clarifications}, step="plan")
     await _log(
         sink,

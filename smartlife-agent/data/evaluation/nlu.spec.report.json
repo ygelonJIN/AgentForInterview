@@ -1,0 +1,915 @@
+{
+  "summary": {
+    "cases": 42,
+    "matched": 42,
+    "mismatched": 0,
+    "accuracy": 1.0
+  },
+  "rows": [
+    {
+      "id": "shop-basic",
+      "message": "推荐一双跑鞋",
+      "ok": true,
+      "diff": {},
+      "note": "品类+动作",
+      "predicted": {
+        "intent": "shopping",
+        "intents": [
+          "shopping"
+        ],
+        "route": "react",
+        "gear": false,
+        "destination": "",
+        "days": null,
+        "people": null,
+        "budget": null,
+        "start_date": null,
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "shop-budget",
+      "message": "预算500以内的手机",
+      "ok": true,
+      "diff": {},
+      "note": "预算词 + 品类",
+      "predicted": {
+        "intent": "shopping",
+        "intents": [
+          "shopping"
+        ],
+        "route": "react",
+        "gear": false,
+        "destination": "",
+        "days": null,
+        "people": null,
+        "budget": 500.0,
+        "start_date": null,
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "shop-compare",
+      "message": "小米手机和华为手机哪个好",
+      "ok": true,
+      "diff": {},
+      "note": "品牌与品类同时命中",
+      "predicted": {
+        "intent": "shopping",
+        "intents": [
+          "shopping"
+        ],
+        "route": "react",
+        "gear": false,
+        "destination": "",
+        "days": null,
+        "people": null,
+        "budget": null,
+        "start_date": null,
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "shop-single-noun",
+      "message": "这双鞋耐用吗",
+      "ok": true,
+      "diff": {},
+      "note": "只有品类、没有购买/比价动作，交小模型",
+      "predicted": {
+        "intent": null,
+        "intents": [],
+        "route": null,
+        "gear": false,
+        "destination": "",
+        "days": null,
+        "people": null,
+        "budget": null,
+        "start_date": null,
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "shop-weak-money",
+      "message": "价格多少钱",
+      "ok": true,
+      "diff": {},
+      "note": "只有钱数词，不能判购物",
+      "predicted": {
+        "intent": null,
+        "intents": [],
+        "route": null,
+        "gear": false,
+        "destination": "",
+        "days": null,
+        "people": null,
+        "budget": null,
+        "start_date": null,
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "shop-negation",
+      "message": "不要帐篷，我想买睡袋",
+      "ok": true,
+      "diff": {},
+      "note": "否定词不参与购物证据",
+      "predicted": {
+        "intent": "shopping",
+        "intents": [
+          "shopping"
+        ],
+        "route": "react",
+        "gear": false,
+        "destination": "",
+        "days": null,
+        "people": null,
+        "budget": null,
+        "start_date": null,
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "travel-3days",
+      "message": "去杭州玩三天",
+      "ok": true,
+      "diff": {},
+      "note": "",
+      "predicted": {
+        "intent": "travel",
+        "intents": [
+          "travel"
+        ],
+        "route": "plan_and_execute",
+        "gear": false,
+        "destination": "杭州",
+        "days": 3,
+        "people": null,
+        "budget": null,
+        "start_date": null,
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "travel-itinerary",
+      "message": "帮我做个杭州两天行程",
+      "ok": true,
+      "diff": {},
+      "note": "",
+      "predicted": {
+        "intent": "travel",
+        "intents": [
+          "travel"
+        ],
+        "route": "plan_and_execute",
+        "gear": false,
+        "destination": "杭州",
+        "days": 2,
+        "people": null,
+        "budget": null,
+        "start_date": null,
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "travel-outdoor",
+      "message": "去莫干山露营两天带什么",
+      "ok": true,
+      "diff": {},
+      "note": "非白名单地名 + 装备清单",
+      "predicted": {
+        "intent": "travel",
+        "intents": [
+          "travel"
+        ],
+        "route": "react",
+        "gear": true,
+        "destination": "莫干山",
+        "days": 2,
+        "people": null,
+        "budget": null,
+        "start_date": null,
+        "lodging": "camp",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "travel-price",
+      "message": "三亚五天大概多少钱",
+      "ok": true,
+      "diff": {},
+      "note": "",
+      "predicted": {
+        "intent": "travel",
+        "intents": [
+          "travel"
+        ],
+        "route": "react",
+        "gear": false,
+        "destination": "三亚",
+        "days": 5,
+        "people": null,
+        "budget": null,
+        "start_date": null,
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "travel-business",
+      "message": "下周三去上海出差两天",
+      "ok": true,
+      "diff": {},
+      "note": "",
+      "predicted": {
+        "intent": "travel",
+        "intents": [
+          "travel"
+        ],
+        "route": "react",
+        "gear": true,
+        "destination": "上海",
+        "days": 2,
+        "people": null,
+        "budget": null,
+        "start_date": "2026-11-11",
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "travel-japan",
+      "message": "去日本玩五天",
+      "ok": true,
+      "diff": {},
+      "note": "",
+      "predicted": {
+        "intent": "travel",
+        "intents": [
+          "travel"
+        ],
+        "route": "plan_and_execute",
+        "gear": false,
+        "destination": "日本",
+        "days": 5,
+        "people": null,
+        "budget": null,
+        "start_date": null,
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "travel-weekend",
+      "message": "周末去安吉露营",
+      "ok": true,
+      "diff": {},
+      "note": "",
+      "predicted": {
+        "intent": "travel",
+        "intents": [
+          "travel"
+        ],
+        "route": "react",
+        "gear": true,
+        "destination": "安吉",
+        "days": 2,
+        "people": null,
+        "budget": null,
+        "start_date": "2026-11-07",
+        "lodging": "camp",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "travel-from-to",
+      "message": "从北京到上海三天",
+      "ok": true,
+      "diff": {},
+      "note": "从 A 到 B 只取终点",
+      "predicted": {
+        "intent": "travel",
+        "intents": [
+          "travel"
+        ],
+        "route": "react",
+        "gear": false,
+        "destination": "上海",
+        "days": 3,
+        "people": null,
+        "budget": null,
+        "start_date": null,
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "travel-not-a-trip",
+      "message": "在杭州工作",
+      "ok": true,
+      "diff": {},
+      "note": "有地名但不是出行",
+      "predicted": {
+        "intent": null,
+        "intents": [],
+        "route": null,
+        "gear": false,
+        "destination": "杭州",
+        "days": null,
+        "people": null,
+        "budget": null,
+        "start_date": null,
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "travel-food",
+      "message": "去成都吃火锅",
+      "ok": true,
+      "diff": {},
+      "note": "",
+      "predicted": {
+        "intent": "travel",
+        "intents": [
+          "travel"
+        ],
+        "route": "react",
+        "gear": false,
+        "destination": "成都",
+        "days": null,
+        "people": null,
+        "budget": null,
+        "start_date": null,
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "composite-buy-camp",
+      "message": "买一个帐篷和睡袋，再去莫干山露营两天",
+      "ok": true,
+      "diff": {},
+      "note": "旧实现只判成 shopping",
+      "predicted": {
+        "intent": "composite",
+        "intents": [
+          "shopping",
+          "travel"
+        ],
+        "route": "react",
+        "gear": false,
+        "destination": "莫干山",
+        "days": 2,
+        "people": null,
+        "budget": null,
+        "start_date": null,
+        "lodging": "camp",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "composite-plan",
+      "message": "推荐跑鞋，再制定杭州两天计划",
+      "ok": true,
+      "diff": {},
+      "note": "",
+      "predicted": {
+        "intent": "composite",
+        "intents": [
+          "shopping",
+          "travel"
+        ],
+        "route": "plan_and_execute",
+        "gear": false,
+        "destination": "杭州",
+        "days": 2,
+        "people": null,
+        "budget": null,
+        "start_date": null,
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "composite-explicit-buy",
+      "message": "去上海玩5天，顺便买一件冲锋衣",
+      "ok": true,
+      "diff": {},
+      "note": "",
+      "predicted": {
+        "intent": "composite",
+        "intents": [
+          "travel",
+          "shopping"
+        ],
+        "route": "plan_and_execute",
+        "gear": false,
+        "destination": "上海",
+        "days": 5,
+        "people": null,
+        "budget": null,
+        "start_date": null,
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "service-refund",
+      "message": "退一下订单",
+      "ok": true,
+      "diff": {},
+      "note": "",
+      "predicted": {
+        "intent": "customer_service",
+        "intents": [
+          "customer_service"
+        ],
+        "route": "react",
+        "gear": false,
+        "destination": "",
+        "days": null,
+        "people": null,
+        "budget": null,
+        "start_date": null,
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "service-single-word",
+      "message": "我的快递到哪了",
+      "ok": true,
+      "diff": {},
+      "note": "单个客服词证据不够，交小模型",
+      "predicted": {
+        "intent": null,
+        "intents": [],
+        "route": null,
+        "gear": false,
+        "destination": "",
+        "days": null,
+        "people": null,
+        "budget": null,
+        "start_date": null,
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "gear-list",
+      "message": "准备去露营三天，帮我列一份装备清单",
+      "ok": true,
+      "diff": {},
+      "note": "",
+      "predicted": {
+        "intent": "travel",
+        "intents": [
+          "travel"
+        ],
+        "route": "plan_and_execute",
+        "gear": true,
+        "destination": "准备去",
+        "days": 3,
+        "people": null,
+        "budget": null,
+        "start_date": null,
+        "lodging": "camp",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "gear-business",
+      "message": "出差三天带什么",
+      "ok": true,
+      "diff": {},
+      "note": "",
+      "predicted": {
+        "intent": "travel",
+        "intents": [
+          "travel"
+        ],
+        "route": "react",
+        "gear": true,
+        "destination": "",
+        "days": 3,
+        "people": null,
+        "budget": null,
+        "start_date": null,
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "gear-with-purchase",
+      "message": "我想买个帐篷，预算600",
+      "ok": true,
+      "diff": {},
+      "note": "",
+      "predicted": {
+        "intent": "shopping",
+        "intents": [
+          "shopping"
+        ],
+        "route": "react",
+        "gear": false,
+        "destination": "",
+        "days": null,
+        "people": null,
+        "budget": 600.0,
+        "start_date": null,
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "gear-recommend",
+      "message": "推荐露营装备",
+      "ok": true,
+      "diff": {},
+      "note": "有购买动作，不进装备链路",
+      "predicted": {
+        "intent": null,
+        "intents": [],
+        "route": null,
+        "gear": false,
+        "destination": "",
+        "days": null,
+        "people": null,
+        "budget": null,
+        "start_date": null,
+        "lodging": "camp",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "gear-buy-what",
+      "message": "去露营要买什么",
+      "ok": true,
+      "diff": {},
+      "note": "",
+      "predicted": {
+        "intent": null,
+        "intents": [],
+        "route": null,
+        "gear": false,
+        "destination": "露营要买",
+        "days": null,
+        "people": null,
+        "budget": null,
+        "start_date": null,
+        "lodging": "camp",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "slot-people-words",
+      "message": "两位去杭州玩三天，预算3000",
+      "ok": true,
+      "diff": {},
+      "note": "",
+      "predicted": {
+        "intent": "travel",
+        "intents": [
+          "travel"
+        ],
+        "route": "plan_and_execute",
+        "gear": false,
+        "destination": "杭州",
+        "days": 3,
+        "people": 2,
+        "budget": 3000.0,
+        "start_date": null,
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "slot-family",
+      "message": "我们一家三口去莫干山露营",
+      "ok": true,
+      "diff": {},
+      "note": "",
+      "predicted": {
+        "intent": "travel",
+        "intents": [
+          "travel"
+        ],
+        "route": "react",
+        "gear": true,
+        "destination": "莫干山",
+        "days": null,
+        "people": 3,
+        "budget": null,
+        "start_date": null,
+        "lodging": "camp",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "slot-kids",
+      "message": "2大1小去三亚",
+      "ok": true,
+      "diff": {},
+      "note": "",
+      "predicted": {
+        "intent": "travel",
+        "intents": [
+          "travel"
+        ],
+        "route": "react",
+        "gear": false,
+        "destination": "三亚",
+        "days": null,
+        "people": 3,
+        "budget": null,
+        "start_date": null,
+        "lodging": "",
+        "with_kids": true
+      }
+    },
+    {
+      "id": "slot-cn-budget",
+      "message": "三千预算去安吉露营两天",
+      "ok": true,
+      "diff": {},
+      "note": "",
+      "predicted": {
+        "intent": "travel",
+        "intents": [
+          "travel"
+        ],
+        "route": "react",
+        "gear": true,
+        "destination": "安吉",
+        "days": 2,
+        "people": null,
+        "budget": 3000.0,
+        "start_date": null,
+        "lodging": "camp",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "slot-gear-budget",
+      "message": "装备预算1000，总预算3000，去武功山徒步两天",
+      "ok": true,
+      "diff": {},
+      "note": "装备预算不能顶掉总预算",
+      "predicted": {
+        "intent": "travel",
+        "intents": [
+          "travel"
+        ],
+        "route": "react",
+        "gear": true,
+        "destination": "武功山",
+        "days": 2,
+        "people": null,
+        "budget": 3000.0,
+        "start_date": null,
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "slot-price-vs-budget",
+      "message": "预算3000，手机5000元",
+      "ok": true,
+      "diff": {},
+      "note": "商品单价不能顶掉总预算",
+      "predicted": {
+        "intent": "shopping",
+        "intents": [
+          "shopping"
+        ],
+        "route": "react",
+        "gear": false,
+        "destination": "",
+        "days": null,
+        "people": null,
+        "budget": 3000.0,
+        "start_date": null,
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "slot-date",
+      "message": "下周六去莫干山",
+      "ok": true,
+      "diff": {},
+      "note": "",
+      "predicted": {
+        "intent": "travel",
+        "intents": [
+          "travel"
+        ],
+        "route": "react",
+        "gear": false,
+        "destination": "莫干山",
+        "days": null,
+        "people": null,
+        "budget": null,
+        "start_date": "2026-11-14",
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "slot-cn-date",
+      "message": "8月1日出发，去青岛五天",
+      "ok": true,
+      "diff": {},
+      "note": "",
+      "predicted": {
+        "intent": "travel",
+        "intents": [
+          "travel"
+        ],
+        "route": "react",
+        "gear": false,
+        "destination": "青岛",
+        "days": 5,
+        "people": null,
+        "budget": null,
+        "start_date": "2027-08-01",
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "slot-nights",
+      "message": "去厦门住3晚",
+      "ok": true,
+      "diff": {},
+      "note": "住3晚≈4天",
+      "predicted": {
+        "intent": "travel",
+        "intents": [
+          "travel"
+        ],
+        "route": "react",
+        "gear": false,
+        "destination": "厦门",
+        "days": 4,
+        "people": null,
+        "budget": null,
+        "start_date": null,
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "slot-long-days",
+      "message": "去杭州玩三个月",
+      "ok": true,
+      "diff": {},
+      "note": "原始槽位 90 天，落库时封顶 60",
+      "predicted": {
+        "intent": "travel",
+        "intents": [
+          "travel"
+        ],
+        "route": "react",
+        "gear": false,
+        "destination": "杭州",
+        "days": 90,
+        "people": null,
+        "budget": null,
+        "start_date": null,
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "slot-weekend-days",
+      "message": "周末去千岛湖",
+      "ok": true,
+      "diff": {},
+      "note": "",
+      "predicted": {
+        "intent": "travel",
+        "intents": [
+          "travel"
+        ],
+        "route": "react",
+        "gear": false,
+        "destination": "千岛湖",
+        "days": 2,
+        "people": null,
+        "budget": null,
+        "start_date": "2026-11-07",
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "misc-greeting",
+      "message": "你好",
+      "ok": true,
+      "diff": {},
+      "note": "",
+      "predicted": {
+        "intent": null,
+        "intents": [],
+        "route": null,
+        "gear": false,
+        "destination": "",
+        "days": null,
+        "people": null,
+        "budget": null,
+        "start_date": null,
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "misc-vague",
+      "message": "帮我安排一下",
+      "ok": true,
+      "diff": {},
+      "note": "",
+      "predicted": {
+        "intent": null,
+        "intents": [],
+        "route": null,
+        "gear": false,
+        "destination": "",
+        "days": null,
+        "people": null,
+        "budget": null,
+        "start_date": null,
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "misc-weather",
+      "message": "明天杭州下雨吗",
+      "ok": true,
+      "diff": {},
+      "note": "",
+      "predicted": {
+        "intent": null,
+        "intents": [],
+        "route": null,
+        "gear": false,
+        "destination": "杭州",
+        "days": null,
+        "people": null,
+        "budget": null,
+        "start_date": "2026-11-07",
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "misc-weekend-advice",
+      "message": "周末有什么推荐",
+      "ok": true,
+      "diff": {},
+      "note": "",
+      "predicted": {
+        "intent": null,
+        "intents": [],
+        "route": null,
+        "gear": false,
+        "destination": "",
+        "days": 2,
+        "people": null,
+        "budget": null,
+        "start_date": "2026-11-07",
+        "lodging": "",
+        "with_kids": false
+      }
+    },
+    {
+      "id": "misc-budget-only",
+      "message": "预算3000",
+      "ok": true,
+      "diff": {},
+      "note": "只有钱数，不能判购物",
+      "predicted": {
+        "intent": null,
+        "intents": [],
+        "route": null,
+        "gear": false,
+        "destination": "",
+        "days": null,
+        "people": null,
+        "budget": 3000.0,
+        "start_date": null,
+        "lodging": "",
+        "with_kids": false
+      }
+    }
+  ]
+}

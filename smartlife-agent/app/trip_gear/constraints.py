@@ -1,75 +1,22 @@
 """约束派生：把一句自然语言需求变成约束清单 + 整趟事实。
 
-这里只做“能落到可检查对象上”的派生：
+这里只做"能落到可检查对象上"的派生：
 - 用户明说的：目的地、天数、人数、预算、住宿、交通、同行儿童
 - 规则推出的：周末 -> 2 天、预算默认含装备、夜间温度 -> 睡袋温标
 - 外部事实：天气（由调用方注入，失败时明确降级）
 
+槽位解析统一走 ``app.nlu.slots``，与 ``SharedConstraints`` 同源。
 不在这里调用模型。模型只负责生成行程，派生规则保持确定性、可测试。
 """
 from __future__ import annotations
 
-import re
 from typing import Iterable, List, Optional, Tuple
 
-from app.services.task_models import SharedConstraints, extract_shared_constraints
+from app.nlu.slots import extract_slots
+from app.services.task_models import SharedConstraints
 from app.trip_gear.models import Constraint, TripFacts
 
-_CN_NUM = {
-    "一": 1, "两": 2, "二": 2, "三": 3, "四": 4, "五": 5,
-    "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
-}
-
-_DEST_RE = re.compile(
-    r"(?:去|到|在|前往|想去|准备去)\s*([\u4e00-\u9fa5]{2,6}?)"
-    r"(?=露营|玩|旅游|出差|度假|徒步|爬山|住|待|，|。|,|$)"
-)
-
-_KNOWN_PLACES = (
-    "莫干山", "千岛湖", "安吉", "临安", "桐庐", "舟山", "黄山", "武功山",
-    "杭州", "北京", "上海", "成都", "三亚", "西安", "丽江", "大理",
-    "厦门", "桂林", "张家界", "云南", "新疆", "西藏",
-)
-
-_PEOPLE_RE = re.compile(r"([一两二三四五六七八九十\d]+)\s*(?:个?人|位|口)")
-
-_EXCLUDE_SCOPE = (
-    "不含装备", "装备另算", "装备另计", "装备不算", "装备除外",
-    "装备单独算", "装备单算", "装备自己买",
-)
-_INCLUDE_SCOPE = ("含装备", "包含装备", "装备也算", "算上装备", "预算含装备")
-
-_GEAR_BUDGET_RE = re.compile(
-    r"装备(?:预算|费用|花费)\s*(?:为|是|:|：)?\s*(\d+(?:\.\d+)?)"
-)
-_GEAR_BUDGET_RE2 = re.compile(r"装备\s*(\d+(?:\.\d+)?)\s*(?:元|块)")
-
-_CAMP_WORDS = ("露营", "营地", "扎营", "帐篷过夜")
-_HOTEL_WORDS = ("酒店", "民宿", "青旅", "宾馆", "客栈")
-_KID_WORDS = ("孩子", "小孩", "儿童", "宝宝", "亲子", "带娃")
-_FLIGHT_WORDS = ("飞机", "航班", "机票")
-_TRAIN_WORDS = ("高铁", "动车", "火车")
-_DRIVE_WORDS = ("自驾", "开车", "租车")
-
-
-def _destination(text: str) -> str:
-    match = _DEST_RE.search(text or "")
-    if match:
-        return match.group(1).strip()
-    return next((place for place in _KNOWN_PLACES if place in (text or "")), "")
-
-
-def _people(text: str, shared: SharedConstraints) -> Tuple[int, str]:
-    match = _PEOPLE_RE.search(text or "")
-    if match:
-        raw = match.group(1)
-        if raw.isdigit():
-            return int(raw), "用户原话"
-        if raw in _CN_NUM:
-            return _CN_NUM[raw], "用户原话"
-    if shared.people and shared.people > 1:
-        return shared.people, "用户原话"
-    return 1, "默认规则"
+_TRANSPORT_LABELS = {"flight": "飞机", "train": "高铁/火车", "drive": "自驾"}
 
 
 def _float(value) -> Optional[float]:
@@ -82,64 +29,45 @@ def _float(value) -> Optional[float]:
 def derive_constraints(
     message: str,
     shared: Optional[SharedConstraints] = None,
+    today=None,
 ) -> Tuple[TripFacts, List[Constraint]]:
-    """返回 (facts, constraints)。约束只包含这次真正用到的条目。"""
+    """返回 (facts, constraints)。约束只包含这次真正用到的条目。
+
+    ``shared`` 只作兜底：调用方已经抽好的共享约束里有的值，槽位没抽到时补上，
+    保证两条链路不会互相矛盾。
+    """
     text = str(message or "")
-    shared = shared or extract_shared_constraints(text)
+    slots = extract_slots(text, today=today)
 
-    destination = _destination(text) or (shared.destination or "")
-    days = shared.days
-    days_source = "用户原话"
+    destination = slots.destination or (shared.destination if shared else "") or ""
+    days = slots.days if slots.days is not None else (shared.days if shared else None)
+    days_source = slots.source("days") if slots.days is not None else "共享约束"
     if days is None and "周末" in text:
-        days = 2
-        days_source = "规则推导（周末按 2 天）"
+        days, days_source = 2, "规则推导（周末按 2 天）"
+    days_capped = False
+    if days is not None and days > 60:
+        # "三个月"这类超出单次规划上限，按 60 天处理并在清单里说明
+        days, days_capped = 60, True
 
-    people, people_source = _people(text, shared)
+    people = slots.people if slots.people is not None else (shared.people if shared else None)
+    people_source = slots.source("people") if slots.people is not None else (
+        "共享约束" if people is not None else "未指定"
+    )
 
-    budget = shared.budget
-    if any(word in text for word in _EXCLUDE_SCOPE):
-        budget_scope = "trip_only"
-        scope_source = "用户原话"
-    elif any(word in text for word in _INCLUDE_SCOPE):
-        budget_scope = "all_in"
-        scope_source = "用户原话"
-    else:
-        budget_scope = "all_in"
-        scope_source = "默认规则"
-
-    gear_budget = None
-    gear_budget_match = _GEAR_BUDGET_RE.search(text) or _GEAR_BUDGET_RE2.search(text)
-    if gear_budget_match:
-        gear_budget = _float(gear_budget_match.group(1))
-        budget_scope = "trip_only"
-
-    lodging = ""
-    if any(word in text for word in _CAMP_WORDS):
-        lodging = "camp"
-    elif any(word in text for word in _HOTEL_WORDS):
-        lodging = "hotel"
-
-    transport = ""
-    if any(word in text for word in _FLIGHT_WORDS):
-        transport = "flight"
-    elif any(word in text for word in _TRAIN_WORDS):
-        transport = "train"
-    elif any(word in text for word in _DRIVE_WORDS):
-        transport = "drive"
-
-    with_kids = any(word in text for word in _KID_WORDS)
+    budget = slots.budget if slots.budget is not None else (shared.budget if shared else None)
+    budget_source = slots.source("budget") if slots.budget is not None else "共享约束"
 
     facts = TripFacts(
         destination=destination,
         days=days,
         people=people,
         budget=budget,
-        gear_budget=gear_budget,
-        budget_scope=budget_scope,
-        start_date=shared.start_date.isoformat() if shared.start_date else None,
-        lodging=lodging,
-        transport=transport,
-        with_kids=with_kids,
+        gear_budget=slots.gear_budget,
+        budget_scope=slots.budget_scope,
+        start_date=slots.start_date,
+        lodging=slots.lodging,
+        transport=slots.transport,
+        with_kids=slots.with_kids,
     )
 
     constraints: List[Constraint] = []
@@ -147,47 +75,148 @@ def derive_constraints(
         constraints.append(Constraint(text=f"目的地：{destination}", source="用户原话", key="destination"))
     if days:
         constraints.append(Constraint(text=f"天数：{days} 天", source=days_source, key="days"))
-    constraints.append(Constraint(text=f"人数：{people} 人", source=people_source, key="people"))
-    if budget is not None:
+    if people is not None:
+        constraints.append(Constraint(text=f"人数：{people} 人", source=people_source, key="people"))
+    else:
+        # 人数没说：按 1 人算，但明确标出来，别让用户以为系统知道
         constraints.append(
-            Constraint(text=f"预算：{budget:g} 元", source="用户原话", key="budget")
+            Constraint(
+                text="人数：未指定（按 1 人计）",
+                source="默认规则",
+                hard=False,
+                key="people",
+            )
         )
+    if budget is not None:
+        constraints.append(Constraint(text=f"预算：{budget:g} 元", source=budget_source, key="budget"))
         constraints.append(
             Constraint(
                 text=(
                     "预算口径：含装备"
-                    if budget_scope == "all_in"
+                    if slots.budget_scope == "all_in"
                     else "预算口径：不含装备"
                 ),
-                source=scope_source,
+                source=slots.source("budget_scope"),
                 key="budget_scope",
             )
         )
-    if gear_budget is not None:
-        constraints.append(
-            Constraint(text=f"装备预算：{gear_budget:g} 元", source="用户原话", key="gear_budget")
-        )
-    if lodging:
+    if slots.gear_budget is not None:
         constraints.append(
             Constraint(
-                text="住宿：露营" if lodging == "camp" else "住宿：酒店/民宿",
+                text=f"装备预算：{slots.gear_budget:g} 元",
+                source="用户原话",
+                key="gear_budget",
+            )
+        )
+    if slots.lodging:
+        constraints.append(
+            Constraint(
+                text="住宿：露营" if slots.lodging == "camp" else "住宿：酒店/民宿",
                 source="用户原话",
                 key="lodging",
             )
         )
-    if transport:
-        labels = {"flight": "飞机", "train": "高铁/火车", "drive": "自驾"}
+    if slots.transport:
         constraints.append(
             Constraint(
-                text=f"交通：{labels.get(transport, transport)}",
+                text=f"交通：{_TRANSPORT_LABELS.get(slots.transport, slots.transport)}",
                 source="用户原话",
                 key="transport",
             )
         )
-    if with_kids:
+    if slots.with_kids:
         constraints.append(Constraint(text="同行：有儿童", source="用户原话", key="with_kids"))
+    if days_capped:
+        constraints.append(
+            Constraint(
+                text="天数：原话超出单次规划上限，按 60 天处理",
+                source="规则推导",
+                hard=False,
+            )
+        )
 
     return facts, constraints
+
+
+def apply_assisted(
+    facts: TripFacts,
+    constraints: List[Constraint],
+    extra: dict,
+) -> Tuple[TripFacts, List[Constraint]]:
+    """把"模型补全"的槽位并进事实。
+
+    只填空缺，不覆盖规则结果；来源统一标"模型补全"，用户能在约束清单里
+    看出这一条是推断的，而不是自己说的。
+    """
+    if not extra:
+        return facts, constraints
+
+    merged = facts.model_copy(deep=True)
+    existing_keys = {item.key for item in constraints if item.key}
+    added: List[Tuple[str, str]] = []
+
+    destination = str(extra.get("destination") or "").strip()
+    if destination and not merged.destination and "destination" not in existing_keys:
+        merged.destination = destination
+        added.append((f"目的地：{destination}", "destination"))
+
+    days = extra.get("days")
+    if days and merged.days is None and "days" not in existing_keys:
+        merged.days = int(days)
+        added.append((f"天数：{merged.days} 天", "days"))
+
+    people = extra.get("people")
+    if people and merged.people is None:
+        merged.people = int(people)
+        # 之前那条"未指定（按 1 人计）"占位约束已经过时，先撤掉
+        constraints = [
+            item for item in constraints
+            if not (item.key == "people" and "未指定" in item.text)
+        ]
+        added.append((f"人数：{merged.people} 人", "people"))
+
+    budget = extra.get("budget")
+    if budget and merged.budget is None and "budget" not in existing_keys:
+        merged.budget = float(budget)
+        added.append((f"预算：{merged.budget:g} 元", "budget"))
+
+    start_date = str(extra.get("start_date") or "").strip()
+    if start_date and not merged.start_date and "start_date" not in existing_keys:
+        merged.start_date = start_date
+        added.append((f"出发日期：{start_date}", "start_date"))
+
+    for text, key in added:
+        constraints.append(Constraint(text=text, source="模型补全", hard=True, key=key))
+    return merged, constraints
+
+
+_OWNED_DUPLICATE_HINTS = (
+    "已有", "现有", "自带", "自备", "优先使用", "优先用", "不用买", "不需要买", "记得带",
+)
+
+
+def drop_owned_duplicates(
+    constraints: List[Constraint],
+    owned_names: Iterable[str],
+) -> List[Constraint]:
+    """丢掉"把用户已有的 X 纳入考虑"这类模型推断约束。
+
+    这类条目在 owned 判定之后就是重复信息：东西已经进清单并标成"已有"了，
+    再挂一条"模型推断 / 软 / 未校验"只会让用户以为系统没认出来。
+    """
+    names = [str(name).strip() for name in owned_names if len(str(name).strip()) >= 2]
+    if not names:
+        return constraints
+    kept: List[Constraint] = []
+    for item in constraints:
+        if (
+            item.source == "模型推断"
+            and any(name in item.text for name in names)
+            and any(hint in item.text for hint in _OWNED_DUPLICATE_HINTS)
+        ):
+            continue
+        kept.append(item)
+    return kept
 
 
 def merge_inferred(

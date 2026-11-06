@@ -1,0 +1,42 @@
+{"id": "shop-basic", "message": "推荐一双跑鞋", "today": "2026-11-06", "expect": {"intent": "shopping", "intents": ["shopping"], "route": "react", "gear": false}, "note": "品类+动作"}
+{"id": "shop-budget", "message": "预算500以内的手机", "today": "2026-11-06", "expect": {"intent": "shopping", "route": "react", "budget": 500.0}, "note": "预算词 + 品类"}
+{"id": "shop-compare", "message": "小米手机和华为手机哪个好", "today": "2026-11-06", "expect": {"intent": "shopping", "route": "react", "gear": false}, "note": "品牌与品类同时命中"}
+{"id": "shop-single-noun", "message": "这双鞋耐用吗", "today": "2026-11-06", "expect": {"intent": null}, "note": "只有品类、没有购买/比价动作，交小模型"}
+{"id": "shop-weak-money", "message": "价格多少钱", "today": "2026-11-06", "expect": {"intent": null}, "note": "只有钱数词，不能判购物"}
+{"id": "shop-negation", "message": "不要帐篷，我想买睡袋", "today": "2026-11-06", "expect": {"intent": "shopping", "gear": false}, "note": "否定词不参与购物证据"}
+{"id": "travel-3days", "message": "去杭州玩三天", "today": "2026-11-06", "expect": {"intent": "travel", "route": "plan_and_execute", "destination": "杭州", "days": 3, "gear": false}}
+{"id": "travel-itinerary", "message": "帮我做个杭州两天行程", "today": "2026-11-06", "expect": {"intent": "travel", "route": "plan_and_execute", "destination": "杭州", "days": 2}}
+{"id": "travel-outdoor", "message": "去莫干山露营两天带什么", "today": "2026-11-06", "expect": {"intent": "travel", "destination": "莫干山", "days": 2, "gear": true}, "note": "非白名单地名 + 装备清单"}
+{"id": "travel-price", "message": "三亚五天大概多少钱", "today": "2026-11-06", "expect": {"intent": "travel", "route": "react", "destination": "三亚", "days": 5, "gear": false}}
+{"id": "travel-business", "message": "下周三去上海出差两天", "today": "2026-11-06", "expect": {"intent": "travel", "destination": "上海", "days": 2, "start_date": "2026-11-11", "gear": true}}
+{"id": "travel-japan", "message": "去日本玩五天", "today": "2026-11-06", "expect": {"intent": "travel", "route": "plan_and_execute", "destination": "日本", "days": 5}}
+{"id": "travel-weekend", "message": "周末去安吉露营", "today": "2026-11-06", "expect": {"intent": "travel", "destination": "安吉", "days": 2, "lodging": "camp", "gear": true}}
+{"id": "travel-from-to", "message": "从北京到上海三天", "today": "2026-11-06", "expect": {"intent": "travel", "destination": "上海", "days": 3}, "note": "从 A 到 B 只取终点"}
+{"id": "travel-not-a-trip", "message": "在杭州工作", "today": "2026-11-06", "expect": {"intent": null, "destination": "杭州"}, "note": "有地名但不是出行"}
+{"id": "travel-food", "message": "去成都吃火锅", "today": "2026-11-06", "expect": {"intent": "travel", "destination": "成都", "gear": false}}
+{"id": "composite-buy-camp", "message": "买一个帐篷和睡袋，再去莫干山露营两天", "today": "2026-11-06", "expect": {"intent": "composite", "intents": ["shopping", "travel"], "destination": "莫干山", "days": 2}, "note": "旧实现只判成 shopping"}
+{"id": "composite-plan", "message": "推荐跑鞋，再制定杭州两天计划", "today": "2026-11-06", "expect": {"intent": "composite", "route": "plan_and_execute", "destination": "杭州", "days": 2}}
+{"id": "composite-explicit-buy", "message": "去上海玩5天，顺便买一件冲锋衣", "today": "2026-11-06", "expect": {"intent": "composite", "destination": "上海", "days": 5}}
+{"id": "service-refund", "message": "退一下订单", "today": "2026-11-06", "expect": {"intent": "customer_service", "route": "react", "gear": false}}
+{"id": "service-single-word", "message": "我的快递到哪了", "today": "2026-11-06", "expect": {"intent": null}, "note": "单个客服词证据不够，交小模型"}
+{"id": "gear-list", "message": "准备去露营三天，帮我列一份装备清单", "today": "2026-11-06", "expect": {"intent": "travel", "route": "plan_and_execute", "days": 3, "gear": true}}
+{"id": "gear-business", "message": "出差三天带什么", "today": "2026-11-06", "expect": {"intent": "travel", "days": 3, "gear": true}}
+{"id": "gear-with-purchase", "message": "我想买个帐篷，预算600", "today": "2026-11-06", "expect": {"intent": "shopping", "budget": 600.0, "gear": false}}
+{"id": "gear-recommend", "message": "推荐露营装备", "today": "2026-11-06", "expect": {"intent": null, "gear": false}, "note": "有购买动作，不进装备链路"}
+{"id": "gear-buy-what", "message": "去露营要买什么", "today": "2026-11-06", "expect": {"intent": null, "gear": false}}
+{"id": "slot-people-words", "message": "两位去杭州玩三天，预算3000", "today": "2026-11-06", "expect": {"people": 2, "days": 3, "budget": 3000.0, "destination": "杭州"}}
+{"id": "slot-family", "message": "我们一家三口去莫干山露营", "today": "2026-11-06", "expect": {"people": 3, "destination": "莫干山", "lodging": "camp"}}
+{"id": "slot-kids", "message": "2大1小去三亚", "today": "2026-11-06", "expect": {"people": 3, "destination": "三亚", "with_kids": true}}
+{"id": "slot-cn-budget", "message": "三千预算去安吉露营两天", "today": "2026-11-06", "expect": {"budget": 3000.0, "destination": "安吉", "days": 2}}
+{"id": "slot-gear-budget", "message": "装备预算1000，总预算3000，去武功山徒步两天", "today": "2026-11-06", "expect": {"budget": 3000.0, "destination": "武功山", "days": 2}, "note": "装备预算不能顶掉总预算"}
+{"id": "slot-price-vs-budget", "message": "预算3000，手机5000元", "today": "2026-11-06", "expect": {"budget": 3000.0}, "note": "商品单价不能顶掉总预算"}
+{"id": "slot-date", "message": "下周六去莫干山", "today": "2026-11-06", "expect": {"start_date": "2026-11-14", "destination": "莫干山"}}
+{"id": "slot-cn-date", "message": "8月1日出发，去青岛五天", "today": "2026-11-06", "expect": {"start_date": "2027-08-01", "days": 5, "destination": "青岛"}}
+{"id": "slot-nights", "message": "去厦门住3晚", "today": "2026-11-06", "expect": {"days": 4, "destination": "厦门"}, "note": "住3晚≈4天"}
+{"id": "slot-long-days", "message": "去杭州玩三个月", "today": "2026-11-06", "expect": {"days": 90}, "note": "原始槽位 90 天，落库时封顶 60"}
+{"id": "slot-weekend-days", "message": "周末去千岛湖", "today": "2026-11-06", "expect": {"days": 2, "destination": "千岛湖", "lodging": ""}}
+{"id": "misc-greeting", "message": "你好", "today": "2026-11-06", "expect": {"intent": null}}
+{"id": "misc-vague", "message": "帮我安排一下", "today": "2026-11-06", "expect": {"intent": null}}
+{"id": "misc-weather", "message": "明天杭州下雨吗", "today": "2026-11-06", "expect": {"intent": null, "destination": "杭州"}}
+{"id": "misc-weekend-advice", "message": "周末有什么推荐", "today": "2026-11-06", "expect": {"intent": null}}
+{"id": "misc-budget-only", "message": "预算3000", "today": "2026-11-06", "expect": {"intent": null, "budget": 3000.0}, "note": "只有钱数，不能判购物"}

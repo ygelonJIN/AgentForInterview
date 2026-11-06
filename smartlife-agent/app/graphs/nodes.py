@@ -73,15 +73,32 @@ async def classify(state: TurnState, runtime: Runtime[TurnContext]) -> Dict[str,
     }
 
 
+_GEAR_SUB_INTENTS = {
+    "gear_plan", "equipment_plan", "packing_list", "gear_checklist", "trip_gear",
+}
+
+
+def _is_gear_plan(classification: Dict[str, Any]) -> bool:
+    """显式枚举 + 中文限定词，替代原来的 ``"gear" in sub_intent`` 包含判断。
+
+    模型给的是自由文本（"装备清单规划"），只认"装备"二字会把
+    "装备预算"之类的描述也劫持过来，所以要求同时出现清单/规划类词。
+    """
+    sub_intent = str(classification.get("sub_intent") or "").strip().lower()
+    if sub_intent in _GEAR_SUB_INTENTS:
+        return True
+    if "装备" not in sub_intent:
+        return False
+    return any(word in sub_intent for word in ("清单", "规划", "准备", "带"))
+
+
 def route(state: TurnState) -> str:
     """条件边：把分类结果翻译成下一个节点名。"""
     classification = state.get("classification") or {}
     intent = classification.get("intent", "general")
     route_name = classification.get("route", "react")
     intents = set(classification.get("intents") or [intent])
-    sub_intent = str(classification.get("sub_intent") or "").strip()
-    # 模型给的是自由文本（"装备清单规划"），不能只认 "gear_plan" 这一个字面值。
-    if sub_intent == "gear_plan" or "gear" in sub_intent.lower() or "装备" in sub_intent:
+    if _is_gear_plan(classification):
         return "trip_gear"
     if {"shopping", "travel"}.issubset(intents):
         return "composite"

@@ -55,7 +55,6 @@ class TurnState(TypedDict, total=False):
     memory_extraction: Dict[str, Any]
 
     # 状态
-    extract_memory: bool
     status: str
     error: str
 

@@ -35,6 +35,7 @@ from app.session import build_thread_id
 from app.tools import get_safe_tools
 from app.graphs.events import EventSink
 from app.streaming import EventType
+from app.nlu import lexicon, signals
 from app.trip_gear.intent import is_gear_request
 from app.observability import extract_model_usage, log_exception, timed_span
 
@@ -258,10 +259,8 @@ class TurnServices:
         self._last_classifications[thread_id] = classification
 
         if classification.intent == "general":
-            product_keywords = ["鞋", "衣服", "手机", "电脑", "背包", "帐篷", "冲锋衣",
-                               "睡袋", "泳衣", "T恤", "衬衫", "裤子", "外套", "连衣裙",
-                               "元", "块", "预算", "价格", "多少钱", "推荐"]
-            if any(kw in user_message for kw in product_keywords):
+            # 只认实义品类/品牌词；不能再让"预算3000"这种钱数把闲聊判成购物。
+            if signals.has_strong_shopping_signal(user_message):
                 classification.intent = "shopping"
                 classification.sub_intent = "search"
                 classification.retrieval = "mixed"
@@ -549,31 +548,26 @@ class TurnServices:
             raise ValueError("回答必须至少引用一个检索到的真实商品名称")
 
     def _classify_data_needs(self, query: str, classification: 'ClassificationResult') -> dict:
-        """按事实需求选择 SQL/RAG，不把二者当成固定降级顺序。"""
+        """按事实需求选择 SQL/RAG。
+
+        两路证据：关键词（本函数）和分类器给的 ``retrieval`` 先验。
+        关键词没看出需求时采信先验；关键词看出了就不让先验覆盖——
+        词表是对当前这句原话的直接观察，比一次模型判断更可靠。
+        """
         q = (query or '').lower()
-        review_signals = sum(1 for kw in [
-            '评价', '口碑', '好不好', '差评', '好评', '吐槽', '怎么样', '耐用',
-            '质量', '体验', '舒适', '缓震', '真实用户', '推荐理由',
-        ] if kw in q)
-        attribute_signals = sum(1 for kw in [
-            '价格', '多少钱', '元', '预算', '库存', '有货', '品牌', '类别', '分类',
-            '排序', '防水', '尺寸', '颜色', '规格', '低于', '高于', '以内', '以上',
-        ] if kw in q)
-        product_action_signals = sum(1 for kw in [
-            '推荐', '找', '买', '搜', '搜索', '商品', '哪款', '哪双', '哪个',
-            '对比', '比较', '选购', '筛选',
-        ] if kw in q)
+        review_signals = sum(1 for kw in lexicon.RETRIEVAL_REVIEW if kw in q)
+        attribute_signals = sum(1 for kw in lexicon.RETRIEVAL_ATTRIBUTE if kw in q)
+        product_action_signals = sum(1 for kw in lexicon.RETRIEVAL_PRODUCT_ACTION if kw in q)
 
         if classification.intent == 'customer_service':
             # 订单/客服应由专门 Repository 处理，不能误判成商品证据检索。
             needs_product = False
             needs_review = review_signals > 0
-        elif classification.intent in ('shopping',):
+        elif classification.intent == 'shopping':
             needs_product = attribute_signals > 0 or product_action_signals > 0
             needs_review = review_signals > 0
             # 纯评价/体验问题不需要商品 SQL；只有明确商品动作或结构化约束才查目录。
             if review_signals and not attribute_signals and not product_action_signals:
-                # 纯体验/评价问题只依赖评价证据；不为了指代词强制查询商品表。
                 needs_product = False
         elif classification.intent == 'travel':
             needs_product = False
@@ -581,6 +575,15 @@ class TurnServices:
         else:
             needs_product = False
             needs_review = False
+
+        # 关键词没给出任何需求时，采信分类器先验（模型读懂了而词表没覆盖）
+        if not needs_product and not needs_review:
+            prior = str(getattr(classification, 'retrieval', '') or '')
+            if classification.intent not in ('customer_service', 'general'):
+                if prior in {'sql_only', 'mixed'}:
+                    needs_product = True
+                if prior in {'rag_only', 'mixed'}:
+                    needs_review = True
 
         if needs_product and needs_review:
             strategy = 'mixed'
