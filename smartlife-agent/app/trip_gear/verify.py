@@ -419,16 +419,28 @@ def verify(
     # 1. 逐条约束核对
     issues = check_constraints(facts, constraints, itinerary, gear, products)
 
-    # 2. 商品库未覆盖的装备如实披露，不编价格
+    # 2. 没选到商品的装备如实披露；但要分清"库里没有"和"预算不够"，
+    #    否则用户会以为商品库缺货，实际是自己给的钱不够。
     _, unknown = gear_cost(gear, products)
+    by_name = {item.name: item for item in gear}
     for name in unknown:
-        issues.append(
-            Issue(
-                constraint=f"装备：{name}",
-                hint="商品库暂未匹配到商品，未计入预算",
-                severity="minor",
+        reason = (by_name.get(name).reason if by_name.get(name) else "") or ""
+        if "预算不足" in reason:
+            issues.append(
+                Issue(
+                    constraint=f"装备：{name} 预算不足",
+                    hint="当前预算内没有可选的款，未购买；放宽预算或减需求再试",
+                    severity="minor",
+                )
             )
-        )
+        else:
+            issues.append(
+                Issue(
+                    constraint=f"装备：{name}",
+                    hint="商品库暂未匹配到商品，未计入预算",
+                    severity="minor",
+                )
+            )
 
     # 3. 行程自身的时间与结构校验
     issues.extend(validate_itinerary(itinerary))

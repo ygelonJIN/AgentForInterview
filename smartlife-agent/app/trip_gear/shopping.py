@@ -9,6 +9,8 @@ import re
 from typing import Any, Callable, Dict, List, Optional
 
 from app.trip_gear.models import GearItem
+from app.trip_gear.select import pick as pick_scored
+from app.trip_gear.spec_schema import subcategory_for
 
 # 装备名 -> 商品库里的检索词。只做语义安全的映射，搜不到就如实留空。
 ALIASES = {
@@ -96,9 +98,12 @@ class GearShopper:
         self,
         search: Optional[Callable[..., List[dict]]] = None,
         preferred_brands: Optional[List[str]] = None,
+        facts: Any = None,
     ):
         self.search = search
         self.preferred_brands = list(preferred_brands or [])
+        # 给了 facts 就走打分选品（参数+口碑+预算），否则退回按价格挑。
+        self.facts = facts
 
     def fill(
         self,
@@ -113,6 +118,8 @@ class GearShopper:
                 continue
             product = self._pick(item, remaining_budget)
             if not product:
+                if remaining_budget is not None:
+                    item.reason = (item.reason + "；预算不足，未选款").strip("；")
                 continue
             products[item.name] = product
             if remaining_budget is not None:
@@ -148,6 +155,12 @@ class GearShopper:
         2. **近似替代要标出来**。库里没有"保暖层"，命中"轻薄羽绒外套"
            是合理的，但必须注明这是替代，否则用户会以为库里真有这件东西。
         """
+        if self.facts is not None:
+            scored = self._pick_scored(item, remaining_budget)
+            # 打分路径下，预算内没有合适款就留空，不再退到"最便宜也要买"——
+            # 那等于用超支换一个看起来完整的清单。
+            return scored
+
         for query in self._queries(item):
             try:
                 rows = list(self.search(query=query, limit=5) or [])
@@ -174,6 +187,49 @@ class GearShopper:
             product["match"] = self._match_meta(item, product, query)
             return product
         return None
+
+    def _pick_scored(self, item: GearItem, remaining_budget: Optional[float]) -> Optional[Dict[str, Any]]:
+        """打分选品：候选池放大到几十条，按参数匹配 / 口碑 / 预算占用排序。"""
+        candidates: List[Dict[str, Any]] = []
+        seen: set = set()
+        for query in self._queries(item):
+            try:
+                rows = list(self.search(query=query, limit=30) or [])
+            except Exception:
+                rows = []
+            for row in rows:
+                if not isinstance(row, dict) or not row.get("name"):
+                    continue
+                if row["name"] in seen:
+                    continue
+                seen.add(row["name"])
+                candidates.append(row)
+            if len(candidates) >= 40:
+                break
+        if not candidates:
+            return None
+
+        # 品类约束：保暖层只该在服装里找，"羽绒"不该把羽绒睡袋捞进来。
+        subcategory = subcategory_for(item.name)
+        if subcategory:
+            narrowed = [row for row in candidates if row.get("subcategory") == subcategory]
+            candidates = narrowed or candidates
+
+        best = pick_scored(
+            candidates,
+            category=item.name,
+            gear_name=item.name,
+            facts=self.facts,
+            remaining=remaining_budget,
+            qty=item.qty,
+            preferred_brands=self.preferred_brands,
+        )
+        if best is None:
+            return None
+        product = dict(best.product)
+        product["match"] = self._match_meta(item, product, str(product.get("name") or ""))
+        product["match"]["score"] = best.score
+        return product
 
     def _sort_key(self, row: Dict[str, Any]) -> tuple:
         price = float(row.get("price") or 0)

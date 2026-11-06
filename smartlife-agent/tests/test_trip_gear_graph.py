@@ -118,7 +118,8 @@ def test_owned_items_from_memory_are_used():
     assert "帐篷 ×1" in response
 
 
-def test_over_budget_repair_skips_optional_gear():
+def test_over_budget_items_are_left_unbought_instead_of_overspending():
+    """预算不够时不先超支再削减，而是当场不选——钱不够就该说不买。"""
     state = _run(
         "周末去三亚玩两天，预算500",
         planner=_Planner("海边游泳"),
@@ -130,11 +131,15 @@ def test_over_budget_repair_skips_optional_gear():
         },
     )
 
-    assert state["revision"] == 2
-    assert "已按预算省略" in state["response"]
-    assert "墨镜" in state["response"]
+    response = state["response"]
+    assert "预算不足，未选款" in response
+    # 总花费必须落在预算内，而不是靠事后砍单把账做平
+    assert "¥500" in response
     assert not any(
         issue["constraint"].startswith("预算") for issue in state["issues"]
+    )
+    assert any(
+        "预算不足" in str(issue["constraint"]) for issue in state["issues"]
     )
 
 

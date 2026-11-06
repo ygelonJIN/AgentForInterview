@@ -304,7 +304,7 @@ async def shop(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str,
     product_search = _dep(runtime, "product_search", "_search")
     if product_search:
         preferred = (state.get("preferences") or {}).get("brands") or []
-        GearShopper(product_search, preferred_brands=preferred).fill(
+        GearShopper(product_search, preferred_brands=preferred, facts=facts).fill(
             items, products, remaining_budget=_remaining_budget(facts, itinerary)
         )
 

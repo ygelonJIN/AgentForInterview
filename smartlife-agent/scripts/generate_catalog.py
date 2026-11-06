@@ -435,6 +435,73 @@ def _review_text(category: str, aspect: str, sentiment: str, specs: dict, rnd: r
     return f"{rnd.choice(CONTEXT)}{body}{rnd.choice(TAIL[sentiment])}"
 
 
+def _extra_specs(category: str, tier_label: str, tier_index: int, count: int) -> dict:
+    """按档位补"选购参数"：每种商品的"好"不是同一组数字。
+
+    羽绒服看蓬松度与充绒量，帐篷看季节和打包重量，头灯看流明与续航——
+    这些字段参与选品打分（见 app/trip_gear/spec_schema.py）。
+    """
+    step = 0 if count <= 1 else tier_index / (count - 1)
+    travel = lambda low, high: round(low + (high - low) * step)
+
+    if category == "睡袋":
+        down = "羽绒" in tier_label
+        specs = {"weight_g": travel(900, 1250)}
+        if down:
+            specs.update({
+                "fill_power": travel(550, 850),
+                "fill_weight_g": travel(120, 400),
+                "down_ratio": round(0.75 + 0.2 * step, 2),
+            })
+        else:
+            specs.update({"fill_weight_g": travel(600, 900), "down_ratio": 0})
+        return specs
+
+    if category == "帐篷":
+        return {
+            "packed_weight_g": travel(1500, 4200),
+            "season": 3 if "四季" not in tier_label else 4,
+            "waterproof_mm": travel(3000, 8000),
+        }
+
+    if category == "防潮垫":
+        return {"thickness_mm": travel(20, 90), "weight_g": travel(300, 1100)}
+
+    if category == "头灯":
+        return {"runtime_h": travel(4, 30), "weight_g": travel(55, 180)}
+
+    if category == "营地灯":
+        return {"runtime_h": travel(6, 40), "weight_g": travel(180, 600)}
+
+    if category == "背包":
+        return {"load_kg": travel(8, 25), "weight_g": travel(650, 1800)}
+
+    if category == "登山鞋":
+        return {"weight_g": travel(380, 640), "support": travel(1, 4)}
+
+    if category == "冲锋衣":
+        return {"breathability_g": travel(5000, 25000), "weight_g": travel(320, 780)}
+
+    if category == "保暖层":
+        return {
+            "fill_power": travel(550, 800),
+            "fill_weight_g": travel(80, 260),
+            "down_ratio": round(0.80 + 0.15 * step, 2),
+            "weight_g": travel(280, 700),
+        }
+
+    if category == "速干衣":
+        return {"weight_g": travel(120, 260), "dry_time_min": travel(60, 25)}
+
+    if category == "雨伞":
+        return {"ribs": travel(6, 10), "weight_g": travel(450, 200), "wind_level": travel(3, 6)}
+
+    if category == "儿童衣物":
+        return {"weight_g": travel(120, 300), "softness": travel(3, 5)}
+
+    return {}
+
+
 def _product_name(
     brand: str,
     category: str,
@@ -484,6 +551,13 @@ def build_products(target: int, reviews_per: int, seed: int = 20261105):
         names.add(name)
 
         meta = CATEGORY_DEFS[category]
+        full_specs = dict(specs)
+        full_specs.update(
+            _extra_specs(
+                category, tier_label,
+                meta["tiers"].index((tier_label, price, specs)), len(meta["tiers"]),
+            )
+        )
         aspects = meta["aspects"][:]
         rnd.shuffle(aspects)
         chosen = aspects[: min(reviews_per, len(aspects))]
@@ -493,7 +567,7 @@ def build_products(target: int, reviews_per: int, seed: int = 20261105):
             review_rows.append(
                 {
                     "rating": rnd.choice(REVIEW_RATING[sentiment]),
-                    "content": _review_text(category, aspect, sentiment, specs, rnd),
+                    "content": _review_text(category, aspect, sentiment, full_specs, rnd),
                     "aspect": aspect,
                 }
             )
@@ -510,7 +584,7 @@ def build_products(target: int, reviews_per: int, seed: int = 20261105):
                 "stock": rnd.randint(5, 120),
                 "description": f"{brand}{category}{tier_label}，{meta['subcategory']}场景使用",
                 "rating": rating,
-                "specs": specs,
+                "specs": full_specs,
                 "lead_time_days": lead_time_for(meta["subcategory"]),
                 "source": "generated",
             }
