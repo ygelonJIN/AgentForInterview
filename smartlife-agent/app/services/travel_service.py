@@ -143,34 +143,47 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
             "模拟结果已拒绝。请明确披露天气不可用，禁止给出猜测温度或把季节典型值写成当前天气。"
         )
 
+    # 攻略文件是"主题"命名的，这里维护主题 -> 触发词，而不是全文关键词扫描。
+    _GUIDE_TOPICS = (
+        ("hangzhou", ("杭州", "西湖", "千岛湖", "灵隐")),
+        ("camping", ("露营", "营地", "帐篷", "徒步", "登山", "户外")),
+        ("couples", ("情侣", "二人世界", "夫妻", "蜜月", "纪念日")),
+        ("budget", ("省钱", "预算", "便宜", "性价比", "穷游")),
+    )
+
     def _read_local_guides(self, query: str) -> str:
-        """读取本地攻略文件"""
+        """按主题挑攻略文件；一个都对不上时退回前 3 篇做泛化参考。"""
         import glob
+
         base_dir = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
             "data", "guides"
         )
         if not os.path.exists(base_dir):
             return ""
-        guide_files = glob.glob(os.path.join(base_dir, "*.txt"))
+
+        files = sorted(glob.glob(os.path.join(base_dir, "*.txt")))
+        if not files:
+            return ""
+
+        text = str(query or "")
+        selected = []
+        for path in files:
+            name = os.path.basename(path).lower()
+            for key, terms in self._GUIDE_TOPICS:
+                if key in name and any(term in text for term in terms):
+                    selected.append(path)
+                    break
+        if not selected:
+            selected = files[:3]
+
         relevant = []
-        query_lower = query.lower()
-        keywords = ["杭州", "露营", "camping", "情侣", "budget", "预算", "西湖", "户外", "登山"]
-        for fp in guide_files:
-            fn = os.path.basename(fp).lower()
-            if any(kw in fn or kw in query_lower for kw in keywords):
-                try:
-                    with open(fp, "r", encoding="utf-8") as f:
-                        relevant.append(f"【{os.path.basename(fp)}】\n{f.read()[:1500]}")
-                except Exception:
-                    pass
-        if not relevant:
-            for fp in guide_files[:3]:
-                try:
-                    with open(fp, "r", encoding="utf-8") as f:
-                        relevant.append(f"【{os.path.basename(fp)}】\n{f.read(500)}")
-                except Exception:
-                    pass
+        for path in selected:
+            try:
+                with open(path, "r", encoding="utf-8") as handle:
+                    relevant.append(f"【{os.path.basename(path)}】\n{handle.read()[:1500]}")
+            except Exception:
+                continue
         return "\n\n".join(relevant)
 
     def _build_plan_context(
