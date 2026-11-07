@@ -439,41 +439,6 @@ section[data-testid="stSidebar"] [data-testid="stAlert"] {{ border-radius: var(-
 .sl-lead em {{ font-style: normal; color: var(--c-accent); }}
 .sl-lead span {{ display: block; margin-top: var(--space-2); font-family: var(--font-sans); font-size: var(--fs-xs); font-weight: 400; color: var(--c-text-muted); }}
 
-/* ---------- 右轨 ---------- */
-.sl-rail {{ display: flex; flex-direction: column; gap: var(--space-3); }}
-.st-key-assistant_rail {{
-  position: sticky; top: var(--space-4);
-}}
-.sl-rail-block {{
-  background: var(--c-rail-bg); border: var(--border-w) solid var(--c-line);
-  border-radius: var(--radius-md); padding: var(--space-3) var(--space-4);
-}}
-.sl-rail-title {{
-  display: flex; align-items: baseline; gap: var(--space-2);
-  font-size: var(--fs-2xs); font-weight: var(--fw-bold); letter-spacing: var(--tracking-caps);
-  text-transform: uppercase; color: var(--c-text-muted); margin-bottom: var(--space-2);
-}}
-.sl-rail-title em {{ margin-left: auto; font-family: var(--font-mono); font-style: normal; color: var(--c-text-faint); }}
-.sl-steps {{ display: flex; flex-direction: column; }}
-.sl-step {{ position: relative; display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: var(--space-2); padding: var(--space-1) 0; align-items: start; }}
-.sl-step::after {{
-  content: ""; position: absolute; left: 7px; top: 20px; bottom: -4px;
-  width: var(--timeline-w); background: var(--c-line);
-}}
-.sl-step:last-child::after {{ display: none; }}
-.sl-step-dot {{ width: 8px; height: 8px; margin-top: 6px; border-radius: var(--radius-pill); background: var(--c-surface); border: 1px solid var(--c-line-strong); z-index: 1; }}
-.sl-step--done .sl-step-dot {{ background: var(--c-ok); border-color: var(--c-ok); }}
-.sl-step--active .sl-step-dot {{ background: var(--c-accent); border-color: var(--c-accent); box-shadow: var(--glow); }}
-.sl-step--cut .sl-step-dot {{ background: var(--c-warn); border-color: var(--c-warn); }}
-.sl-step-name {{ font-size: var(--fs-xs); font-weight: var(--fw-medium); }}
-.sl-step-desc {{ font-size: var(--fs-2xs); color: var(--c-text-faint); line-height: var(--lh-tight); }}
-.sl-step-ms {{ font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-text-muted); }}
-.sl-stats {{ display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2) var(--space-3); }}
-.sl-stat span {{ display: block; font-size: var(--fs-2xs); color: var(--c-text-faint); }}
-.sl-stat b {{ font-family: var(--font-mono); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }}
-.sl-rail-foot {{ font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-text-faint); line-height: var(--lh-tight); }}
-.sl-rail-block .sl-rail-foot {{ margin-top: var(--space-2); }}
-
 /* ---------- 聊天 ---------- */
 [data-testid="stChatMessage"] {{
   background: transparent !important; border: 0 !important; padding: 0 !important;
@@ -553,18 +518,6 @@ section[data-testid="stSidebar"] [data-testid="stAlert"] {{ border-radius: var(-
   background: var(--c-accent);
   border-color: var(--c-accent);
   color: var(--c-accent-ink);
-}}
-
-/* 快捷提示词：chip 形态 */
-.st-key-quick_chips [data-testid="stHorizontalBlock"] {{ gap: var(--space-2); }}
-.st-key-quick_chips .stButton > button {{
-  min-height: 30px; padding: 2px var(--space-3);
-  border-radius: var(--radius-pill);
-  background: var(--c-chip-bg); border-color: var(--c-line);
-  color: var(--c-chip-text); font-size: var(--fs-2xs); font-weight: var(--fw-medium);
-}}
-.st-key-quick_chips .stButton > button:hover {{
-  background: var(--c-accent-soft); border-color: var(--c-accent-line); color: var(--c-accent-text);
 }}
 
 .stTextInput input, .stNumberInput input, .stTextArea textarea, .stDateInput input {{
@@ -741,13 +694,15 @@ def inject_theme() -> None:
 # ============================================================
 def render_page_header(title: str, description: str = "", meta: str = "", *, kicker: str = "") -> None:
     kicker_html = f'<div class="sl-kicker">{_e(kicker)}</div>' if kicker else ""
+    # 没有标签时不留空槽位，否则页头右侧会多出 2px 空白。
     meta_html = f'<div class="sl-tag sl-tag--pill">{_e(meta)}</div>' if meta else ""
+    meta_slot = f'<div class="sl-page-meta">{meta_html}</div>' if meta_html else ""
     desc_html = f"<p>{_e(description)}</p>" if description else ""
     st.markdown(
         f"""
         <div class="sl-page-head">
           <div>{kicker_html}<h1>{_e(title)}</h1>{desc_html}</div>
-          <div class="sl-page-meta">{meta_html}</div>
+          {meta_slot}
         </div>
         """,
         unsafe_allow_html=True,
@@ -884,33 +839,6 @@ def user_html(user_id: str, role: str = "") -> str:
         f'<div><div class="sl-user-name">{_e(user_id)}</div>'
         f'<div class="sl-user-role">{_e(role or "local actor")}</div></div></div>'
     )
-
-
-def steps_html(steps: Sequence[Dict[str, Any]]) -> str:
-    rows = []
-    for step in steps:
-        status = str(step.get("status", ""))
-        cls = {"completed": "sl-step--done", "active": "sl-step--active", "cut": "sl-step--cut"}.get(status, "")
-        ms = step.get("ms")
-        ms_html = f'<span class="sl-step-ms">{_e(ms)}</span>' if ms else '<span class="sl-step-ms">—</span>'
-        rows.append(
-            f'<div class="sl-step {cls}"><span class="sl-step-dot"></span>'
-            f'<div><div class="sl-step-name">{_e(step.get("name", ""))}</div>'
-            f'<div class="sl-step-desc">{_e(step.get("desc", ""))}</div></div>{ms_html}</div>'
-        )
-    return f'<div class="sl-steps">{"".join(rows)}</div>'
-
-
-def stats_html(items: Sequence[tuple[str, Any]]) -> str:
-    cells = "".join(f'<div class="sl-stat"><span>{_e(k)}</span><b>{_e(v)}</b></div>' for k, v in items)
-    return f'<div class="sl-stats">{cells}</div>'
-
-
-def rail_block(title: str, body: str, *, extra: str = "") -> str:
-    extra_html = f"<em>{_e(extra)}</em>" if extra else ""
-    return f'<div class="sl-rail-block"><div class="sl-rail-title">{_e(title)}{extra_html}</div>{body}</div>'
-
-
 # ---------- 行程装备结果（plan） ----------
 def _constraint_rows(constraints: Sequence[Dict[str, Any]]) -> str:
     """只展示"内容 + 来源"。

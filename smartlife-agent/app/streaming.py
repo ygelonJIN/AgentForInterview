@@ -46,7 +46,9 @@ def deduplicate_process_events(events: Any) -> List[Dict[str, Any]]:
 
         if event_type == EventType.STEP:
             logical_step = data.get("step") or data.get("name") or stream_step
-            key = ("step", logical_step)
+            # 同一编号下可能有多个真实阶段（trip_gear 的 repair/finalize 都是 7，
+            # 候选记忆确认也在第 4 步），只按编号去重会把后一个阶段吃掉。
+            key = ("step", logical_step, data.get("name", ""))
         elif event_type == EventType.CLASSIFY:
             key = ("classify", stream_step or "classify")
         elif event_type in {EventType.TOOL_CALL, EventType.TOOL_RESULT}:

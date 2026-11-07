@@ -10,6 +10,7 @@ import time
 import uuid
 from collections import deque
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence
 
@@ -123,6 +124,36 @@ class TraceRecorder:
             },
         }
 
+    def usage_for(self, trace_id: str) -> Optional[Dict[str, int]]:
+        """按 trace_id 汇总本轮 Token 用量；一条带用量的记录都没有就返回 None。
+
+        用量已经在各模型调用的 span 里累加（``extract_model_usage``），这里
+        只按本轮 trace 求和，不再另起一套采集。流式供应商不给 usage 时
+        返回 None，界面显示"—"，不填 0 冒充真实数据。
+        """
+        if not trace_id:
+            return None
+        with self._lock:
+            records = [record for record in self._records if record.trace_id == trace_id]
+        if not records:
+            return None
+        totals: Dict[str, int] = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "cached_prompt_tokens": 0,
+            "uncached_prompt_tokens": 0,
+        }
+        seen = False
+        for record in records:
+            for key in totals:
+                value = record.attributes.get(key)
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    continue
+                totals[key] += int(value)
+                seen = True
+        return totals if seen else None
+
     def clear(self) -> None:
         with self._lock:
             self._records.clear()
@@ -138,9 +169,32 @@ def _percentile(values: Sequence[float], percentile: float) -> float:
 
 _trace_recorder = TraceRecorder()
 
+# 当前这一轮的 trace_id。图节点里的服务方法拿不到 runtime.context，
+# 靠它把 span 归到同一轮，done 事件才能按轮汇总 Token。
+_current_trace_id: "ContextVar[str]" = ContextVar("smartlife_trace_id", default="")
+
+
+@contextmanager
+def trace_context(trace_id: str):
+    """在一轮对话的执行范围内绑定 trace_id，供没有上下文的深层调用读取。"""
+    token = _current_trace_id.set(str(trace_id or ""))
+    try:
+        yield
+    finally:
+        _current_trace_id.reset(token)
+
+
+def current_trace_id() -> str:
+    return _current_trace_id.get()
+
 
 def get_trace_recorder() -> TraceRecorder:
     return _trace_recorder
+
+
+def turn_usage(trace_id: str) -> Optional[Dict[str, int]]:
+    """本轮（按 trace_id）累计 Token 用量，供 done 事件携带。"""
+    return _trace_recorder.usage_for(trace_id)
 
 
 def record_trace(
@@ -240,9 +294,11 @@ def extract_model_usage(response: Any) -> Dict[str, Any]:
 def timed_span(
     span: str,
     *,
-    trace_id: str,
+    trace_id: Optional[str] = None,
     attributes: Optional[Dict[str, Any]] = None,
 ) -> Iterator[SpanMeasurement]:
+    # 不传就取本轮绑定的 trace_id；服务层调用点没有 runtime.context。
+    trace_id = trace_id or current_trace_id()
     measurement = SpanMeasurement()
     started = time.perf_counter()
     otel_span = _otel_tracer.start_span(span) if _otel_tracer else None

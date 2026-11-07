@@ -13,6 +13,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
 
+from app.observability import turn_usage
 from app.streaming import EventType, _event_type_value
 
 
@@ -131,6 +132,10 @@ class EventSink:
             "total_time": f"{(timing['response_ready_ms'] or 0) / 1000:.1f}s",
             "timing_ms": timing,
         }
+        # 本轮 Token 用量：从各模型 span 按 trace_id 汇总，没有就不带这个字段。
+        usage = turn_usage(self.trace_id)
+        if usage:
+            data["usage"] = usage
         if extra:
             data.update(extra)
         self._write(EventType.DONE, data, "")

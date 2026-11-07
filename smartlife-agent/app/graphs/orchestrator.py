@@ -28,7 +28,7 @@ from app.graphs.subgraphs.react import build_react_graph
 from app.graphs.subgraphs.shopping import build_shopping_graph
 from app.graphs.subgraphs.travel import build_travel_graph
 from app.graphs.subgraphs.trip_gear import build_trip_gear_graph
-from app.observability import log_exception, new_trace_id, timed_span
+from app.observability import log_exception, new_trace_id, timed_span, trace_context, turn_usage
 from app.session import build_thread_id
 
 ROUTE_TARGETS = {
@@ -149,7 +149,9 @@ class TurnGraph:
         thread_id = config.get("configurable", {}).get("thread_id", "")
         task_starts: Dict[str, float] = {}
         try:
-            with timed_span("graph.turn", trace_id=trace_id, attributes={"thread_id": thread_id}):
+            with trace_context(trace_id), timed_span(
+                "graph.turn", trace_id=trace_id, attributes={"thread_id": thread_id}
+            ):
                 async for chunk in self.graph.astream(
                     graph_input,
                     config=config,
@@ -191,13 +193,17 @@ class TurnGraph:
                 "timestamp": time.time(),
                 "trace_id": trace_id,
             })
+            error_done = {
+                "response": "",
+                "timing_ms": context.timing.metrics(),
+                "total_time": "0.0s",
+            }
+            usage = turn_usage(trace_id)
+            if usage:
+                error_done["usage"] = usage
             yield to_sse({
                 "event": "done",
-                "data": {
-                    "response": "",
-                    "timing_ms": context.timing.metrics(),
-                    "total_time": "0.0s",
-                },
+                "data": error_done,
                 "step": "",
                 "timestamp": time.time(),
                 "trace_id": trace_id,

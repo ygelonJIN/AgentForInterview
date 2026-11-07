@@ -71,9 +71,7 @@ def test_theme_uses_only_registered_design_tokens():
         '.sl-gear',
         '.sl-budget',
         '.sl-lead',
-        '.sl-rail-block',
         '.st-key-nav_menu',
-        '.st-key-quick_chips',
         '.execution-log-panel',
     ):
         assert selector in css, f"缺少样式：{selector}"

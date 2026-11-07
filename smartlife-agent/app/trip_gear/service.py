@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field, ValidationError
 from app.config import create_llm
 from app.memory.long_term import LongTermMemory
 from app.llm_json import ainvoke_json, extract_json_object as _extract_json, message_text as _text_of
-from app.observability import log_exception
+from app.observability import extract_model_usage, log_exception, timed_span
 from app.retrieval.repositories import ProductRepository
 from app.tools.travel_executor import TravelToolExecutor
 from app.trip_gear.catalog import catalog_digest
@@ -184,7 +184,9 @@ class TripGearService:
                         )
                     ]
                 )
-                response = await self.llm.ainvoke(hint)
+                with timed_span("model.trip_gear_plan") as measurement:
+                    response = await self.llm.ainvoke(hint)
+                    measurement.add_attributes(extract_model_usage(response))
                 payload = _extract_json(_text_of(response))
                 result = _PlanOutput.model_validate(payload)
                 itinerary, suggestions = self._from_plan_output(facts, result)

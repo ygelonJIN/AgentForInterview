@@ -104,11 +104,14 @@
 
 ```text
 derive → plan → gear → owned → shop → verify ─┬→ repair（自动修复）→ verify
-   └→ clarify（缺目的地/天数）                ├→ verify_clarify（带代价的提问，≤2 轮）→ verify
+   └→ clarify（缺目的地/天数）                ├→ repair_confirm（要用户点头的改法，≤1 轮）→ verify
+                                              ├→ verify_clarify（带代价的提问，≤2 轮）→ verify
                                               └→ finalize（不可行：替代方案 + 放弃清单）
 ```
 
 两个 `clarify` 分工不同，**不要合并**：`derive` 后那个补"能不能开始规划"的槽位；`verify` 后那个补"方案到底行不行"的判断依据，只有算过一遍方案才知道该问什么。
+
+`repair_confirm` 不是 `repair` 的重复：`repair` 只能动装备（降档/省略），而 `change_lodging`（露营改住民宿）会推翻用户明说的条件，`apply_action` 遇到 `requires_confirm` 默认抛 `PermissionError`。`verify` 把这类动作放进 `confirm_options`，节点用 `interrupt()` 问一次，用户回「调整」才 `force=True` 执行，回「不用」就原样进 `finalize`；`confirm_rounds` 上限 1，问第二遍是纠缠。自动修复永远排在它前面——能自己做完的事不该先问人。
 
 ### 出发日期与默认值
 
@@ -122,7 +125,7 @@ derive → plan → gear → owned → shop → verify ─┬→ repair（自动
 
 01–05 面板只做展示：约束的 `hard`/`status` 仍参与判定（verify 判 critical、tradeoff 算权重），只是不再各占一列。
 
-状态字段：`facts`、`constraints`、`itinerary`、`gear`、`owned`、`products`、`issues`、`revision`、`repair_options`、`verdict`、`clarify_rounds`。
+状态字段：`facts`、`constraints`、`itinerary`、`gear`、`owned`、`products`、`issues`、`revision`、`repair_options`、`confirm_options`、`confirm_rounds`、`verdict`、`clarify_rounds`。
 
 ### 用户指定的固定活动
 
@@ -356,6 +359,8 @@ custom chunk 与旧 SSE 一致，UI 无需改动：
 ```json
 {"event": "token", "data": {"token": "你"}, "step": "generate", "timestamp": 0.0, "trace_id": "..."}
 ```
+
+`done` 额外带 `timing_ms`（首 token / 回答就绪 / 链路）和 `usage`（按本轮 `trace_id` 从 TraceRecorder 汇总的 prompt / completion / total token）。供应商不回传 usage 时该字段缺省；当前界面不展示 Token（实测供应商两轮都没回传，摆了也只能显示「—」）。
 
 子图事件靠 `subgraphs=True` 透传，命名空间在 `_split_chunk` 里剥掉。结构化结果单发 `plan_result` 事件（`facts` / `constraints` / `itinerary` / `gear` / `products` / `issues` / `verdict` / `revision`），前端据此渲染面板，不必解析 Markdown。
 

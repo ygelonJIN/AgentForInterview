@@ -35,15 +35,12 @@ from app.ui.theme import (
     metric_columns,
     nav_label_html,
     plan_panels_html,
-    rail_block,
     render_card,
     render_empty,
     render_metric,
     render_page_header,
     render_review,
     render_section_header,
-    stats_html,
-    steps_html,
     threads_html,
     user_html,
 )
@@ -1051,19 +1048,6 @@ def render_app_sidebar():
         return current
 
 
-def render_quick_prompt(label: str, prompt: str, key: str):
-    if st.button(label, key=key):
-        st.session_state["pending_assistant"] = prompt
-        st.rerun()
-
-
-QUICK_PROMPTS = (
-    ("雨天跑鞋", "帮我推荐一双适合雨天跑步、预算 800 元以内的跑鞋", "quick_shoes"),
-    ("周末杭州两日", "帮我规划一个杭州周末两日游，预算 1500 元", "quick_trip"),
-    ("露营装备清单", "准备去露营三天，帮我列一份装备清单", "quick_list"),
-    ("手机比价", "对比小米 14、iPhone 15 Pro 和华为 Mate 60 Pro", "quick_compare"),
-)
-
 EMPTY_STATE_HTML = """
 <div class="sl-empty sl-empty--left">
   <div class="sl-empty-title">从一句话开始</div>
@@ -1073,117 +1057,11 @@ EMPTY_STATE_HTML = """
 """
 
 
-def render_quick_prompt(label: str, prompt: str, key: str):
-    if st.button(label, key=key):
-        st.session_state["pending_assistant"] = prompt
-        st.rerun()
-
-
-def _last_assistant_events():
-    for msg in reversed(st.session_state.get("assistant_msgs") or []):
-        if msg.get("role") == "assistant" and isinstance(msg.get("process_events"), list):
-            return msg["process_events"]
-    return []
-
-
-def _rail_steps(events):
-    if not events:
-        return []
-    timeline = build_process_timeline(_persistent_events(events), active_step=4)
-    steps = []
-    for evt in timeline:
-        if evt.get("event") != "step":
-            continue
-        data = evt.get("data") or {}
-        steps.append({
-            "name": f'{data.get("step", "")}. {data.get("name", "")}'.strip(),
-            "desc": data.get("description", ""),
-            "status": data.get("status", ""),
-        })
-    return steps
-
-
-def _rail_metrics(events):
-    timing = {}
-    tools = 0
-    retrievals = 0
-    for evt in events or []:
-        event_type = evt.get("event")
-        if event_type == "done":
-            timing = (evt.get("data") or {}).get("timing_ms") or {}
-        elif event_type == "tool_call":
-            tools += 1
-        elif event_type == "retrieval":
-            retrievals += 1
-
-    def seconds(value):
-        return f"{value / 1000:.1f}s" if isinstance(value, (int, float)) else "—"
-
-    return [
-        ("首 Token", seconds(timing.get("time_to_first_token_ms"))),
-        ("链路", seconds(timing.get("pipeline_ms"))),
-        ("工具调用", tools),
-        ("检索", retrievals),
-        ("事件", len(events or [])),
-        ("方案", "已生成" if _plan_payload(events) else "—"),
-    ]
-
-
 def _pending_confirm_count():
+    """侧栏提醒用：候选记忆 + 原位敏感操作。"""
     return int(bool(st.session_state.get("show_memory_extraction"))) + sum(
         1 for key, value in st.session_state.items()
         if key.startswith("pending_inline_") and value
-    )
-
-
-def render_run_rail():
-    """右轨：本轮运行轨迹、待确认、用量。数据全部来自事件流，不另外猜测。"""
-    events = _last_assistant_events()
-    steps = _rail_steps(events)
-    elapsed = ""
-    for evt in events or []:
-        if evt.get("event") == "done":
-            timing = (evt.get("data") or {}).get("timing_ms") or {}
-            pipeline = timing.get("pipeline_ms")
-            if isinstance(pipeline, (int, float)):
-                elapsed = f"{pipeline / 1000:.1f}s"
-    if steps:
-        st.markdown(rail_block("运行轨迹", steps_html(steps), extra=elapsed), unsafe_allow_html=True)
-    else:
-        st.markdown(
-            rail_block(
-                "运行轨迹",
-                '<div class="sl-rail-foot">发出第一条需求后，这里按顺序显示 '
-                "derive → plan → gear → owned → shop → verify → finalize 的执行状态。</div>",
-            ),
-            unsafe_allow_html=True,
-        )
-
-    pending = _pending_confirm_count()
-    if pending:
-        st.markdown(
-            rail_block(
-                "待确认",
-                alert_html("warn", f"{pending} 项待处理", "候选记忆与敏感操作需要你确认后才会写入。"),
-            ),
-            unsafe_allow_html=True,
-        )
-        if st.button("去记忆中心处理", key="rail_memory", use_container_width=True):
-            st.session_state["active_page"] = "memory"
-            st.rerun()
-    else:
-        st.markdown(
-            rail_block("待确认", '<div class="sl-rail-foot">暂无待确认内容。记忆写入与敏感操作都会先在这里排队。</div>'),
-            unsafe_allow_html=True,
-        )
-
-    st.markdown(
-        rail_block(
-            "本次用量",
-            stats_html(_rail_metrics(events))
-            + '<div class="sl-rail-foot">口径：本轮事件流，不含模型隐式重试</div>',
-        ),
-        unsafe_allow_html=True,
     )
 
 
@@ -1191,22 +1069,14 @@ def render_assistant_page():
     render_page_header(
         "行程与装备协同",
         "说一句出行需求：系统派生约束清单、生成逐日行程、按行程推导装备，并在预算内完成校验与有限修复。",
-        meta="智能助手",
     )
-    with st.container(key="quick_chips"):
-        quick_cols = st.columns(len(QUICK_PROMPTS))
-        for col, (label, prompt, key) in zip(quick_cols, QUICK_PROMPTS):
-            with col:
-                render_quick_prompt(label, prompt, key)
 
     if "assistant_msgs" not in st.session_state:
         st.session_state["assistant_msgs"] = []
 
     _refresh_background_memory_extraction()
 
-    main_col, rail_col = st.columns([1, 0.36], gap="large")
-
-    with main_col:
+    with st.container():
         if not st.session_state["assistant_msgs"]:
             st.markdown(EMPTY_STATE_HTML, unsafe_allow_html=True)
 
@@ -1288,10 +1158,6 @@ def render_assistant_page():
                 "process_events": events,
             })
             st.rerun()
-
-    with rail_col:
-        with st.container(key="assistant_rail"):
-            render_run_rail()
 
     # 放进 st.bottom：输入框仍固定在底部，但 Streamlit 不再把首屏滚到最底
     # （只有"自动定位到底部"的 chat_input 才会触发整页滚到底）。

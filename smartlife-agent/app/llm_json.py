@@ -17,6 +17,8 @@ from typing import Any, Dict, List, Optional, Sequence, Type, TypeVar
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from pydantic import ValidationError
 
+from app.observability import extract_model_usage, timed_span
+
 TModel = TypeVar("TModel")
 
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
@@ -150,7 +152,10 @@ def invoke_json(
     last_error = ""
     for attempt in range(max(0, retries) + 1):
         payload = messages if attempt == 0 else messages + [HumanMessage(content=_retry_hint(last_error))]
-        response = llm.invoke(payload)
+        # 结构化调用也是模型调用：不在这里记 usage，本轮 Token 就会漏掉整段规划。
+        with timed_span("model.json") as measurement:
+            response = llm.invoke(payload)
+            measurement.add_attributes(extract_model_usage(response))
         try:
             return _parse(message_text(response), schema)
         except (JsonExtractionError, ValidationError, ValueError) as exc:
@@ -172,7 +177,9 @@ async def ainvoke_json(
     last_error = ""
     for attempt in range(max(0, retries) + 1):
         payload = messages if attempt == 0 else messages + [HumanMessage(content=_retry_hint(last_error))]
-        response = await llm.ainvoke(payload)
+        with timed_span("model.json") as measurement:
+            response = await llm.ainvoke(payload)
+            measurement.add_attributes(extract_model_usage(response))
         try:
             return _parse(message_text(response), schema)
         except (JsonExtractionError, ValidationError, ValueError) as exc:

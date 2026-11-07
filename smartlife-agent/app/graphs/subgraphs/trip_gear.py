@@ -85,6 +85,9 @@ class TripGearState(TypedDict, total=False):
     revision: int
     # 修复候选：verify 节点算好，repair 每轮消费一条
     repair_options: List[Dict[str, Any]]
+    # 必须用户点头才能执行的修复（如露营改住民宿）：verify 摆出来，repair_confirm 问
+    confirm_options: List[Dict[str, Any]]
+    confirm_rounds: int
     # 校验结论：走哪条路（feasible / repairable / needs_input / infeasible）
     verdict: Dict[str, Any]
     tau: float
@@ -467,6 +470,7 @@ async def verify_node(state: TripGearState, runtime: Runtime[TurnContext]) -> Di
         "issues": [issue.model_dump() for issue in issues],
         "constraints": [item.model_dump() for item in constraints],
         "repair_options": repair_options,
+        "confirm_options": confirm_options,
         "verdict": verdict.model_dump(),
         "status": "verified",
     }
@@ -488,10 +492,87 @@ def after_verify(state: TripGearState) -> str:
     ):
         return "repair"
 
+    # 自动修复只能动装备；改住宿这种会推翻用户明说的条件，必须问一次。
+    # 摆一个具体方案比泛泛问"放宽预算还是减内容"更有价值，所以排在追问之前。
+    if state.get("confirm_options") and int(state.get("confirm_rounds", 0)) < MAX_REPAIR_CONFIRM_ROUNDS:
+        return "repair_confirm"
+
     if state_name == "needs_input" and int(state.get("clarify_rounds", 0)) < MAX_VERIFY_CLARIFY_ROUNDS:
         return "verify_clarify"
 
     return "finalize"
+
+
+def _accepts_confirm(text: str) -> bool:
+    """识别"同意调整"的回复；否决词优先，免得"不要改"被当成"改"。"""
+    value = str(text or "").strip().lower()
+    if not value:
+        return False
+    if any(word in value for word in (
+        "不用", "不要", "不改", "不换", "不调", "保持", "算了", "取消", "否", "别",
+    )):
+        return False
+    return any(word in value for word in (
+        "调整", "改", "可以", "行", "好", "确认", "同意", "换", "住", "是的", "对", "ok",
+    ))
+
+
+async def repair_confirm(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
+    """把"必须用户点头"的修复问出来：同意才执行，不同意就保留原方案。
+
+    这类动作（典型是露营改住民宿）会推翻用户明说的条件，``repair`` 节点
+    的 ``apply_action`` 默认拒绝执行；只有这里拿到明确同意才 ``force=True``。
+    """
+    options = list(state.get("confirm_options") or [])
+    rounds = int(state.get("confirm_rounds", 0))
+    if not options:
+        return {"status": "confirm_skipped", "confirm_options": []}
+
+    raw = options[0]
+    action = RepairAction(
+        kind=str(raw.get("kind") or "skip"),
+        name=str(raw.get("name") or ""),
+        saving=float(raw.get("saving") or 0),
+        reason=str(raw.get("reason") or ""),
+        replacement=raw.get("replacement"),
+        meta=dict(raw.get("meta") or {}),
+        requires_confirm=True,
+    )
+    answer = interrupt(
+        {
+            "type": "trip_gear_repair_confirm",
+            "question": (
+                f"{action.reason}。"
+                "回复「调整」我就按这个方案改，回复「不用」就保留原样。"
+            ),
+            "action": action.as_dict(),
+            "round": rounds,
+        }
+    )
+
+    if not _accepts_confirm(answer):
+        await _notify(runtime, "repair", "保留原方案，未做调整")
+        return {
+            "status": "confirm_declined",
+            "confirm_options": [],
+            "confirm_rounds": rounds + 1,
+        }
+
+    items = [GearItem.model_validate(item) for item in state["gear"]]
+    products = dict(state.get("products") or {})
+    facts = TripFacts.model_validate(state["facts"])
+    itinerary = Itinerary.model_validate(state["itinerary"])
+    apply_action(action, items, products, itinerary=itinerary, facts=facts, force=True)
+    await _notify(runtime, "repair", action.reason or f"已按你的确认调整 {action.name}")
+    return {
+        "gear": [item.model_dump() for item in items],
+        "products": products,
+        "itinerary": itinerary.model_dump(),
+        "revision": int(state.get("revision", 0)) + 1,
+        "confirm_options": [],
+        "confirm_rounds": rounds + 1,
+        "status": "confirmed",
+    }
 
 
 async def verify_clarify(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
@@ -617,6 +698,8 @@ async def finalize(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[
 
 
 MAX_VERIFY_CLARIFY_ROUNDS = 2
+# 需要用户点头的改法只问一轮：问第二遍就是纠缠，不是帮忙。
+MAX_REPAIR_CONFIRM_ROUNDS = 1
 
 
 def _merge_facts(base: TripFacts, extra: TripFacts, overwrite: bool = False) -> TripFacts:
@@ -789,11 +872,18 @@ def build_trip_gear_plan_graph(checkpointer: Optional[Any] = None):
     graph.add_edge("owned", "shop")
     graph.add_edge("shop", "verify")
     graph.add_node("verify_clarify", verify_clarify, timeout=5)
+    graph.add_node("repair_confirm", repair_confirm, timeout=5)
     graph.add_conditional_edges(
         "verify",
         after_verify,
-        {"repair": "repair", "verify_clarify": "verify_clarify", "finalize": "finalize"},
+        {
+            "repair": "repair",
+            "repair_confirm": "repair_confirm",
+            "verify_clarify": "verify_clarify",
+            "finalize": "finalize",
+        },
     )
+    graph.add_edge("repair_confirm", "verify")
     graph.add_conditional_edges(
         "verify_clarify",
         after_verify_clarify,
