@@ -105,6 +105,7 @@ V2_TOKENS: Dict[str, str] = {
     "glow": "0 0 0 3px rgba(168, 80, 31, 0.14)",
     # —— 布局尺寸 ——
     "nav-w": "236px",
+    "page-head-h": "168px",
     "rail-w": "292px",
     "content-max": "880px",
     "row-source-w": "126px",
@@ -133,7 +134,7 @@ TOKEN_GROUPS: Tuple[Tuple[str, Iterable[str]], ...] = (
     ("区域与组件", ("c-topbar-bg", "c-composer-bg", "c-rail-bg", "c-panel-head-bg", "c-chip-bg", "c-chip-text", "c-user-bubble-bg", "c-user-bubble-text", "c-user-bubble-meta", "c-track-bg", "c-select-bg", "c-select-text")),
     ("字体", ("font-sans", "font-display", "font-mono", "fs-2xs", "fs-xs", "fs-sm", "fs-md", "fs-lg", "fs-xl", "fs-2xl", "lh-normal", "lh-tight", "fw-body", "fw-medium", "fw-semibold", "fw-bold", "tracking-body", "tracking-caps", "tracking-display")),
     ("间距与形状", ("space-1", "space-2", "space-3", "space-4", "space-5", "space-6", "space-7", "space-8", "radius-xs", "radius-sm", "radius-md", "radius-lg", "radius-pill", "border-w", "panel-rule-w", "shadow-1", "shadow-2", "shadow-3", "glow")),
-    ("布局尺寸", ("nav-w", "rail-w", "content-max", "row-source-w", "budget-side-w", "avatar-size", "mark-size", "bar-h", "day-min", "bubble-radius", "bubble-tail", "timeline-w", "timeline-dot")),
+    ("布局尺寸", ("nav-w", "page-head-h", "rail-w", "content-max", "row-source-w", "budget-side-w", "avatar-size", "mark-size", "bar-h", "day-min", "bubble-radius", "bubble-tail", "timeline-w", "timeline-dot")),
     ("底纹", ("bg-texture", "bg-texture-size")),
 )
 

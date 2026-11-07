@@ -162,3 +162,28 @@ def test_shared_constraints_carry_extra_requirements():
     assert constraints.destination == "三亚"
     assert "同行有儿童" in constraints.requirements
     assert "住宿：酒店/民宿" in constraints.requirements
+
+
+def test_budget_recognised_when_number_comes_first():
+    """"3000预算" 是中文口语最常见写法，原先只认 "预算3000"。"""
+    from app.nlu.slots import extract_slots
+
+    for text in (
+        "上海2天，预算3000",
+        "上海2天，3000预算",
+        "上海2天，3000块预算",
+        "上海2天，一共3000",
+        "上海2天，总共3000元",
+    ):
+        assert extract_slots(text).budget == 3000.0, text
+
+
+def test_budget_still_excludes_gear_and_product_prices():
+    from app.nlu.slots import extract_slots
+
+    slots = extract_slots("装备预算1000，总预算3000")
+    assert slots.budget == 3000.0
+    assert slots.gear_budget == 1000.0
+
+    # 手机单价不是出行预算
+    assert extract_slots("上海2天，手机5000元").budget is None

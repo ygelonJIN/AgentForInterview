@@ -1,6 +1,7 @@
 """把结构化结果渲染成用户可读的正文。"""
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Dict, List, Optional
 
 from app.trip_gear.budget import snapshot as budget_snapshot
@@ -18,12 +19,16 @@ def remaining_ratio_text(snap) -> str:
     return f"{ratio:.0%}" if ratio is not None else "一部分"
 
 
-_STATUS_LABELS = {
-    "ok": "满足",
-    "violated": "违反",
-    "relaxed": "已放宽",
-    "unverified": "未校验",
-}
+def _defaults_note(facts: TripFacts) -> str:
+    """用了默认值就说出来：和面板尾部的提醒同口径。"""
+    bits = []
+    if facts.people is None:
+        bits.append("人数按 1 人计")
+    if not facts.start_date:
+        bits.append(f"出发日期按今天（{date.today():%Y-%m-%d}）计")
+    if not bits:
+        return ""
+    return f"默认值：{'、'.join(bits)}。如果和实际不符，告诉我，我重排。"
 
 
 def _gear_line(item: GearItem, products: Dict[str, Dict[str, Any]]) -> str:
@@ -69,13 +74,10 @@ def render(
 ) -> str:
     lines: List[str] = []
 
+    # 只留"内容 + 来源"：硬/软与校验状态是系统内部口径，展示在 05 里说结果就够了。
     lines.append("## 约束清单")
     for constraint in constraints[:12]:
-        label = _STATUS_LABELS.get(constraint.status, constraint.status)
-        hardness = "硬" if constraint.hard else "软"
-        lines.append(
-            f"- [{label}] {constraint.text}（来源：{constraint.source}，{hardness}约束）"
-        )
+        lines.append(f"- {constraint.text}（来源：{constraint.source}）")
 
     if itinerary.days:
         lines.append("")
@@ -179,7 +181,12 @@ def render(
                 detail = f"实际 {issue.actual}，上限 {issue.limit}。{detail}"
             lines.append(f"- {issue.constraint}：{detail}".rstrip("："))
     else:
-        lines.append("未发现硬约束冲突。")
+        lines.append("未发现约束冲突。")
+
+    note = _defaults_note(facts)
+    if note:
+        lines.append("")
+        lines.append(note)
 
     lines.append("")
     lines.append("行程费用为估算，商品价格来自平台数据库。")

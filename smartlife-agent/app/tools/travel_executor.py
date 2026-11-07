@@ -19,6 +19,7 @@ class TravelToolExecutor:
         weather_tool: Optional[Callable[..., Any]] = None,
         route_tool: Optional[Callable[..., Any]] = None,
         activities_dir: Optional[Path] = None,
+        activities_tool: Optional[Callable[..., Any]] = None,
     ):
         if weather_tool is None or route_tool is None:
             from app.tools.map import get_route
@@ -33,6 +34,7 @@ class TravelToolExecutor:
             if activities_dir
             else Path(__file__).resolve().parents[2] / "data" / "activities"
         )
+        self._activities_tool_instance = activities_tool
 
     @staticmethod
     async def _invoke(tool: Callable[..., Any], payload: Mapping[str, Any]) -> Dict[str, Any]:
@@ -113,17 +115,93 @@ class TravelToolExecutor:
         origin, destination = (part.strip() for part in match.groups())
         return (origin, destination) if origin and destination and origin != destination else None
 
-    def _activities(self, destination: str) -> str:
-        candidates = [
-            self.activities_dir / f"{destination}_activities.txt",
-            self.activities_dir / "outdoor_activities.txt",
+    def _activities_tool(self) -> Optional[Callable[..., Any]]:
+        """取 ``get_local_activities`` 工具；只构造一次。"""
+        if self._activities_tool_instance is None:
+            try:
+                from app.tools.travel_tools import TravelToolProvider
+
+                provider = TravelToolProvider(self.activities_dir)
+                self._activities_tool_instance = provider.get_tool_by_name("get_local_activities")
+            except Exception:
+                self._activities_tool_instance = None
+        return self._activities_tool_instance
+
+    @staticmethod
+    def _activities_summary(items: List[Mapping[str, Any]]) -> str:
+        """按"能不能参加"分组，而不是把场所和活动混成一张清单。"""
+
+        def render(rows: List[Mapping[str, Any]], title: str) -> str:
+            lines = []
+            for index, item in enumerate(rows[:6], start=1):
+                text = str(item.get("title") or "").strip()
+                kind = str(item.get("kind") or "").strip()
+                if not text:
+                    continue
+                lines.append(f"{index}. {text}（{kind}）" if kind else f"{index}. {text}")
+            return f"{title}\n" + "\n".join(lines) if lines else ""
+
+        joiner = [item for item in items if item.get("participatory")]
+        places = [item for item in items if not item.get("participatory")]
+        blocks = [
+            block for block in (
+                render(joiner, "可以买票或报名参加的活动场所："),
+                render(places, "另外可去的地方："),
+            ) if block
         ]
-        for path in candidates:
-            if path.exists():
-                text = path.read_text(encoding="utf-8").strip()
-                if text:
-                    return text[:1200]
-        return ""
+        return "\n".join(blocks)
+
+    async def activities_evidence(
+        self,
+        destination: str,
+        travel_date: date,
+    ) -> Dict[str, Any]:
+        """活动证据：全球 provider 优先；拿不到就明确不可用，绝不跨城市凑数。"""
+        tool = self._activities_tool()
+        if tool is None:
+            return {
+                "available": False,
+                "source": "unavailable",
+                "items": [],
+                "error": "活动工具未注册",
+            }
+        payload = {"city": destination, "date": travel_date.isoformat()}
+        started = time.perf_counter()
+        try:
+            if hasattr(tool, "ainvoke"):
+                raw = await tool.ainvoke(payload)
+            else:
+                raw = await asyncio.to_thread(tool.invoke, payload)
+        except Exception as exc:
+            return {
+                "available": False,
+                "source": "unavailable",
+                "items": [],
+                "error": f"get_local_activities 不可用: {type(exc).__name__}: {str(exc)[:200]}",
+            }
+
+        duration_ms = round((time.perf_counter() - started) * 1000, 3)
+        row = raw[0] if isinstance(raw, (list, tuple)) and raw else (raw if isinstance(raw, dict) else {})
+        items = list(row.get("activities") or [])
+        warnings = list(row.get("warnings") or [])
+        available = bool(row.get("available")) and bool(items)
+        summary = self._activities_summary(items)
+        if available:
+            summary = f"来源：{row.get('source', '')}\n{summary}"
+            if row.get("note"):
+                summary += f"\n（{row['note']}）"
+        return {
+            "available": available,
+            "source": str(row.get("source") or "unavailable"),
+            "kind": str(row.get("kind") or ""),
+            "items": items,
+            "summary": summary,
+            "note": str(row.get("note") or ""),
+            "stale": False,
+            "duration_ms": duration_ms,
+            "warnings": warnings,
+            "error": "" if available else "未获取到可验证的本地活动数据",
+        }
 
     async def execute(self, step: Mapping[str, Any], state: Mapping[str, Any]) -> Dict[str, Any]:
         requirements = dict(state.get("requirements") or {})
@@ -169,7 +247,7 @@ class TravelToolExecutor:
             simulated = True
         if weather.get("accepted"):
             summaries.append(
-                f"{travel_date.isoformat()} {destination}天气："
+                f"第{step_index}天（{travel_date.isoformat()}）{destination}天气："
                 f"{weather.get('temperature', '')} {weather.get('condition', '')}"
             )
         else:
@@ -192,9 +270,27 @@ class TravelToolExecutor:
             else:
                 warnings.append(str(route.get("error") or "路线数据不可用"))
 
-        activities = self._activities(destination)
-        if activities:
-            summaries.append(f"本地活动参考：\n{activities[:500]}")
+        activities = await self.activities_evidence(destination, travel_date)
+        tool_calls.append({
+            "tool": "get_local_activities",
+            "ok": bool(activities.get("available")),
+            "result": {
+                "source": activities.get("source"),
+                "available": activities.get("available"),
+                "count": len(activities.get("items") or []),
+                "stale": activities.get("stale"),
+                "simulated": False,
+                "warnings": activities.get("warnings") or [],
+                "error": activities.get("error") or "",
+                "duration_ms": activities.get("duration_ms", 0.0),
+            },
+        })
+        if activities.get("available"):
+            summaries.append(
+                f"第{step_index}天（{travel_date.isoformat()}）本地活动参考："
+                f"\n{activities.get('summary', '')}"
+            )
+        warnings.extend(str(w) for w in (activities.get("warnings") or []))
 
         for item in tool_calls:
             result = item.get("result") or {}

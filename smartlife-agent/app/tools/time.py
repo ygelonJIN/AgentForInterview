@@ -34,6 +34,3 @@ def get_current_time(timezone: str = "Asia/Shanghai") -> dict:
         "timezone": str(tz),
         "is_weekend": now.weekday() >= 5
     }
-
-def get_time_tools():
-    return [get_current_time]

@@ -10,11 +10,12 @@
 """
 from __future__ import annotations
 
+from datetime import date
 from typing import Iterable, List, Optional, Tuple
 
 from app.nlu.slots import extract_slots
 from app.services.task_models import SharedConstraints
-from app.trip_gear.models import Constraint, TripFacts
+from app.trip_gear.models import Constraint, FixedEvent, TripFacts
 
 _TRANSPORT_LABELS = {"flight": "飞机", "train": "高铁/火车", "drive": "自驾"}
 
@@ -24,6 +25,55 @@ def _float(value) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _today_iso(today=None) -> str:
+    if isinstance(today, date):
+        return today.isoformat()
+    try:
+        return date.fromisoformat(str(today)[:10]).isoformat()
+    except (TypeError, ValueError):
+        return date.today().isoformat()
+
+
+def ensure_start_date(
+    facts: TripFacts,
+    constraints: List[Constraint],
+    source: str = "",
+    today=None,
+) -> List[Constraint]:
+    """约束清单里始终有一条出发日期，位置固定在天数后面。
+
+    有人说"日期没给就别瞎猜"——那是对日期的精度要求，不是让它消失。这里
+    照人数的处理方式：没给就写"按今天计"，把默认值摆到明面上，用户看得见
+    自己能用一句话改掉；给了就写真实日期。
+
+    重写而不追加：调用方可能先写了一条占位（"未指定"），拿到日期后要替换，
+    不能两条并存。
+    """
+    kept = [item for item in constraints if item.key != "start_date"]
+    if facts.start_date:
+        entry = Constraint(
+            text=f"出发日期：{facts.start_date}",
+            source=source or "用户原话",
+            key="start_date",
+        )
+    else:
+        entry = Constraint(
+            text=f"出发日期：未指定（按今天 {_today_iso(today)} 计）",
+            source="默认规则",
+            hard=False,
+            key="start_date",
+        )
+    position = next(
+        (index + 1 for index, item in enumerate(kept) if item.key == "days"),
+        None,
+    )
+    if position is None:
+        kept.append(entry)
+    else:
+        kept.insert(position, entry)
+    return kept
 
 
 def derive_constraints(
@@ -68,11 +118,38 @@ def derive_constraints(
         lodging=slots.lodging,
         transport=slots.transport,
         with_kids=slots.with_kids,
+        fixed_events=[FixedEvent(**event) for event in (slots.fixed_events or [])],
+        wants_activity=bool(slots.wants_activity),
     )
 
     constraints: List[Constraint] = []
     if destination:
         constraints.append(Constraint(text=f"目的地：{destination}", source="用户原话", key="destination"))
+
+    # 用户没指名活动、但表达了"想参加"：这是一条软取向，不是日程
+    if facts.wants_activity:
+        constraints.append(Constraint(
+            text="希望行程里有可参与的活动（演出、工作坊、市集、体验课），不要只有景点",
+            source="用户原话",
+            hard=False,
+            key="wants_activity",
+        ))
+    # 用户点名的固定活动：已订是硬约束，其它安排要让路
+    for event in facts.fixed_events:
+        when = " ".join(
+            part for part in (
+                f"第{event.day}天" if event.day else "",
+                event.start,
+                event.date,
+            ) if part
+        ) or "时间待定"
+        where = f"，{event.venue}" if event.venue else ""
+        constraints.append(Constraint(
+            text=f"指定活动：{event.title}（{when}{where}）",
+            source="用户原话",
+            hard=True,
+            key="fixed_event",
+        ))
     if days:
         constraints.append(Constraint(text=f"天数：{days} 天", source=days_source, key="days"))
     if people is not None:
@@ -135,6 +212,9 @@ def derive_constraints(
             )
         )
 
+    # 出发日期和人数同级：给了写真实日期，没给写"按今天计"，不能只在 facts 里
+    # 悄悄算（那正是"校验结果一直说没有出发日期"的来源）。
+    constraints = ensure_start_date(facts, constraints, today=today)
     return facts, constraints
 
 
@@ -181,9 +261,9 @@ def apply_assisted(
         added.append((f"预算：{merged.budget:g} 元", "budget"))
 
     start_date = str(extra.get("start_date") or "").strip()
-    if start_date and not merged.start_date and "start_date" not in existing_keys:
+    if start_date and not merged.start_date:
         merged.start_date = start_date
-        added.append((f"出发日期：{start_date}", "start_date"))
+        constraints = ensure_start_date(merged, constraints, source="模型补全")
 
     for text, key in added:
         constraints.append(Constraint(text=text, source="模型补全", hard=True, key=key))

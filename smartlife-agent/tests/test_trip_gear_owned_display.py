@@ -105,7 +105,7 @@ def test_render_still_reports_budget_blocked_items():
     assert "泳衣" in text
 
 
-def test_panel_has_two_columns_and_no_placeholder():
+def test_panel_has_two_groups_and_no_placeholder():
     gear = [
         {"name": "西装", "qty": 1, "status": "owned", "reason": "已有（对话）"},
         {"name": "皮鞋", "qty": 1, "status": "need_buy", "reason": "行程含正式场合"},
@@ -116,7 +116,8 @@ def test_panel_has_two_columns_and_no_placeholder():
 
     html, foot = _gear_columns(gear, products)
 
-    assert html.count("sl-gear-col") == 2
+    # 两组横排，不再固定三列：条目少的时候不留空列。
+    assert html.count("sl-gear-line") == 2
     assert "身份证" not in html and "身份证" not in foot
     assert "另有" not in foot
     assert _gear_counts(gear) == (1, 1)

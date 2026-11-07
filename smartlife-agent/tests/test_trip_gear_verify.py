@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
 from app.trip_gear.models import (
@@ -105,6 +107,31 @@ class TestSleepingBagTemperature:
         )
         assert constraints[0].status == "ok"
         assert not [i for i in issues if i.severity == "critical" and "睡袋" in str(i.constraint)]
+
+
+class TestPurchaseTiming:
+    def test_没定出发日期时不逐件报时效(self):
+        # 日期只是默认当天，不是事实；拿它判"赶不上"会把方案判死、把真问题挤掉。
+        products = {"睡袋": {"name": "某睡袋", "price": 199, "lead_time_days": 3, "stock": 10}}
+        issues = verify(
+            _facts(), [], _itinerary(), _gear({}, bag_status="need_buy"), products
+        )
+
+        assert not [i for i in issues if "收货时效" in str(i.constraint)]
+        assert not [i for i in issues if "出发日期" in str(i.hint)]
+
+    def test_定了日期才按到货时效判(self):
+        products = {"睡袋": {"name": "三天到的睡袋", "price": 199, "lead_time_days": 3, "stock": 10}}
+        issues = verify(
+            _facts(start_date="2026-11-08"),
+            [],
+            _itinerary(),
+            _gear({}, bag_status="need_buy"),
+            products,
+            today=date(2026, 11, 7),
+        )
+
+        assert any("到货赶不上出发" in str(i.constraint) for i in issues)
 
 
 class TestTentCapacity:

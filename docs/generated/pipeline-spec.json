@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-05T16:41:05",
+  "generated_at": "2026-11-06T17:40:14",
   "graphs": [
     {
       "id": "memory",
@@ -83,11 +83,6 @@
         "finalize": {
           "id": "finalize",
           "fn": "finalize",
-          "subgraph": ""
-        },
-        "extract_memory": {
-          "id": "extract_memory",
-          "fn": "extract_memory",
           "subgraph": ""
         }
       },
@@ -202,18 +197,6 @@
         },
         {
           "src": "finalize",
-          "dst": "extract_memory",
-          "label": "extract_memory",
-          "conditional": true
-        },
-        {
-          "src": "finalize",
-          "dst": "__end__",
-          "label": "done",
-          "conditional": true
-        },
-        {
-          "src": "extract_memory",
           "dst": "__end__",
           "label": "",
           "conditional": false
@@ -882,7 +865,7 @@
     {
       "name": "_CLASSIFY_PROMPT",
       "module": "app/classifier.py",
-      "lineno": 301,
+      "lineno": 198,
       "messages": [
         {
           "role": "system",
@@ -897,11 +880,11 @@
     {
       "name": "_CLASSIFY_ARBITER_PROMPT",
       "module": "app/classifier.py",
-      "lineno": 336,
+      "lineno": 233,
       "messages": [
         {
           "role": "system",
-          "text": "你是分类纠错与仲裁器。独立分析用户当前消息，并检查候选分类是否合理。\n\n只允许输出一个严格 JSON 对象，必须包含：\nroute、intent、intents、primary_intent、intent_scores、sub_intent、retrieval、confidence、reason。\n\n枚举限制：\n- route: react / plan_and_execute\n- intent / intents / primary_intent: shopping / travel / customer_service / general\n- intents 是 1-2 个明确意图；复合请求不能只保留一个\n- retrieval: sql_only / rag_only / mixed / none\n\n如果当前消息出现新的明确任务，不要沿用候选分类；如果是连续追问，可以保留原意图。\n不要输出解释、Markdown 或 JSON 以外的内容。"
+          "text": "你是分类纠错与仲裁器。独立分析用户当前消息，并检查候选分类是否合理。\n\n只允许输出一个严格 JSON 对象，必须包含：\nroute、intent、intents、primary_intent、intent_scores、sub_intent、retrieval、confidence、reason。\n\n判定口径（与主分类器一致，不要自行发明）：\n- route: 单步查询、导购、客服、闲聊 -> react；多日行程、采购清单、预算分配、跨场景任务、需要用户确认计划 -> plan_and_execute\n- intent: 有明确商品品类且要买/比价 -> shopping；有目的地或出行场景 -> travel；订单/退换/物流 -> customer_service；其余 general\n- retrieval 只是提示：真正的 SQL/RAG 由证据需求决定，不要为了\"看起来完整\"硬填 mixed\n\n枚举限制：\n- route: react / plan_and_execute\n- intent / intents / primary_intent: shopping / travel / customer_service / general\n- intents 是 1-2 个明确意图；复合请求不能只保留一个\n- retrieval: sql_only / rag_only / mixed / none\n\n如果当前消息出现新的明确任务，不要沿用候选分类；如果是连续追问，可以保留原意图。\n不要输出解释、Markdown 或 JSON 以外的内容。"
         },
         {
           "role": "user",
@@ -1032,7 +1015,7 @@
     {
       "name": "general_prompt",
       "module": "app/services/turn_services.py",
-      "lineno": 82,
+      "lineno": 83,
       "messages": [
         {
           "role": "system",
@@ -1051,7 +1034,7 @@
     {
       "name": "prompt",
       "module": "app/services/turn_services.py",
-      "lineno": 328,
+      "lineno": 327,
       "messages": [
         {
           "role": "system",
@@ -1066,7 +1049,7 @@
     {
       "name": "prompt",
       "module": "app/services/turn_services.py",
-      "lineno": 455,
+      "lineno": 454,
       "messages": [
         {
           "role": "system",
@@ -1115,7 +1098,7 @@
     {
       "name": "extract_prompt",
       "module": "app/memory/extractor.py",
-      "lineno": 83,
+      "lineno": 94,
       "messages": [
         {
           "role": "system",
@@ -1145,11 +1128,11 @@
     {
       "name": "plan_prompt",
       "module": "app/trip_gear/service.py",
-      "lineno": 118,
+      "lineno": 120,
       "messages": [
         {
           "role": "system",
-          "text": "你是行程规划师。根据给定事实排一份逐日行程。\n\n要求：\n1. 只安排真实可执行的活动，不编造景点、票价或实时信息；\n2. 每天 4-6 个安排，包含用餐和休息，活动时间在 08:00-21:00 之间；\n3. time 用 HH:MM；duration_min 用分钟；cost 用整数元估算，免费或不确定写 0；\n4. 行程要贴合事实：住宿方式、天气、同行人、预算都要考虑；\n5. 天数必须与给定天数一致；\n6. 同时给出这次出行的装备建议（gear）：名称、数量、为什么带，覆盖衣物、鞋、洗护、药品、活动装备，不要列身份证/手机/充电器这类通用物品；\n7. 装备要贴合场景：商务见客户要正装皮鞋，海边度假要裙装/泳衣/防晒，露营要帐篷睡袋。\n"
+          "text": "你是行程规划师。根据给定事实排一份逐日行程。\n\n要求：\n1. 只安排真实可执行的活动，不编造景点、票价或实时信息；\n2. 每天 4-6 个安排，包含用餐和休息，活动时间在 08:00-21:00 之间；\n3. time 用 HH:MM；duration_min 用分钟；cost 用整数元估算，免费或不确定写 0；\n4. 行程要贴合事实：住宿方式、天气、同行人、预算都要考虑；\n5. 天数必须与给定天数一致；\n6. 同时给出这次出行的装备建议（gear）：名称、数量、为什么带，覆盖衣物、鞋、洗护、药品、活动装备，不要列身份证/手机/充电器这类通用物品；\n7. 装备要贴合场景：海边度假要泳衣/防晒，露营要帐篷睡袋，寒冷要羽绒服；\n8. 装备只能从下面的商品库目录里选：目录没有的品类一律不写，写了也买不到；\n9. 命名尽量用目录示例里出现过的词（写\"羽绒服\"而不是\"保暖层\"，写\"登山鞋\"而不是\"防水鞋\"）；\n10. 目录是动态的，以它为准，不要凭常识补充目录外的品类。\n\n{catalog}\n"
         },
         {
           "role": "user",

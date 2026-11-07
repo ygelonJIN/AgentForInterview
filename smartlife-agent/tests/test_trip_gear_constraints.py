@@ -1,6 +1,36 @@
 """约束派生：目的地、周末、预算口径、天气派生。"""
 
-from app.trip_gear.constraints import derive_constraints, enrich_weather
+from app.trip_gear.constraints import derive_constraints, ensure_start_date, enrich_weather
+
+
+def test_departure_date_is_listed_as_a_constraint():
+    facts, constraints = derive_constraints("下周六去莫干山露营两天", today="2026-11-07")
+
+    entry = next(item for item in constraints if item.key == "start_date")
+    assert facts.start_date == "2026-11-14"
+    assert entry.text == "出发日期：2026-11-14"
+    assert entry.source == "用户原话"
+
+
+def test_missing_departure_date_defaults_to_today_and_says_so():
+    facts, constraints = derive_constraints("去莫干山露营两天", today="2026-11-07")
+
+    entry = next(item for item in constraints if item.key == "start_date")
+    assert facts.start_date is None
+    assert entry.text == "出发日期：未指定（按今天 2026-11-07 计）"
+    assert entry.source == "默认规则"
+    assert entry.hard is False
+
+
+def test_start_date_placeholder_is_replaced_not_duplicated():
+    facts, constraints = derive_constraints("去莫干山露营两天", today="2026-11-07")
+    facts.start_date = "2026-11-20"
+
+    constraints = ensure_start_date(facts, constraints, source="追问补充")
+
+    entries = [item for item in constraints if item.key == "start_date"]
+    assert [item.text for item in entries] == ["出发日期：2026-11-20"]
+    assert entries[0].source == "追问补充"
 
 
 def test_destination_outside_city_whitelist_is_derived():

@@ -64,7 +64,17 @@ _TOTAL_CUES = ("总预算", "全部预算", "整体预算", "总花费", "总花
 _MAX_CUES = ("不超过", "以内", "以下", "最多", "最高", "低于", "上限", "别超", "不要超过", "封顶", "控制在")
 _MIN_CUES = ("以上", "至少", "不低于", "起步")
 _GEAR_CUES = ("装备预算", "装备费用", "装备花费", "装备的钱", "装备钱", "装备另算", "装备单算", "装备单独算", "装备自己买")
-_BARE_AMOUNT = re.compile(rf"(?:总预算|预算|不超过|以内|最多|最高|低于|控制在)\D{{0,4}}(?P<num>\d+(?:\.\d+)?)")
+# 提示词在前的写法。原先漏了"一共/总共/合计"——它们就在 _TOTAL_CUES 里，
+# 却没有出现在这个正则里，于是"一共3000"抽不到预算。
+_BARE_AMOUNT = re.compile(
+    rf"(?:总预算|全部预算|整体预算|总花费|总花销|总开销|预算|"
+    rf"一共|总共|合计|不超过|以内|最多|最高|低于|控制在)"
+    rf"\D{{0,4}}(?P<num>\d+(?:\.\d+)?)"
+)
+# 数字在前的口语倒装："3000 预算" / "3000 块预算"。中文口音里这比"预算3000"更常见。
+_BARE_BEFORE_BUDGET = re.compile(
+    r"(?P<num>\d+(?:\.\d+)?)\s*(?:元|块|块钱)?\s*(?:的)?\s*(?:总)?预算"
+)
 _BARE_AFTER = re.compile(r"(?P<num>\d+(?:\.\d+)?)\s*(?:元|块)?\s*(?:以内|以下|左右|上下)")
 _BARE_CN = re.compile(
     r"(?:总预算|预算|不超过|最多|最高|低于|控制在)\s*(?P<cn>[零〇一二两三四五六七八九十百千]+)"
@@ -87,6 +97,40 @@ _FLIGHT_WORDS = ("飞机", "航班", "机票", "飞过去")
 _TRAIN_WORDS = ("高铁", "动车", "火车")
 _DRIVE_WORDS = ("自驾", "开车", "租车", "自驾游")
 
+# ---- 指定活动与"想参加活动"的意向 ----
+# 分两档语气：已订是硬约束，想去只是偏好；两者都不能和"想参加一点活动"混为一谈。
+_EVENT_BOOKED_CUES = (
+    "已订好", "已订", "订好了", "已买票", "已经买票", "买票了", "买好票", "票已经买",
+    "已预约", "已经预约", "约好了", "已经报名", "报了名",
+)
+# 只有这些才说明"用户想要活动"这个取向；单纯出现"活动"两个字不算
+_EVENT_INTENT_CUES = (
+    "想参加活动", "想参与活动", "喜欢参加活动", "想参加一点活动", "想参与一点活动",
+    "多安排活动", "活动多一点", "多安排一点活动", "不要只看景点", "想有活动",
+    "演出", "工作坊", "体验课", "音乐会", "逛市集",
+)
+# 只切句末，不切逗号：金额和日期常在逗号后面
+_EVENT_STOP = re.compile(r"[。；！？;\n]")
+# 长的放前面，先命中先匹配（"音乐会" 要先于 "音乐"）
+_EVENT_KIND_WORDS = (
+    "音乐会", "演唱会", "音乐节", "音乐剧", "话剧", "演出", "展览", "展会",
+    "工作坊", "体验课", "课程", "市集", "沙龙", "讲座", "比赛", "首映",
+    "city walk", "一日游", "半日游", "徒步", "骑行", "潜水", "滑雪", "温泉",
+)
+_EVENT_BOUNDARY = re.compile(r"[的去了在个场次看听参加上逛和与及、]")
+MAX_EVENT_TITLE_PREFIX = 6
+# 泛指词：抽到的名字落在这些上面说明用户没指名，不能当成一个日程
+_EVENT_GENERIC = {"活动", "一点活动", "一些活动", "点活动", "些活动", "个活动", "节目"}
+_EVENT_DAY = re.compile(r"第\s*(\d+)\s*天")
+_EVENT_HHMM = re.compile(r"(\d{1,2})\s*[:：]\s*(\d{2})")
+_EVENT_HOUR = re.compile(r"(\d{1,2})\s*[点时]")
+_EVENT_PRICE = re.compile(r"(\d+(?:\.\d+)?)\s*元")
+_EVENT_DATE = re.compile(r"(?:(20\d{2})\s*年)?\s*(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]")
+# "在上海音乐厅看XX" → 地点 + 动作 + 标题
+_EVENT_VENUE = re.compile(r"(?:^|[了，,、\s])在\s*(.{2,14}?)\s*(?:看|听|参加|上|逛)\s*(.+)$")
+_EVENT_LEAD = re.compile(r"^[了，,、\s的是]+")
+
+
 
 @dataclass
 class Slots:
@@ -102,6 +146,8 @@ class Slots:
     lodging: str = ""
     transport: str = ""
     with_kids: bool = False
+    fixed_events: List[Dict[str, Any]] = field(default_factory=list)
+    wants_activity: bool = False
     sources: Dict[str, str] = field(default_factory=dict)
 
     def source(self, name: str) -> str:
@@ -340,7 +386,7 @@ def _budget_candidates(text: str):
     for amount in find_amounts(source):
         candidates.append((amount.value, amount.start, amount.end))
     # 不带单位的数字：只在明确预算词附近，或者后面紧跟"以内/左右"时才算金额
-    for pattern in (_BARE_AMOUNT, _BARE_AFTER):
+    for pattern in (_BARE_AMOUNT, _BARE_AFTER, _BARE_BEFORE_BUDGET):
         for match in pattern.finditer(source):
             start, end = match.start("num"), match.end("num")
             if any(start >= item[1] and end <= item[2] for item in candidates):
@@ -497,6 +543,108 @@ def parse_with_kids(text: str) -> bool:
 # ---------------------------------------------------------------- 汇总
 
 
+def parse_wants_activity(text: str) -> bool:
+    """用户是否表达了"想参加活动"的取向（没有指名具体哪场）。
+
+    注意这只表示取向，不产生日程；把"想参加一点活动"当成一条活动安排，
+    等于凭空替用户做了决定。
+    """
+    source = str(text or "")
+    return any(cue in source for cue in _EVENT_INTENT_CUES)
+
+
+def _event_title(clause: str) -> str:
+    """从短语里截出带活动类型词的名字（"好下午的陶艺工作坊" → "陶艺工作坊"）。"""
+    for kind in _EVENT_KIND_WORDS:
+        position = clause.find(kind)
+        if position < 0:
+            continue
+        chunk = ""
+        for char in reversed(clause[:position]):
+            if _EVENT_BOUNDARY.match(char) or len(chunk) >= MAX_EVENT_TITLE_PREFIX:
+                break
+            chunk = char + chunk
+        return f"{chunk}{kind}".strip()
+    return ""
+
+
+def parse_fixed_events(text: str) -> List[Dict[str, Any]]:
+    """抽取用户点名的固定活动，**只认已订语气**。
+
+    两道闸，缺一不可：
+
+    1. 必须命中 ``_EVENT_BOOKED_CUES``（已订/买票/预约/报名）。"想去上海"是
+       目的地不是活动，把它概括成日程是这类抽取最容易犯的错。
+    2. 名字里必须出现活动类型词（音乐会/工作坊/展览……）。用户说"想参加一点
+       活动"时抽不到类型词，正好落在闸外，不会被当成一条日程。
+
+    结果是 ``booked``；"想去看看"这类只是取向，由 ``parse_wants_activity`` 负责。
+    """
+    source = str(text or "")
+    events: List[Dict[str, Any]] = []
+    seen = set()
+    consumed: List[tuple] = []
+
+    # 长语气词优先："已订好陶艺工作坊" 不能被 "已订" 抢走，否则标题会剩下"好陶艺工作坊"
+    for cue in sorted(_EVENT_BOOKED_CUES, key=len, reverse=True):
+        for match in re.finditer(re.escape(cue), source):
+            if any(start <= match.start() < end for start, end in consumed):
+                continue
+            consumed.append((match.start(), match.end()))
+            clause = _EVENT_STOP.split(source[match.end():], 1)[0].strip()
+            clause = _EVENT_LEAD.sub("", clause)
+            if not clause:
+                continue
+
+            venue = ""
+            venue_match = _EVENT_VENUE.match(clause)
+            if venue_match:
+                venue, clause = venue_match.group(1).strip(), venue_match.group(2).strip()
+
+            day = 0
+            day_match = _EVENT_DAY.search(clause)
+            if day_match:
+                day = int(day_match.group(1))
+                clause = _EVENT_DAY.sub(" ", clause)
+
+            date_text = ""
+            date_match = _EVENT_DATE.search(clause)
+            if date_match:
+                year, month, day_of_month = date_match.group(1), int(date_match.group(2)), int(date_match.group(3))
+                date_text = f"{year}-{month:02d}-{day_of_month:02d}" if year else f"{month:02d}-{day_of_month:02d}"
+                clause = _EVENT_DATE.sub(" ", clause)
+
+            start = ""
+            start_match = _EVENT_HHMM.search(clause)
+            if start_match:
+                start = f"{int(start_match.group(1)):02d}:{start_match.group(2)}"
+            else:
+                hour_match = _EVENT_HOUR.search(clause)
+                if hour_match:
+                    start = f"{int(hour_match.group(1)):02d}:00"
+
+            cost = 0.0
+            price_match = _EVENT_PRICE.search(clause)
+            if price_match:
+                cost = float(price_match.group(1))
+
+            title = _event_title(clause)
+            if not title or title in _EVENT_GENERIC or title in seen:
+                continue
+            seen.add(title)
+            events.append({
+                "title": title,
+                "day": day,
+                "date": date_text,
+                "start": start,
+                "venue": venue,
+                "cost": cost,
+                "status": "booked",
+                "source": "用户原话",
+            })
+    return events
+
+
 def extract_slots(text: str, today=None) -> Slots:
     source = str(text or "")
     budget, budget_kind = parse_budget_detail(source)
@@ -522,6 +670,8 @@ def extract_slots(text: str, today=None) -> Slots:
         lodging=parse_lodging(source),
         transport=parse_transport(source),
         with_kids=parse_with_kids(source),
+        fixed_events=parse_fixed_events(source),
+        wants_activity=parse_wants_activity(source),
     )
     slots.sources.update({
         "destination": "用户原话" if destination else "未指定",

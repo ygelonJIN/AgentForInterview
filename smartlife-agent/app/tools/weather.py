@@ -55,6 +55,3 @@ def get_weather(city: str, date: str) -> dict:
             raise
         raise ProviderUnavailable(f"天气 provider 不可用: {exc}") from exc
 
-
-def get_weather_tools():
-    return [get_weather]

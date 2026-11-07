@@ -33,7 +33,7 @@
 能力面（节点内调用，不持有编排）：Tool Registry / MCP、Hybrid Retrieval（NL2SQL+RAG+Rank）、Memory（短/长/MD/审批）
 ```
 
-装备类请求（`sub_intent=gear_plan`）不进并行分支，走 `trip_gear` 子图，见下文「行程子系统」。
+装备类请求（`sub_intent=gear_plan`）与多天行程规划（`sub_intent=plan_trip` + `plan_and_execute`）不进并行分支，走 `trip_gear` 子图，见下文「行程子系统」。
 
 分层：`app/main.py`（UI，只调 TurnGraph）→ `app/graphs/orchestrator.py`（`build_turn_graph()`）→ `app/graphs/subgraphs/*`（节点签名统一 `(state, runtime)`）→ `app/services/*`（无编排的领域能力）→ `app/retrieval` / `app/memory` / `app/tools`。
 
@@ -50,7 +50,9 @@
 
 ## 顶层路由
 
-`classify` 输出四个信号，各管一件事：`intents`/`primary_intent` 选 Agent，`route` 选 ReAct 还是 Plan&Execute，`retrieval` 选 SQL/RAG/混合，`sub_intent=gear_plan` 进 `trip_gear`。多意图最多保留两个，只有 `shopping + travel` 走并行分支。
+`classify` 输出四个信号，各管一件事：`intents`/`primary_intent` 选 Agent，`route` 选 ReAct 还是 Plan&Execute，`retrieval` 选 SQL/RAG/混合，`sub_intent=gear_plan`（或纯行程的 `plan_trip + plan_and_execute`）进 `trip_gear`。多意图最多保留两个，只有 `shopping + travel` 走并行分支。
+
+`trip_gear` 同时接管多天行程规划（`nodes._is_trip_plan`）：01–05 面板不是可以贴到任何回答上的样式，它要的是约束/行程/装备/预算这套结构化结果，而 `travel` 子图只产出正文。收敛到同一张图，用户才不会遇到"同样是规划，有时有面板有时只有一段话"。
 
 判定顺序与阈值（`app/nlu/signals.py`）：
 
@@ -63,7 +65,7 @@
 | 低置信 | 关键词层返回 `None` → 指代沿用 → 小模型（<0.55 分或 JSON 坏）→ 主模型仲裁一次 |
 | 模型失败 | 有关键词证据就按关键词兜底（`confidence=0.4`），没有才回 `general` |
 
-`route` 只有三个消费方：`general`（react / general_plan）、`travel`（chat / 规划图）、`composite`（写死 `plan_and_execute`）。`shopping`、`trip_gear`、`customer_service` 不看它。
+`route` 只有三个消费方：`general`（react / general_plan）、`travel`（chat / 规划图）、`composite`（写死 `plan_and_execute`）。`shopping`、`trip_gear`、`customer_service` 不看它。`travel` 的 `plan_trip` 是例外：它带着 `plan_and_execute` 时被改派到 `trip_gear`。
 
 `sub_intent=gear_plan` 的劫持改成显式枚举 + 中文限定词（`nodes._is_gear_plan`），不再用 `"gear" in sub_intent` 的包含判断。
 
@@ -108,7 +110,43 @@ derive → plan → gear → owned → shop → verify ─┬→ repair（自动
 
 两个 `clarify` 分工不同，**不要合并**：`derive` 后那个补"能不能开始规划"的槽位；`verify` 后那个补"方案到底行不行"的判断依据，只有算过一遍方案才知道该问什么。
 
+### 出发日期与默认值
+
+出发日期和人数同级，都是"有就用、没有就默认、默认要说出来"：
+
+- 用户说了日期 → 约束清单写 `出发日期：2026-11-14`，来源"用户原话"；没说 → 写 `出发日期：未指定（按今天 2026-11-07 计）`，来源"默认规则"、软约束。
+- **不能只写进 `facts` 不写进清单**。早先就是这样，于是用户明明说了日期，清单里也看不见；而校验器又拿不到日期，逐件刷"没有出发日期"。
+- **没有日期时不判采购时效**：拿"估计的今天"逐件算到货，会把每件待购都判成赶不上，结论直接 `infeasible`，还会把真正的冲突挤出 05 面板。日期落地（或用户改期）后再判。
+- 面板末尾固定一句"默认值：…。如果和实际不符，回一句我重排"，只列真正用了默认值的项。
+- `ensure_start_date` 是**重写**不是追加：追问里补的日期要替换掉占位那条，否则同一个 key 会并存两条。`_merge_facts` 也必须合并 `start_date`，不然用户补答的日期会被静默丢掉。
+
+01–05 面板只做展示：约束的 `hard`/`status` 仍参与判定（verify 判 critical、tradeoff 算权重），只是不再各占一列。
+
 状态字段：`facts`、`constraints`、`itinerary`、`gear`、`owned`、`products`、`issues`、`revision`、`repair_options`、`verdict`、`clarify_rounds`。
+
+### 用户指定的固定活动
+
+活动证据只有**场所**（剧院、博物馆、公园），拿不到"某天演什么"——Ticketmaster 要 Key 且无中国业务，
+秀动/大麦要签名或反爬，场馆官网是前端渲染。所以场次级信息不查，改由用户提供。
+
+两条输入，走两条不同的路：
+
+| 输入 | 落到哪 | 效果 |
+|---|---|---|
+| "已订好第 2 天 19:30 的陶艺工作坊，200 元" | `TripFacts.fixed_events`（`status="booked"`） | 钉进那天，其它安排让路，票价进预算 |
+| "想参与一点活动" | `TripFacts.wants_activity=True`（软约束） | 只影响行程取向，**不产生任何日程** |
+
+`apply_fixed_events` 的三条硬规则：
+
+- **只钉 `booked`**。`planned` 只是"想去"，排不下就算了，不能挤掉别的安排。
+- **没说是第几天就不钉**（`day=0`）。猜一天等于替用户决定哪天去。
+- **让路的是可调整条目**。当天超时就从末尾删非固定条目；那天原本排了返程而活动在它之后，
+  删的是返程——固定活动是用户已经买票的外部约束，删它等于替用户退票。
+
+抽取上的坑：`slots.parse_fixed_events` 必须两道闸同时成立才认——已订语气（已订/买票/预约/报名）
+**且**名字里有活动类型词（音乐会/工作坊/展览……）。只留一道闸会出事："想去上海玩两天"会被
+抽成一个叫"上海玩两天"的活动，"想参加一点活动"会被抽成一个叫"一点活动"的日程。
+语气词还要按长度降序匹配，"已订好陶艺工作坊"不能被"已订"抢走而剩下"好陶艺工作坊"。
 
 ### 校验结论
 
@@ -198,6 +236,60 @@ derive → plan → gear → owned → shop → verify ─┬→ repair（自动
 模型推断出来的"记得带用户已有的 X"在 owned 判定之后丢弃
 （`constraints.drop_owned_duplicates`）：东西已经标成"已有"了，
 再挂一条"模型推断 / 软 / 未校验"只会让用户以为系统没认出来。
+
+## 全球地名与活动证据
+
+用户会随口问世界任何城市，所以「地名 → 坐标」和「当地有什么」必须是真数据源，
+而且**拿不到时要说拿不到**。这一层由 `app/tools/geo.py` + `app/tools/providers.py` 承担。
+
+### 地名解析（`geo.resolve_location`）
+
+只靠 Open-Meteo geocoding 打中文原词是错的，实测：
+
+| 输入 | 直接查的结果 |
+|---|---|
+| `东京` | 浙江一个 `PPL` 村（日本东京的 GeoNames 别名是繁体「東京」） |
+| `纽约` | 完全 MISS |
+| 任意 | 原 Nominatim 兜底分支 100% 连接超时，属于写在那里但跑不到的死代码 |
+
+三级策略：**别名表 → 择优 → 拒答**。
+
+1. `CITY_ALIASES` 把高频目的地映射成规范英文名 + 国家码（约 300 条，覆盖亚洲/欧洲/北美/中南美/大洋洲/非洲主要城市）。
+2. 候选按 `feature_code`（首都/省会/普通居民点）**和人口**打分。人口权重必须高于行政级别——权重调反的那版里，"纽约"命中了内布拉斯加人口 7 千的 York。
+3. 别名表知道国家时**只接受国家匹配的候选**；查不到就抛 `LocationUncertain`，不外推、不猜。表外地名标 `uncertain=True` 交给上层披露。
+
+变音符号是第三个坑：`Reykjavik` 在 GeoNames 里是 `Reykjavík`，所以失败后依次重试「英文 → 中文规范名 → 原词」。
+
+### 活动数据（`get_local_activities`）
+
+provider 只有一个：`Photon`（免 key，OpenStreetMap 场所清单）。**不做场次查询**——Ticketmaster 需 Key 且无中国业务，
+秀动/大麦要签名或反爬，场馆官网是前端渲染。用户要参加具体活动时由用户在需求里指定，
+走 `TripFacts` 的固定条目，不依赖 provider。
+
+Photon 有四个必须知道的行为：
+
+- **`q` 只做名称匹配**，`q=park` 返回的是叫 "Park" 的酒店和商场。按类别取景点必须用 `osm_tag`。类别分三组查（`_TAG_GROUPS`）：景点组 `tourism:attraction` / `tourism:museum` / `tourism:viewpoint`，自然组 `leisure:park` / `amenity:marketplace`，**可参与组** `amenity:theatre` / `amenity:arts_centre`。多个 `osm_tag` 之间是 OR，所以一组一次请求。加类别要同时改 `_TAG_GROUPS` 和 `_PLACE_KINDS`——只加前者不会报错，但结果会被中文名映射过滤成空。
+- **可参与组必须单独成组**，不能和景点混一次查。混查时 `limit` 配额会被热门类别占满，实测上海返回全是景点和博物馆，`theatre` 一条不剩，于是"想参加活动"这个需求落空。截断时也要按 `participatory` 优先排序。
+- 只带 `q=<city> <keyword>` 会让"名称里没有城市名"的本地场馆全部漏掉（圣托里尼全岛的希腊语馆名都不含 Santorini），所以改成 `q=<city>` + `osm_tag` + `lat/lon` 偏置 + 60 km 距离过滤。距离过滤是挡住"圣托里尼返回罗马尼亚博物馆"的那道闸。
+- **噪声要过滤**（`_is_noisy_place`）。OSM 的 `tourism=attraction` 非常宽松，上海的返回里混进过 `цирк`（俄语标注）和 `Shanghai Evergreen Printing Machinery Co.`（印刷机械公司，工厂也被标成景点）。丢两类：公司/工厂式名称（` co.` / `ltd` / `factory` 等标记），以及非俄语系城市里的西里尔名。西里尔名不能一律丢——莫斯科的 `Палеонтологический музей` 是本地名，所以按 `country_code` 白名单判。
+
+证据摘要按"能不能参加"分两段输出（`_activities_summary`）：`可以买票或报名参加的活动场所` 与 `另外可去的地方`。只列"可去之处"而不区分，模型会把景点当活动写进正文，用户也看不出两者差别。
+
+两条硬约定：
+
+- **绝不跨城市兜底**。旧实现在找不到 `<city>_activities.txt` 时兜底到 `outdoor_activities.txt`，于是"新加坡"拿到了千岛湖露营、黄山、泰山——把别的城市的资料冒充本地证据。现在只有该城市自己的文件才读得到，本地文件按拼音命名（`hangzhou_activities.txt`），中文城市名先经别名表转一次。
+- **拿不到就说拿不到**。provider 失败返回 `available: False` + 原因，`travel_executor` 把它记成一条 `ok: False` 的工具调用，`travel.py` 的 `tool_fallback` 分支据此降级；不编场次、不编票价、不把场所清单写成"当天活动"。
+
+`get_local_activities` 的输出里 `source` 会说明数据到底从哪来（`ticketmaster-discovery-v2` / `photon-osm` / `local_activities_file`），`kind` 区分 `event`（带日期票价）与 `poi`（只是可去之处）。票价是原始币种，不进预算。
+
+### 证据与审核的三个边界
+
+- **一天行程也要查活动证据**。原来 `days == 1` 时 `build_steps` 直接跳过活动证据，最短的行程反而最靠模型编。
+- **本地资料解析只留一份**（`app/activity_notes.py`）。UI 目录页与工具原先各写一套正则，改一次格式得改两处。
+- **反思快路径按行程天数判，不按证据条数判**（`can_use_deterministic_reflection`）。原先写死 `len(evidence_steps) == 1`，加上活动证据后一天行程变成两条，快路径永远走不到；但放宽成"证据干净就跳过"会让两天以上行程也跳过模型审核，实测一次挂 5 个测试——说明"多天必须模型审"这条保守边界是有意的。现在条件是 `days == 1` 且每条证据都 `completed`、无 `warning`、无 `stale`。
+
+手工验证（会联网，不属于评测）：`python scripts/verify_external_tools.py`，
+覆盖天气、路线、活动，以及东京/纽约/圣托里尼三个地名的解析正确性。
 
 ## 商品目录
 
@@ -300,6 +392,9 @@ NLU 场景集 `data/evaluation/nlu.spec.jsonl` 覆盖关键词层、槽位、装
 | `nlu/lexicon.py` | 唯一一份词表 |
 | `nlu/slots.py` | 槽位抽取（两套模型共用） |
 | `nlu/signals.py` | 意图打分与路由判定 |
+| `tools/geo.py` | 全球地名解析：别名表 + 择优 + 保守拒答 |
+| `activity_notes.py` | 本地活动资料解析（UI 目录页与工具共用同一份） |
+| `tools/providers.py` | 天气/路线/活动 provider、缓存、熔断 |
 | `retrieval/search_index.py` | 商品 2-gram 检索索引（FTS5） |
 | `trip_gear/catalog.py` | 商品库目录摘要（按品类，给模型看） |
 | `evaluation/nlu_spec.py` | NLU 场景集加载与评测 |

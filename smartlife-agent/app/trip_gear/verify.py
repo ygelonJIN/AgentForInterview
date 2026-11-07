@@ -41,8 +41,8 @@ _CHECKABLE = {
 # 有信息价值但当前无法确定性判定的约束键，明确标注为未校验。
 _NOT_AUTO = {"people", "transport"}
 
-# 仅作口径说明，不做判定。
-_INFORMATIONAL = {"budget_scope"}
+# 仅作口径说明，不做判定。出发日期只用来算到货时效，本身没有"对不对"。
+_INFORMATIONAL = {"budget_scope", "start_date"}
 
 # 住宿字段可能是枚举值（camp/hotel），也可能是自由文本，两种都要认。
 _CAMP_MARKERS = ("露营", "帐篷", "营位", "扎营", "camp")
@@ -231,6 +231,12 @@ def _check_purchases(
 
     与"库未覆盖"不重复：那条管"没搜到商品"，这条管"搜到了但买不到/赶不上"。
     """
+    # 出发日期默认按今天，但那是占位不是事实：拿它逐件判"赶不上"会把整份
+    # 方案判成不可行，还会把真正的冲突挤出面板。日期没定就整组不判，
+    # 由约束清单和面板尾部的默认值提醒负责交代。
+    if not facts.start_date:
+        return []
+
     issues: List[Issue] = []
     for result in purchase.check_purchases(gear, products, facts, today=today):
         product = products.get(result.gear) or {}

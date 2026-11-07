@@ -43,6 +43,16 @@ ROUTE_TARGETS = {
 }
 
 
+# 场景 → Agent 能力面。原来这里写死 "general"，导致 shopping / travel 两个
+# 能力面在运行时永远绑不上，只有 MCP Server 的 --agent 参数和测试用得上。
+_AGENT_SCENES = {"shopping", "travel", "general"}
+
+
+def _agent_id_for_scene(scene: str) -> str:
+    value = str(scene or "").strip().lower()
+    return value if value in _AGENT_SCENES else "general"
+
+
 def build_turn_graph(checkpointer: Optional[Any] = None):
     """组装顶层状态图；子图作为节点直接挂载。"""
     graph = StateGraph(TurnState, context_schema=TurnContext)
@@ -93,7 +103,7 @@ class TurnGraph:
         thread_id = build_thread_id(user_id, scene, session_id)
         trace_id = new_trace_id()
         context = build_turn_context(self.services, trace_id).with_extra(
-            actor_id=user_id, agent_id="general"
+            actor_id=user_id, agent_id=_agent_id_for_scene(scene)
         )
         payload = {
             "user_message": user_message,
@@ -122,7 +132,7 @@ class TurnGraph:
         thread_id = build_thread_id(user_id, scene, session_id)
         trace_id = new_trace_id()
         context = build_turn_context(self.services, trace_id).with_extra(
-            actor_id=user_id, agent_id="general"
+            actor_id=user_id, agent_id=_agent_id_for_scene(scene)
         )
         config = {"configurable": {"thread_id": thread_id}}
         async for chunk in self._stream_graph(Command(resume=answer), config, context, trace_id):

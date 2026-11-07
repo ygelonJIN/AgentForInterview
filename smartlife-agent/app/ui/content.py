@@ -4,6 +4,8 @@ from __future__ import annotations
 import re
 import sqlite3
 from pathlib import Path
+
+from app.activity_notes import parse_activity_notes
 from typing import Any, Dict, Iterable, List, Optional
 
 
@@ -195,42 +197,15 @@ def load_travel_resources(root: Path = DATA_ROOT) -> List[Dict[str, Any]]:
     activities_root = root / "activities"
     for path in sorted(activities_root.glob("*.txt")):
         body = path.read_text(encoding="utf-8").strip()
-        current_type = "活动灵感"
-        title = ""
-        lines: List[str] = []
-        for raw_line in body.splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            heading = re.match(r"^【(.+)】$", line)
-            if heading:
-                current_type = heading.group(1)
-                continue
-            item = re.match(r"^\d+\.\s+(.*)$", line)
-            if item:
-                if title and lines:
-                    resources.append({
-                        "id": f"activity-{path.stem}-{len(resources)}",
-                        "type": current_type,
-                        "title": title,
-                        "description": _summary(" ".join(lines)),
-                        "content": "；".join(lines),
-                        "source": path.name,
-                        "tags": (current_type, _slug_title(path)),
-                    })
-                title = item.group(1).split(" - ")[0]
-                lines = [item.group(1)]
-            elif title and line.startswith("- "):
-                lines.append(line[2:])
-        if title and lines:
+        for index, note in enumerate(parse_activity_notes(body)):
             resources.append({
-                "id": f"activity-{path.stem}-{len(resources)}",
-                "type": current_type,
-                "title": title,
-                "description": _summary(" ".join(lines)),
-                "content": "；".join(lines),
+                "id": f"activity-{path.stem}-{index}",
+                "type": note["category"],
+                "title": note["title"],
+                "description": _summary(note["detail"]),
+                "content": note["detail"],
                 "source": path.name,
-                "tags": (current_type, _slug_title(path)),
+                "tags": (note["category"], _slug_title(path)),
             })
     return resources
 

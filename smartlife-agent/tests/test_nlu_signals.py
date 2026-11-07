@@ -53,7 +53,8 @@ def test_route(message, expected):
         ("买一个帐篷和睡袋，再去莫干山露营两天", "composite"),
         ("推荐跑鞋，再制定杭州两天计划", "composite"),
         ("推荐一双跑鞋", "shopping"),
-        ("去莫干山玩三天", "travel"),
+        # 多天行程规划收敛到 trip_gear，否则同样的请求在 travel 里没有结构化面板
+        ("去莫干山玩三天", "trip_gear"),
         ("退一下订单", "customer_service"),
     ],
 )

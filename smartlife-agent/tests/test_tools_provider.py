@@ -29,6 +29,10 @@ def _geocode_payload(name):
             "latitude": 30.2741,
             "longitude": 120.1551,
             "timezone": "Asia/Shanghai",
+            "country": "中国",
+            "country_code": "CN",
+            "feature_code": "PPLA",
+            "population": 9000000,
         }]
     }
 
@@ -62,7 +66,13 @@ def test_free_default_providers_require_no_configuration(monkeypatch):
     monkeypatch.delenv("SMARTLIFE_WEATHER_API_URL", raising=False)
     monkeypatch.delenv("SMARTLIFE_ROUTE_API_URL", raising=False)
 
-    assert get_provider_status() == {"weather": True, "route": True}
+    status = get_provider_status()
+
+    assert status["weather"] is True
+    assert status["route"] is True
+    assert status["activities"] is True
+    # 活动只走免 key 的 Photon
+    assert status["activities_provider"] == "activities-photon"
 
 
 def test_default_weather_uses_open_meteo_real_payload(monkeypatch):
@@ -73,7 +83,12 @@ def test_default_weather_uses_open_meteo_real_payload(monkeypatch):
             return _Response(_geocode_payload("杭州"))
         return _Response(_forecast_payload())
 
+    from app.tools import geo
+
     monkeypatch.setattr("app.tools.providers.requests.get", respond)
+    # 地理编码在 geo 层自己发请求，两个模块都要打桩，并清掉可能已缓存的真实坐标
+    monkeypatch.setattr("app.tools.geo.requests.get", respond)
+    geo.reset_cache()
 
     result = get_weather.invoke({"city": "杭州", "date": date.today().isoformat()})
 

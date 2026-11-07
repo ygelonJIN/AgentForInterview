@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+from datetime import date
 from html import escape
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
@@ -25,13 +26,6 @@ NAV_ITEMS = (
     ("⇪", "数据导入", "import"),
     ("☰", "个人中心", "profile"),
 )
-
-STATUS_LABEL = {
-    "ok": "满足",
-    "violated": "违反",
-    "relaxed": "已放宽",
-    "unverified": "未校验",
-}
 
 GEAR_STATUS_LABEL = {
     "owned": "已有",
@@ -116,7 +110,8 @@ p {{ line-height: var(--lh-normal); }}
 [data-testid="stAppViewContainer"] {{ background: transparent; }}
 [data-testid="stMainBlockContainer"] {{
   max-width: 1180px;
-  padding: var(--space-5) var(--space-6) 9.5rem;
+  /* 顶部给固定页头让位，页头不随主区域滚动（Streamlit 首屏会滚到底） */
+  padding: var(--page-head-h) var(--space-6) 9.5rem;
 }}
 [data-testid="stMainBlockContainer"] > div {{ gap: var(--space-4); }}
 [data-testid="stVerticalBlock"] {{ gap: var(--space-3); }}
@@ -219,11 +214,16 @@ section[data-testid="stSidebar"] [data-testid="stAlert"] {{ border-radius: var(-
 .sl-user-name {{ font-size: var(--fs-xs); font-weight: var(--fw-semibold); color: var(--c-nav-text); }}
 .sl-user-role {{ font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-nav-muted); }}
 
-/* ---------- 页头 ---------- */
+/* ---------- 页头（固定顶栏，不参与主区域滚动） ---------- */
 .sl-page-head {{
+  position: fixed; top: 0; left: var(--nav-w); right: 0;
+  z-index: 110;
+  max-width: 1180px; margin: 0 auto;
   display: flex; align-items: flex-end; gap: var(--space-4);
-  padding-bottom: var(--space-3); border-bottom: var(--panel-rule-w) solid var(--c-line);
-  margin-bottom: var(--space-1);
+  padding: var(--space-4) var(--space-6);
+  background: var(--c-topbar-bg);
+  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  border-bottom: var(--panel-rule-w) solid var(--c-line);
 }}
 .sl-page-head .sl-kicker {{
   font-size: var(--fs-2xs); font-weight: var(--fw-bold);
@@ -284,23 +284,18 @@ section[data-testid="stSidebar"] [data-testid="stAlert"] {{ border-radius: var(-
 .sl-tag--muted {{ color: var(--c-text-faint); }}
 .sl-tag--pill {{ border-radius: var(--radius-pill); }}
 
-/* ---------- 约束 / 通用表格 ---------- */
-.sl-rows {{ display: flex; flex-direction: column; }}
+/* ---------- 约束清单（两列短行，只留内容与来源） ---------- */
+.sl-rows {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: var(--space-6); }}
 .sl-row {{
-  display: grid; grid-template-columns: minmax(0, 1fr) var(--row-source-w) 64px 84px;
-  align-items: center; gap: var(--space-4);
-  padding: var(--space-3) var(--space-5);
+  display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline; gap: var(--space-3);
+  padding: var(--space-2) var(--space-5);
   border-bottom: var(--panel-rule-w) solid var(--c-line);
   font-size: var(--fs-sm);
 }}
-.sl-row:last-child {{ border-bottom: 0; }}
-.sl-row--head {{
-  font-size: var(--fs-2xs); letter-spacing: var(--tracking-caps); text-transform: uppercase;
-  color: var(--c-text-faint); background: var(--c-surface-2); font-weight: var(--fw-bold);
-}}
 .sl-row-label {{ min-width: 0; font-weight: var(--fw-medium); }}
 .sl-row-label small {{ display: block; font-size: var(--fs-2xs); font-weight: 400; color: var(--c-text-faint); }}
-.sl-row-src {{ font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-text-muted); }}
+.sl-row-src {{ font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-text-faint); white-space: nowrap; }}
 
 /* ---------- 行程 ---------- */
 .sl-days {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(var(--day-min), 1fr)); gap: var(--space-4); }}
@@ -324,32 +319,33 @@ section[data-testid="stSidebar"] [data-testid="stAlert"] {{ border-radius: var(-
 .sl-tl-act small {{ display: block; font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-text-faint); }}
 .sl-tl-cost {{ font-family: var(--font-mono); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }}
 
-/* ---------- 装备 ---------- */
-.sl-gear {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-4); }}
-.sl-gear-col {{ border: var(--border-w) solid var(--c-line); border-radius: var(--radius-md); overflow: hidden; }}
+/* ---------- 装备清单（按状态分组的横排 chips） ---------- */
+.sl-gear {{ display: flex; flex-direction: column; }}
+.sl-gear-line {{
+  display: flex; flex-wrap: wrap; align-items: baseline;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-3) var(--space-5);
+}}
+.sl-gear-line + .sl-gear-line {{ border-top: var(--panel-rule-w) solid var(--c-line); }}
 .sl-gear-head {{
-  display: flex; align-items: baseline; gap: var(--space-2);
-  padding: var(--space-2) var(--space-4); background: var(--c-surface-2);
-  border-bottom: var(--panel-rule-w) solid var(--c-line);
-  font-size: var(--fs-2xs); font-weight: var(--fw-bold); letter-spacing: var(--tracking-caps);
-  text-transform: uppercase; color: var(--c-text-muted);
+  min-width: 52px; font-size: var(--fs-2xs); font-weight: var(--fw-bold);
+  letter-spacing: var(--tracking-caps); text-transform: uppercase; color: var(--c-text-muted);
 }}
-.sl-gear-head .n {{ margin-left: auto; font-family: var(--font-mono); color: var(--c-text); }}
-.sl-gear-row {{
-  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px var(--space-3);
-  padding: var(--space-2) var(--space-4); border-bottom: var(--panel-rule-w) solid var(--c-line);
+.sl-gear-head .n {{ margin-left: var(--space-2); font-family: var(--font-mono); color: var(--c-text); }}
+.sl-gear-item {{
+  display: inline-flex; align-items: baseline; gap: var(--space-2);
+  padding: 1px var(--space-2); border: var(--border-w) solid var(--c-line);
+  border-radius: var(--radius-sm); background: var(--c-surface-2); font-size: var(--fs-sm);
 }}
-.sl-gear-row:last-child {{ border-bottom: 0; }}
-.sl-gear-name {{ font-size: var(--fs-sm); font-weight: var(--fw-medium); }}
-.sl-gear-name .qty {{ font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-text-muted); margin-left: var(--space-2); }}
-.sl-gear-reason {{ grid-column: 1 / -1; font-size: var(--fs-2xs); color: var(--c-text-faint); line-height: var(--lh-tight); }}
-.sl-gear-price {{ font-family: var(--font-mono); font-size: var(--fs-xs); text-align: right; font-variant-numeric: tabular-nums; }}
-.sl-gear-price small {{ display: block; font-size: var(--fs-2xs); color: var(--c-text-faint); }}
-.sl-gear-foot {{ padding: var(--space-2) var(--space-4); font-size: var(--fs-2xs); color: var(--c-text-muted); background: var(--c-surface-2); border-top: var(--panel-rule-w) solid var(--c-line); }}
+.sl-gear-item b {{ font-weight: var(--fw-medium); }}
+.sl-gear-item .qty {{ font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-text-muted); }}
+.sl-gear-item .sl-gear-price {{ font-family: var(--font-mono); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }}
+.sl-gear-item small {{ font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-text-faint); }}
+.sl-gear-foot {{ padding: var(--space-2) var(--space-5); font-size: var(--fs-2xs); color: var(--c-text-muted); background: var(--c-surface-2); border-top: var(--panel-rule-w) solid var(--c-line); }}
 
-/* ---------- 预算 ---------- */
-.sl-budget {{ display: grid; grid-template-columns: minmax(0, 1fr) var(--budget-side-w); gap: var(--space-6); align-items: center; }}
-.sl-budget-nums {{ display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-3) var(--space-5); margin-bottom: var(--space-4); }}
+/* ---------- 预算（一行数字 + 一条进度，明细压到脚注） ---------- */
+.sl-budget {{ display: flex; flex-direction: column; gap: var(--space-3); }}
+.sl-budget-row {{ display: grid; grid-template-columns: auto minmax(80px, 1fr) auto auto; align-items: center; gap: var(--space-4); }}
 .sl-budget-num span {{ display: block; font-size: var(--fs-2xs); letter-spacing: var(--tracking-caps); text-transform: uppercase; color: var(--c-text-faint); }}
 .sl-budget-num b {{ font-family: var(--font-mono); font-size: var(--fs-lg); font-variant-numeric: tabular-nums; }}
 .sl-delta {{
@@ -364,12 +360,23 @@ section[data-testid="stSidebar"] [data-testid="stAlert"] {{ border-radius: var(-
 .sl-bar-fill {{ height: 100%; border-radius: inherit; background: var(--c-accent); }}
 .sl-bar-fill--over {{ background: var(--c-danger); }}
 .sl-bar-legend {{ display: flex; flex-wrap: wrap; gap: var(--space-4); margin-top: var(--space-2); font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-text-muted); }}
-.sl-budget-side {{ border-left: var(--panel-rule-w) solid var(--c-line); padding-left: var(--space-5); }}
+.sl-budget-foot {{ font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-text-muted); }}
 
 .sl-kv {{ display: flex; flex-direction: column; gap: var(--space-2); }}
 .sl-kv-row {{ display: flex; align-items: baseline; gap: var(--space-3); font-size: var(--fs-xs); }}
 .sl-kv-row span {{ color: var(--c-text-muted); }}
 .sl-kv-row b {{ margin-left: auto; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }}
+
+/* ---------- 默认值提醒（不是告警，放在整组面板之后） ---------- */
+.sl-note {{
+  margin-top: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  border: var(--border-w) dashed var(--c-line-strong);
+  background: var(--c-surface-2);
+  font-size: var(--fs-xs);
+  color: var(--c-text-muted);
+}}
 
 /* ---------- 提示条 ---------- */
 .sl-alert {{
@@ -704,19 +711,16 @@ section[data-testid="stSidebar"] [data-testid="stAlert"] {{ border-radius: var(-
 ::-webkit-scrollbar-track {{ background: transparent; }}
 
 /* ---------- 响应式 ---------- */
-@media (max-width: 1200px) {{
-  .sl-gear {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
-}}
 @media (max-width: 900px) {{
   [data-testid="stMainBlockContainer"] {{ padding-left: var(--space-4); padding-right: var(--space-4); }}
   [data-testid="stExpandSidebarButton"] {{ top: 10px; left: 10px; }}
-  [data-testid="stMainBlockContainer"] {{ padding-top: 3.4rem; }}
+  [data-testid="stMainBlockContainer"] {{ padding-top: calc(var(--page-head-h) + var(--space-3)); }}
+  .sl-page-head {{ padding: var(--space-3) var(--space-4); }}
   [data-testid="stBottomBlockContainer"] {{ padding-left: var(--space-4) !important; padding-right: var(--space-4) !important; }}
-  .sl-gear {{ grid-template-columns: minmax(0, 1fr); }}
-  .sl-budget {{ grid-template-columns: minmax(0, 1fr); }}
-  .sl-budget-side {{ border-left: 0; border-top: var(--panel-rule-w) solid var(--c-line); padding-left: 0; padding-top: var(--space-4); }}
-  .sl-row {{ grid-template-columns: minmax(0, 1fr) 64px; }}
-  .sl-row > .sl-row-src, .sl-row > .sl-row-hard {{ display: none; }}
+  .sl-rows {{ grid-template-columns: minmax(0, 1fr); }}
+  .sl-row {{ grid-template-columns: minmax(0, 1fr) auto; }}
+  .sl-budget-row {{ grid-template-columns: auto minmax(0, 1fr) auto; }}
+  .sl-budget-row .sl-delta {{ grid-column: 1 / -1; align-items: flex-start; margin-left: 0; }}
   .sl-page-head {{ flex-direction: column; align-items: flex-start; gap: var(--space-2); }}
   .sl-page-meta {{ margin-left: 0; }}
   .sl-page-head h1 {{ font-size: var(--fs-xl); }}
@@ -909,20 +913,18 @@ def rail_block(title: str, body: str, *, extra: str = "") -> str:
 
 # ---------- 行程装备结果（plan） ----------
 def _constraint_rows(constraints: Sequence[Dict[str, Any]]) -> str:
-    rows = [
-        '<div class="sl-row sl-row--head"><span>内容</span>'
-        '<span class="sl-row-src">来源</span><span class="sl-row-hard">硬度</span><span>状态</span></div>'
-    ]
+    """只展示"内容 + 来源"。
+
+    ``hard`` / ``status`` 仍在数据里（verify 判 critical、verdict 算权重都要用），
+    但展示层不再开两列：用户关心的是"我提了哪些要求、它们从哪来"，
+    至于系统内部把它标成硬还是软、校验通过没有，是 05 面板要说的事。
+    """
+    rows = []
     for item in constraints:
-        hard = item.get("hard", True)
-        status = str(item.get("status", "unverified"))
-        status_tone = {"ok": "ok", "violated": "danger", "relaxed": "warn"}.get(status, "muted")
         rows.append(
             '<div class="sl-row">'
             f'<span class="sl-row-label">{_e(item.get("text", ""))}</span>'
             f'<span class="sl-row-src">{_e(item.get("source", ""))}</span>'
-            f'<span class="sl-row-hard">{tag("硬" if hard else "软", "hard" if hard else "soft")}</span>'
-            f'<span>{tag(STATUS_LABEL.get(status, status), status_tone)}</span>'
             "</div>"
         )
     return f'<div class="sl-rows">{"".join(rows)}</div>'
@@ -969,38 +971,40 @@ def _gear_counts(gear: Sequence[Dict[str, Any]]) -> tuple[int, int]:
 
 
 def _gear_columns(gear: Sequence[Dict[str, Any]], products: Dict[str, Any]) -> tuple[str, str]:
-    """已有 / 待购两列；没有内容的分组不输出占位列。"""
+    """已有 / 待购两组横排；条目少时不占空列，条目多时自动换行。"""
     owned = [item for item in gear if item.get("status") == "owned"]
     need = [item for item in gear if item.get("status") == "need_buy"]
     skipped = [item for item in gear if item.get("status") == "skipped"]
 
-    columns = []
+    lines = []
     for key, items in (("owned", owned), ("need_buy", need)):
         if not items:
             continue
-        rows = []
+        chips = []
         for item in items:
-            product = products.get(item.get("name")) or {}
-            price_html = "—"
-            if key == "need_buy" and product.get("price"):
-                price_html = (
-                    f'{_money(product.get("price"))}'
-                    f'<small>{_e(product.get("brand", "") or "自选")}</small>'
-                )
+            product = (products.get(item.get("name")) or {}) if key == "need_buy" else {}
+            extra = ""
+            if product.get("price"):
+                extra = f'<span class="sl-gear-price">{_money(product.get("price"))}</span>'
+                brand = str(product.get("brand") or "")
+                if brand:
+                    extra += f"<small>{_e(brand)}</small>"
             reason = item.get("reason") or ""
             qty = item.get("qty") or 1
-            rows.append(
-                '<div class="sl-gear-row">'
-                f'<span class="sl-gear-name">{_e(item.get("name", ""))}<span class="qty">×{_e(qty)}</span></span>'
-                f'<span class="sl-gear-price">{price_html}</span>'
-                f'<span class="sl-gear-reason">{_e(reason)}</span></div>'
+            chips.append(
+                '<span class="sl-gear-item">'
+                f'<b>{_e(item.get("name", ""))}</b>'
+                f'<span class="qty">×{_e(qty)}</span>'
+                f"{extra}"
+                + (f"<small>{_e(reason)}</small>" if reason else "")
+                + "</span>"
             )
-        columns.append(
-            f'<div class="sl-gear-col"><div class="sl-gear-head">{GEAR_STATUS_LABEL[key]}'
-            f'<span class="n">{len(items)}</span></div>{"".join(rows)}</div>'
+        lines.append(
+            f'<div class="sl-gear-line"><span class="sl-gear-head">{GEAR_STATUS_LABEL[key]}'
+            f'<span class="n">{len(items)}</span></span>{"".join(chips)}</div>'
         )
 
-    html = f'<div class="sl-gear">{"".join(columns)}</div>' if columns else ""
+    html = f'<div class="sl-gear">{"".join(lines)}</div>' if lines else ""
 
     foot_lines = []
     budget_blocked = [item for item in need if "预算不足" in (item.get("reason") or "")]
@@ -1057,7 +1061,7 @@ def plan_panels_html(payload: Dict[str, Any]) -> str:
         panel_html(
             "01",
             "约束清单",
-            f"{len(constraints)} 条 · 硬 {sum(1 for c in constraints if c.get('hard', True))} / 软 {sum(1 for c in constraints if not c.get('hard', True))}",
+            f"{len(constraints)} 条",
             _constraint_rows(constraints),
             flush=True,
         )
@@ -1088,36 +1092,33 @@ def plan_panels_html(payload: Dict[str, Any]) -> str:
             )
 
     over = remaining is not None and remaining < 0
+    bar_class = "sl-bar-fill sl-bar-fill--over" if over else "sl-bar-fill"
     delta_class = "sl-delta sl-delta--over" if over else "sl-delta"
     if remaining is None:
-        delta_value = "未设预算"
+        delta_label, delta_text = "剩余", "未设预算"
+    elif over:
+        delta_label, delta_text = "超支", _money(abs(remaining))
     else:
-        delta_value = f"{'+' if remaining >= 0 else '−'}{_money(abs(remaining))}"
-    bar_class = "sl-bar-fill sl-bar-fill--over" if over else "sl-bar-fill"
+        delta_label, delta_text = "剩余", f"+{_money(remaining)}"
     scope = "含装备" if (facts.get("budget_scope") or "trip_and_gear") != "trip_only" else "不含装备"
-    side_rows = [("行程", _money(trip_total)), ("装备", _money(gear_total))]
-    side_rows.append(("预算口径", scope))
-    kv = "".join(f'<div class="sl-kv-row"><span>{_e(k)}</span><b>{_e(v)}</b></div>' for k, v in side_rows)
+    # 明细压到脚注：上面一行只留"花了多少 / 剩多少"。
+    foot = f"行程 {_money(trip_total)} · 装备 {_money(gear_total)} · 口径 {scope}"
+    if has_budget:
+        foot += f" · 已花 {pct:.0f}%"
     parts.append(
         panel_html(
             "04",
             "预算占用",
-            f"口径：{scope}" + (f" · 预算 {_money(budget)}" if has_budget else ""),
+            f"口径：{scope}",
             f"""
             <div class="sl-budget">
-              <div>
-                <div class="sl-budget-nums">
-                  <div class="sl-budget-num"><span>行程</span><b>{_money(trip_total)}</b></div>
-                  <div class="sl-budget-num"><span>装备</span><b>{_money(gear_total)}</b></div>
-                  <div class="sl-budget-num"><span>合计</span><b>{_money(total)}</b></div>
-                  <div class="sl-budget-num"><span>预算</span><b>{_money(budget) if has_budget else "未设"}</b></div>
-                  <div class="{delta_class}"><span>剩余</span><b>{_e(delta_value)}</b></div>
-                </div>
+              <div class="sl-budget-row">
+                <div class="sl-budget-num"><span>合计</span><b>{_money(total)}</b></div>
                 <div class="sl-bar"><div class="{bar_class}" style="width:{pct:.1f}%"></div></div>
-                <div class="sl-bar-legend"><span>已占用 {pct:.0f}%</span>
-                  {'' if not over else f'<span>超支 {_money(abs(remaining))}</span>'}</div>
+                <div class="sl-budget-num"><span>预算</span><b>{_money(budget) if has_budget else "未设"}</b></div>
+                <div class="{delta_class}"><span>{delta_label}</span><b>{_e(delta_text)}</b></div>
               </div>
-              <div class="sl-budget-side"><div class="sl-kv">{kv}</div></div>
+              <div class="sl-budget-foot">{_e(foot)}</div>
             </div>
             """,
         )
@@ -1129,7 +1130,7 @@ def plan_panels_html(payload: Dict[str, Any]) -> str:
 
     alerts = []
     if not violations:
-        alerts.append(alert_html("ok", "未发现硬约束冲突", "预算、时间重叠、天数一致性与必备装备均已通过确定性校验。"))
+        alerts.append(alert_html("ok", "未发现约束冲突", "预算、时间重叠、天数一致性与必备装备均已通过确定性校验。"))
     else:
         for issue in violations[:4]:
             detail = issue.get("hint") or ""
@@ -1148,4 +1149,22 @@ def plan_panels_html(payload: Dict[str, Any]) -> str:
         alerts.append(alert_html("warn", "待确认", f"你提到过「{phrase}」，但没说具体物品，暂未算作已有。"))
     if alerts:
         parts.append(panel_html("05", "校验结果", "确定性规则 · 不依赖模型自审", "".join(alerts)))
+    # 默认值不是告警，但必须说出口：人数、出发日期都可能只是"先这么算"。
+    parts.append(_defaults_note_html(facts))
     return "".join(parts)
+
+
+def _defaults_note_html(facts: Dict[str, Any]) -> str:
+    """把本次用了默认值的项摆到面板末尾，给用户一句话改掉的机会。"""
+    bits = []
+    if not facts.get("people"):
+        bits.append("人数（按 1 人计）")
+    if not facts.get("start_date"):
+        bits.append(f"出发日期（按今天 {date.today():%Y-%m-%d} 计）")
+    if not bits:
+        return ""
+    return (
+        '<div class="sl-note">'
+        f"默认值：{'、'.join(bits)}。如果和实际不符，回一句我重排。"
+        "</div>"
+    )

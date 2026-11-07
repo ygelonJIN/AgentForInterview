@@ -45,13 +45,27 @@ def test_gear_plan_routes_to_trip_gear_node():
     assert route(state) == "trip_gear"
 
 
-def test_normal_travel_still_routes_to_travel_node():
+def test_trip_plan_routes_to_trip_gear_for_the_same_panels():
+    """多天行程也走 trip_gear：面板要结构化结果，travel 只出正文。"""
     state = {
         "classification": {
             "intent": "travel",
             "intents": ["travel"],
             "sub_intent": "plan_trip",
             "route": "plan_and_execute",
+        }
+    }
+
+    assert route(state) == "trip_gear"
+
+
+def test_travel_question_still_routes_to_travel_node():
+    state = {
+        "classification": {
+            "intent": "travel",
+            "intents": ["travel"],
+            "sub_intent": "qa",
+            "route": "react",
         }
     }
 

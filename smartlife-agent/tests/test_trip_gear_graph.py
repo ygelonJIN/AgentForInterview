@@ -101,6 +101,17 @@ def test_full_chain_renders_constraints_itinerary_and_gear():
     assert "睡袋商品" in response
 
 
+def test_missing_departure_date_defaults_to_today_and_is_disclosed():
+    """没给出发日期不拦路：清单里写"按今天计"，末尾再提醒一句。"""
+    state = _run("帮我规划去莫干山露营两天", planner=_Planner("到达营地"))
+
+    assert state["status"] == "ok"
+    assert "出发日期：未指定（按今天" in state["response"]
+    # 旧实现里每件待购都会刷一条"没有出发日期，无法判断…"。
+    assert "没有出发日期" not in state["response"]
+    assert "默认值" in state["response"]
+
+
 def test_owned_items_from_memory_are_used():
     state = _run(
         "周末两个人去莫干山露营，预算3000",

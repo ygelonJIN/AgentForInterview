@@ -1293,12 +1293,15 @@ def render_assistant_page():
         with st.container(key="assistant_rail"):
             render_run_rail()
 
-    if user_input := st.chat_input(
-        "描述购物、旅行或任何问题，系统会自动选择 Agent…",
-        key="assistant_input",
-    ):
-        st.session_state["pending_assistant"] = user_input
-        st.rerun()
+    # 放进 st.bottom：输入框仍固定在底部，但 Streamlit 不再把首屏滚到最底
+    # （只有"自动定位到底部"的 chat_input 才会触发整页滚到底）。
+    with st.bottom:
+        if user_input := st.chat_input(
+            "描述购物、旅行或任何问题，系统会自动选择 Agent…",
+            key="assistant_input",
+        ):
+            st.session_state["pending_assistant"] = user_input
+            st.rerun()
 
 
 def render_product_detail(product_id: int):

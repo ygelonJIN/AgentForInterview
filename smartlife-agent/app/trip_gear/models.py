@@ -135,6 +135,29 @@ class Issue(BaseModel):
     blocking_risk: bool = False
 
 
+class FixedEvent(BaseModel):
+    """用户点名要参加的固定活动（演出、课程、展会）。
+
+    这是行程唯一会被"外部约束钉死"的来源。``status`` 分两档：
+
+    - ``booked``：已订票/已预约，必须排进对应那天，其它安排让路；
+    - ``planned``：只是想去，排得下就排，不挤掉别人的安排。
+
+    分两档是照着 `docs/关键决策总表.md` 里"硬度"的口径来的——用户说"已买票"
+    和"想去看看"的约束力完全不同，混成一档会让系统擅自删掉别的日程。
+    """
+
+    title: str
+    day: int = 0            # 第几天；0 表示没定位到具体哪天
+    date: str = ""          # YYYY-MM-DD，有出发日期时可校验
+    start: str = ""         # HH:MM
+    duration_min: int = 120
+    cost: float = 0.0
+    venue: str = ""
+    status: str = "planned"  # booked / planned
+    source: str = "用户原话"
+
+
 class TripFacts(BaseModel):
     """整趟出行的已知事实；装备规则只读这些，不读条目标签。
 
@@ -155,6 +178,10 @@ class TripFacts(BaseModel):
     min_temp_c: Optional[float] = None
     rain_probability: Optional[float] = None
     weather_summary: str = ""
+    # 用户点名的固定活动；booked 会钉进行程，planned 只是偏好
+    fixed_events: List[FixedEvent] = Field(default_factory=list)
+    # 用户表达了"想参加活动"的意向（没说具体哪场），影响行程内容取向
+    wants_activity: bool = False
 
     @property
     def is_camping(self) -> bool:

@@ -92,6 +92,20 @@ def _is_gear_plan(classification: Dict[str, Any]) -> bool:
     return any(word in sub_intent for word in ("清单", "规划", "准备", "带"))
 
 
+def _is_trip_plan(classification: Dict[str, Any]) -> bool:
+    """多天行程规划也交给 trip_gear。
+
+    面板（约束/行程/装备/预算/校验）不是一套可以贴到任何回答上的样式，
+    它需要结构化结果。travel 子图只产出正文，同样的请求在它那里永远没有
+    面板；把规划类请求收敛到 trip_gear，用户看到的格式才一致。
+    """
+    return (
+        str(classification.get("intent") or "") == "travel"
+        and str(classification.get("sub_intent") or "") == "plan_trip"
+        and str(classification.get("route") or "") == "plan_and_execute"
+    )
+
+
 def route(state: TurnState) -> str:
     """条件边：把分类结果翻译成下一个节点名。"""
     classification = state.get("classification") or {}
@@ -100,8 +114,11 @@ def route(state: TurnState) -> str:
     intents = set(classification.get("intents") or [intent])
     if _is_gear_plan(classification):
         return "trip_gear"
+    # 购物 + 旅行是复合请求，先走 composite；只有纯旅行的规划才收敛到 trip_gear。
     if {"shopping", "travel"}.issubset(intents):
         return "composite"
+    if _is_trip_plan(classification) and intents <= {"travel"}:
+        return "trip_gear"
     if intent == "shopping":
         return "shopping"
     if intent == "customer_service":

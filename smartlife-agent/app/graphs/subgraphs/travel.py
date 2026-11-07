@@ -248,19 +248,34 @@ def deterministic_plan_issues(state: TravelPlanState) -> List[str]:
 
 
 def can_use_deterministic_reflection(state: TravelPlanState) -> bool:
+    """一天行程且证据全干净时，跳过模型审核走确定性快路径。
+
+    原来的判据是"证据只有一条"，加了活动证据之后一天行程也有两条，
+    快路径就永远走不到了。改成按行程天数判断——它才是"这次任务足够简单"的
+    真实含义，而证据条数只是当时的实现细节。
+    """
+    requirements = state.get("requirements") or {}
+    try:
+        if int(requirements.get("days") or 0) != 1:
+            return False
+    except (TypeError, ValueError):
+        return False
+
     steps = state.get("evidence_steps") or []
     step_results = state.get("evidence_results") or []
-    if len(steps) != 1 or len(step_results) != 1:
+    if not steps or len(steps) != len(step_results):
         return False
-    result = step_results[0]
-    if result.get("status") != "completed" or result.get("error"):
-        return False
-    if result.get("warnings") or result.get("simulated"):
-        return False
-    return all(
-        tool.get("ok") and not (tool.get("result") or {}).get("stale")
-        for tool in result.get("tool_calls") or []
-    )
+    for result in step_results:
+        if result.get("status") != "completed" or result.get("error"):
+            return False
+        if result.get("warnings") or result.get("simulated"):
+            return False
+        if not all(
+            tool.get("ok") and not (tool.get("result") or {}).get("stale")
+            for tool in result.get("tool_calls") or []
+        ):
+            return False
+    return True
 
 
 def route_pair(text: str):
@@ -399,15 +414,16 @@ async def build_steps(state: TravelPlanState, runtime: Runtime[TurnContext]) -> 
         "result": "",
         "error": "",
     }]
-    if requirements.get("days") != 1:
-        evidence_steps.append({
-            "id": "evidence-activities",
-            "title": "本地活动证据",
-            "description": f"{destination} 本地活动资料",
-            "status": "pending",
-            "result": "",
-            "error": "",
-        })
+    # 活动证据对所有天数都要有：一天行程同样需要"那天能去哪"，
+    # 原来 days==1 时直接不查，等于最短的行程反而最靠模型编。
+    evidence_steps.append({
+        "id": "evidence-activities",
+        "title": "本地活动证据",
+        "description": f"{destination} 当天的可去之处与真实活动",
+        "status": "pending",
+        "result": "",
+        "error": "",
+    })
     pair = route_pair(request)
     if pair:
         origin, target = pair

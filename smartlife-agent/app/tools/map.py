@@ -69,6 +69,3 @@ def get_route(
             raise
         raise ProviderUnavailable(f"路线 provider 不可用: {exc}") from exc
 
-
-def get_map_tools():
-    return [get_route]

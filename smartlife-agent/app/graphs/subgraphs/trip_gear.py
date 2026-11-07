@@ -20,11 +20,12 @@ from app.trip_gear.constraints import (
     apply_assisted,
     derive_constraints,
     drop_owned_duplicates,
+    ensure_start_date,
     enrich_weather,
     merge_inferred,
 )
 from app.trip_gear.gear import derive_gear, merge_suggestions
-from app.trip_gear.itinerary import fallback_itinerary, total_cost
+from app.trip_gear.itinerary import apply_fixed_events, fallback_itinerary, total_cost
 from app.trip_gear.models import Constraint, GearItem, Issue, Itinerary, TripFacts
 from app.trip_gear.owned import (
     apply_owned,
@@ -163,10 +164,14 @@ async def derive(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[st
         if not facts.with_kids and prior.with_kids:
             facts.with_kids = True
             inherited.append("同行：有儿童")
+        date_source = ""
         if not facts.start_date and prior.start_date:
             facts.start_date = prior.start_date
+            date_source = "上文"
         for text in reversed(inherited):
             constraints.insert(0, Constraint(text=text, source="上文"))
+        # 日期可能从上文补上：清单里那条"未指定（按今天计）"要换成真实日期。
+        constraints = ensure_start_date(facts, constraints, source=date_source)
 
     # 规则没抽到目的地/天数时，先给可选的小模型兜底一次再决定要不要反问
     missing_fields = [name for name in ("destination", "days") if not getattr(facts, name)]
@@ -252,6 +257,9 @@ async def plan(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str,
             itinerary = None
     if not isinstance(itinerary, Itinerary):
         itinerary = fallback_itinerary(facts)
+    else:
+        # 模型生成的行程也要把已订活动钉进去，否则"买好票的音乐会"会被排丢
+        itinerary = apply_fixed_events(itinerary, facts)
     if not itinerary.destination:
         itinerary.destination = facts.destination
     await _notify(
@@ -522,6 +530,8 @@ async def verify_clarify(state: TripGearState, runtime: Runtime[TurnContext]) ->
         [Constraint.model_validate(item) for item in state.get("constraints", [])],
         extra_constraints,
     )
+    # 这一问可能就是在改期，日期要跟着改，清单里的占位也要换掉。
+    constraints = ensure_start_date(merged, constraints, source="追问补充")
     items = [GearItem.model_validate(item) for item in state["gear"]]
     _apply_specs_from_text(items, text)
 
@@ -623,6 +633,9 @@ def _merge_facts(base: TripFacts, extra: TripFacts, overwrite: bool = False) -> 
         merged.days = extra.days
     if extra.people is not None and (merged.people is None or overwrite):
         merged.people = extra.people
+    # 日期一直没合并：用户在追问里答了"11月20号出发"也会被静默丢掉。
+    if extra.start_date and (not merged.start_date or overwrite):
+        merged.start_date = extra.start_date
     if (merged.budget is None and extra.budget is not None) or (overwrite and extra.budget is not None):
         merged.budget = extra.budget
         merged.budget_scope = extra.budget_scope
@@ -716,6 +729,8 @@ async def clarify(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[s
         if constraint.key and constraint.key in known_keys:
             continue
         constraints.append(constraint)
+    # 补充里带了日期就把占位那条换掉（key 去重会把它挡在外面）。
+    constraints = ensure_start_date(merged, constraints, source="追问补充")
 
     remaining = _missing(merged)
     if remaining:

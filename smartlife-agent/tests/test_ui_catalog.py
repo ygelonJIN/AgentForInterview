@@ -103,4 +103,12 @@ def test_plan_panels_render_five_sections_and_escape_html():
         assert f'<span class="sl-panel-idx">{index}</span>' in html
     assert "<b>莫干山</b>" not in html
     assert "&lt;b&gt;莫干山" in html
-    assert "未发现硬约束冲突" in html
+    assert "未发现约束冲突" in html
+    # 约束清单只留内容与来源：硬度和状态是内部口径，不再占两列。
+    assert "硬度" not in html
+    assert ">硬<" not in html and ">软<" not in html
+    # 装备按分组横排，不再有固定三列的空列。
+    assert '<div class="sl-gear-line">' in html
+    assert "sl-gear-col" not in html
+    # 没给人数和日期时，末尾要把默认值说出来。
+    assert "默认值" in html

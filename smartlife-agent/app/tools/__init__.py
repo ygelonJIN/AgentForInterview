@@ -1,11 +1,16 @@
-from .weather import get_weather, get_weather_tools
-from .map import get_route, get_map_tools
-from .payment import get_payment_tools
-from .time import get_current_time, get_time_tools
+"""工具包的公开出口。
+
+只 re-export 规范工具对象，不再提供按域拼列表的 ``get_*_tools`` shim
+（那些 shim 无人调用，注册统一走 ``app.tools.registry``）。
+"""
+
+from .weather import get_weather
+from .map import get_route
+from .time import get_current_time
 
 
 def get_all_tools(actor_id: str | None = None, agent_id: str | None = None):
-    """返回工具注册表中的全部非支付工具，可按 Agent 能力面隔离。"""
+    """返回工具注册表中的全部工具（含记忆写入），可按 Agent 能力面隔离。"""
     from .registry import get_registry
     return get_registry(
         actor_id=actor_id,

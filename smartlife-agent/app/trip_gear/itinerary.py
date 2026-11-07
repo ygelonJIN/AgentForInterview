@@ -96,6 +96,55 @@ def validate(itinerary: Itinerary) -> List[Issue]:
     return issues
 
 
+def _sort_key(item: ItineraryItem) -> int:
+    start = _parse_time(item.time)
+    return start if start is not None else 24 * 60
+
+
+def apply_fixed_events(itinerary: Itinerary, facts: TripFacts) -> Itinerary:
+    """把已订的固定活动钉进对应那天。
+
+    只处理 ``status="booked"``：``planned`` 只是"想去"，排不进去也不该挤掉
+    别的安排。钉进去后当天若超时，**让路的是可调整的条目，不是固定活动**——
+    固定活动是外部约束，删它等于替用户退票。
+    """
+    events = [event for event in (facts.fixed_events or []) if event.status == "booked"]
+    if not events:
+        return itinerary
+
+    by_day = {day.day: day for day in itinerary.days}
+    for event in events:
+        if not event.day:
+            # 没说第几天就不钉：猜一天等于替用户决定哪天去
+            continue
+        plan = by_day.get(event.day)
+        if plan is None:
+            continue
+        pinned = ItineraryItem(
+            time=event.start or "19:30",
+            activity=f"{event.title}" + (f"（{event.venue}）" if event.venue else ""),
+            duration_min=max(30, int(event.duration_min or 120)),
+            cost=float(event.cost or 0),
+        )
+        # 那天原本安排了返程/离开，而固定活动在它之后——说明当天不走，
+        # 删掉返程而不是把活动挪走：活动是用户已经买票的外部约束。
+        for item in list(plan.items):
+            if any(word in item.activity for word in ("返程", "回程", "离开")) and _sort_key(item) <= _sort_key(pinned):
+                plan.items.remove(item)
+
+        plan.items.append(pinned)
+        plan.items.sort(key=_sort_key)
+
+        total = sum(max(0, int(item.duration_min or 0)) for item in plan.items)
+        while total > DAY_WINDOW_MIN and len(plan.items) > 1:
+            removable = [item for item in plan.items if item is not pinned]
+            if not removable:
+                break
+            plan.items.remove(removable[-1])
+            total = sum(max(0, int(item.duration_min or 0)) for item in plan.items)
+    return itinerary
+
+
 def fallback_itinerary(facts: TripFacts) -> Itinerary:
     """没有模型时也能跑通链路；费用只是保守估算。"""
     days = max(1, int(facts.days or 2))
@@ -132,4 +181,4 @@ def fallback_itinerary(facts: TripFacts) -> Itinerary:
                 lodging_cost=lodging_cost_for(facts.lodging, facts.effective_people),
             )
         )
-    return Itinerary(destination=place, days=plans)
+    return apply_fixed_events(Itinerary(destination=place, days=plans), facts)

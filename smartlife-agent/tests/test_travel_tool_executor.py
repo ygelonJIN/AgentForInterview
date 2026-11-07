@@ -6,6 +6,32 @@ import threading
 from app.tools.travel_executor import TravelToolExecutor
 
 
+class _ActivitiesTool:
+    """活动 provider 的同步替身：执行器会用 to_thread 调它的 invoke。"""
+
+    name = "get_local_activities"
+
+    def __init__(self, items=None):
+        self.calls = []
+        self._items = items or [
+            {"title": "西湖", "kind": "景点"},
+            {"title": "中国茶叶博物馆", "kind": "博物馆"},
+        ]
+
+    def invoke(self, payload):
+        self.calls.append(payload)
+        return [{
+            "city": payload.get("city", ""),
+            "date": payload.get("date", ""),
+            "activities": self._items,
+            "source": "fake-activities",
+            "kind": "poi",
+            "available": bool(self._items),
+            "note": "",
+            "warnings": [],
+        }]
+
+
 class _Tool:
     def __init__(self, name, result):
         self.name = name
@@ -28,6 +54,7 @@ def test_travel_executor_calls_weather_and_route_tools():
         weather_tool=weather,
         route_tool=route,
         activities_dir="/tmp/no-activities",
+        activities_tool=_ActivitiesTool(),
     )
 
     result = asyncio.run(executor.execute(
@@ -50,7 +77,9 @@ def test_travel_executor_calls_weather_and_route_tools():
     assert result["status"] == "completed"
     assert result["source"] == "travel_tool_registry"
     assert result["simulated"] is False
-    assert [item["tool"] for item in result["tool_calls"]] == ["get_weather", "get_route"]
+    assert [item["tool"] for item in result["tool_calls"]] == [
+        "get_weather", "get_route", "get_local_activities",
+    ]
     assert all(item["result"]["duration_ms"] >= 0 for item in result["tool_calls"])
     assert weather.calls == [{"city": "杭州", "date": "2026-10-10"}]
     assert route.calls == [{
@@ -67,6 +96,7 @@ def test_travel_executor_rejects_non_current_provider_results():
         weather_tool=_Tool("weather", {"temperature": "20°C", "condition": "晴", **common}),
         route_tool=_Tool("route", {"distance": "1公里", "duration": "5分钟", **common}),
         activities_dir="/tmp/no-activities",
+        activities_tool=_ActivitiesTool(),
     )
 
     result = asyncio.run(executor.execute(
@@ -75,8 +105,9 @@ def test_travel_executor_rejects_non_current_provider_results():
     ))
 
     assert result["simulated"] is False
-    assert all(item["ok"] is False for item in result["tool_calls"])
-    assert all(item["result"]["accepted"] is False for item in result["tool_calls"])
+    data_calls = [item for item in result["tool_calls"] if item["tool"] != "get_local_activities"]
+    assert all(item["ok"] is False for item in data_calls)
+    assert all(item["result"]["accepted"] is False for item in data_calls)
     assert "20°C" not in result["result"]
     assert "1公里" not in result["result"]
     assert any("未返回可验证" in warning for warning in result["warnings"])
@@ -106,6 +137,7 @@ def test_travel_executor_runs_weather_and_route_in_parallel():
             "simulated": False,
         }),
         activities_dir="/tmp/no-activities",
+        activities_tool=_ActivitiesTool(),
     )
 
     result = asyncio.run(executor.execute(
@@ -117,4 +149,4 @@ def test_travel_executor_runs_weather_and_route_in_parallel():
         {"requirements": {"destination": "杭州", "days": 1}},
     ))
 
-    assert [item["ok"] for item in result["tool_calls"]] == [True, True]
+    assert [item["ok"] for item in result["tool_calls"]] == [True, True, True]
