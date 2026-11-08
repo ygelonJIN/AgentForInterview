@@ -255,6 +255,38 @@ class ConversationStore:
             conn.commit()
             return int(cursor.lastrowid)
 
+    def annotate_last_assistant(self, thread_id: str, metadata: Dict[str, Any]) -> bool:
+        """给该 thread 最后一条助手消息补元数据（例如本轮的流式事件）。
+
+        历史回看要还原结构化面板，就必须把 ``process_events`` 一起存下来；
+        写入时机在 ``finish_turn`` 之后，所以这里用 UPDATE 而不是再插一条。
+        """
+        if not thread_id or not metadata:
+            return False
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT id, metadata_json FROM conversation_messages
+                WHERE thread_id = ? AND role = 'assistant'
+                ORDER BY id DESC LIMIT 1
+                """,
+                (thread_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            merged = {}
+            try:
+                merged = json.loads(row[1] or "{}")
+            except json.JSONDecodeError:
+                merged = {}
+            merged.update(metadata)
+            conn.execute(
+                "UPDATE conversation_messages SET metadata_json = ? WHERE id = ?",
+                (self._metadata(merged), row[0]),
+            )
+            conn.commit()
+        return True
+
     def list_messages(self, thread_id: str, last_n: Optional[int] = None) -> List[Dict[str, Any]]:
         sql = """
             SELECT id, thread_id, role, content, metadata_json, created_at

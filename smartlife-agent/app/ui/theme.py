@@ -110,8 +110,8 @@ p {{ line-height: var(--lh-normal); }}
 [data-testid="stAppViewContainer"] {{ background: transparent; }}
 [data-testid="stMainBlockContainer"] {{
   max-width: 1180px;
-  /* 顶部给固定页头让位，页头不随主区域滚动（Streamlit 首屏会滚到底） */
-  padding: var(--page-head-h) var(--space-6) 9.5rem;
+  /* 页头已回到文档流；顶部留足空白，第一条消息不会贴着窗口顶 */
+  padding: var(--space-6) var(--space-6) 9.5rem;
 }}
 [data-testid="stMainBlockContainer"] > div {{ gap: var(--space-4); }}
 [data-testid="stVerticalBlock"] {{ gap: var(--space-3); }}
@@ -177,12 +177,25 @@ section[data-testid="stSidebar"] [data-testid="stAlert"] {{ border-radius: var(-
 }}
 .st-key-nav_menu .stButton button[kind="primary"]::before {{ color: var(--c-nav-active-text); }}
 
-.sl-brand {{ display: flex; align-items: center; gap: var(--space-3); padding: 0 var(--space-1) var(--space-4); }}
-.sl-mark {{
-  display: grid; place-items: center; width: var(--mark-size); height: var(--mark-size);
-  border-radius: var(--radius-sm); background: var(--c-accent); color: var(--c-accent-ink);
-  font-family: var(--font-mono); font-size: var(--fs-sm); font-weight: var(--fw-bold);
+/* 新建对话：导航之下的次级动作，虚线框和导航按钮区分开。 */
+.st-key-new_thread {{ margin-top: var(--space-2); }}
+.st-key-new_thread .stButton > button {{
+  justify-content: center !important;
+  font-size: var(--fs-xs) !important;
+  font-weight: var(--fw-medium) !important;
+  color: var(--c-nav-text) !important;
+  background: transparent !important;
+  border: var(--border-w) dashed var(--c-line) !important;
+  box-shadow: none !important;
 }}
+.st-key-new_thread .stButton > button p {{ white-space: nowrap; }}
+.st-key-new_thread .stButton > button:hover {{
+  background: var(--c-nav-hover-bg) !important;
+  border-style: solid !important;
+  color: var(--c-nav-active-text) !important;
+}}
+
+.sl-brand {{ display: flex; align-items: center; gap: var(--space-3); padding: 0 var(--space-1) var(--space-4); }}
 .sl-brand-name {{ font-family: var(--font-display); font-size: var(--fs-md); font-weight: var(--fw-bold); color: var(--c-nav-text); }}
 .sl-brand-sub {{
   font-size: var(--fs-2xs); color: var(--c-nav-muted);
@@ -200,29 +213,65 @@ section[data-testid="stSidebar"] [data-testid="stAlert"] {{ border-radius: var(-
 }}
 .sl-thread-title {{ font-size: var(--fs-xs); color: var(--c-nav-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
 .sl-thread-meta {{ font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-nav-muted); }}
-.sl-thread--active {{ background: var(--c-nav-active-bg); border: var(--border-w) solid var(--c-nav-active-line); }}
+
+/* 最近会话：每行是一个真正的按钮（可点击进入）。
+   选择器挂在按钮自己的 key（st-key-recent_thread_0…）上，
+   不依赖外层 container 的 class 是否生成。 */
+[class*="st-key-recent_thread_"] .stButton > button {{
+  justify-content: flex-start !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-height: 0 !important;
+  height: auto !important;
+  padding: var(--space-2) var(--space-3) !important;
+  font-size: var(--fs-xs) !important;
+  font-weight: var(--fw-body) !important;
+  color: var(--c-nav-text) !important;
+  background: transparent !important;
+  border: var(--border-w) solid transparent !important;
+  box-shadow: none !important;
+}}
+[class*="st-key-recent_thread_"] .stButton > button > div {{
+  justify-content: flex-start !important;
+  min-width: 0 !important;
+}}
+[class*="st-key-recent_thread_"] .stButton button,
+[class*="st-key-recent_thread_"] .stButton button > div,
+[class*="st-key-recent_thread_"] .stButton button p {{
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  overflow-wrap: normal !important;
+  word-break: keep-all !important;
+  max-width: 100% !important;
+}}
+[class*="st-key-recent_thread_"] .stButton button p {{
+  width: 100%; text-align: left; display: block;
+}}
+[class*="st-key-recent_thread_"] .stButton > button:hover {{
+  background: var(--c-nav-hover-bg) !important;
+  color: var(--c-nav-active-text) !important;
+}}
+[class*="st-key-recent_thread_"] .stButton > button[kind="primary"],
+[class*="st-key-recent_thread_"] .stButton > button[kind="primary"]:hover {{
+  background: var(--c-nav-active-bg) !important;
+  border-color: var(--c-nav-active-line) !important;
+  color: var(--c-nav-active-text) !important;
+  font-weight: var(--fw-semibold) !important;
+}}
 .sl-user {{
   display: flex; align-items: center; gap: var(--space-3);
   margin-top: var(--space-4); padding-top: var(--space-4);
   border-top: var(--panel-rule-w) solid var(--c-nav-active-line);
 }}
-.sl-avatar {{
-  display: grid; place-items: center; width: var(--avatar-size); height: var(--avatar-size);
-  border-radius: var(--radius-pill); background: var(--c-chip-bg); color: var(--c-chip-text);
-  font-family: var(--font-mono); font-size: var(--fs-2xs); font-weight: var(--fw-bold);
-}}
 .sl-user-name {{ font-size: var(--fs-xs); font-weight: var(--fw-semibold); color: var(--c-nav-text); }}
 .sl-user-role {{ font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-nav-muted); }}
 
-/* ---------- 页头（固定顶栏，不参与主区域滚动） ---------- */
+/* ---------- 页头（随主区域滚动，不再固定压在最上面） ---------- */
 .sl-page-head {{
-  position: fixed; top: 0; left: var(--nav-w); right: 0;
-  z-index: 110;
-  max-width: 1180px; margin: 0 auto;
+  position: static !important;  /* 旧规则里是 fixed，这里显式压回文档流 */
   display: flex; align-items: flex-end; gap: var(--space-4);
-  padding: var(--space-4) var(--space-6);
-  background: var(--c-topbar-bg);
-  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  padding: var(--space-2) 0 var(--space-3);
   border-bottom: var(--panel-rule-w) solid var(--c-line);
 }}
 .sl-page-head .sl-kicker {{
@@ -446,15 +495,6 @@ section[data-testid="stSidebar"] [data-testid="stAlert"] {{ border-radius: var(-
 }}
 [data-testid="stChatMessage"] [data-testid^="stChatMessageAvatar"] {{ display: none !important; }}
 [data-testid="stChatMessage"] [data-testid="stChatMessageContent"] {{ width: 100%; }}
-[data-testid="stChatMessage"]:has([data-testid$="AvatarUser"]) {{ justify-content: flex-end; }}
-[data-testid="stChatMessage"]:has([data-testid$="AvatarUser"]) [data-testid="stChatMessageContent"] {{
-  max-width: 78%; margin-left: auto;
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--bubble-radius); border-bottom-right-radius: var(--bubble-tail);
-  background: var(--c-user-bubble-bg); color: var(--c-user-bubble-text);
-  border: var(--border-w) solid var(--c-line); box-shadow: var(--shadow-2);
-}}
-[data-testid="stChatMessage"]:has([data-testid$="AvatarUser"]) p {{ margin: 0; font-size: var(--fs-md); color: var(--c-user-bubble-text); }}
 [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] p {{ font-size: var(--fs-md); }}
 [data-testid="stChatMessage"] h2 {{
   margin: var(--space-4) 0 var(--space-2); padding-top: var(--space-3);
@@ -466,6 +506,18 @@ section[data-testid="stSidebar"] [data-testid="stAlert"] {{ border-radius: var(-
 [data-testid="stChatMessage"] ul {{ padding-left: 1.1rem; }}
 [data-testid="stChatMessage"] li {{ font-size: var(--fs-sm); margin: 2px 0; }}
 [data-testid="stChatMessage"] hr {{ border-color: var(--c-line); }}
+
+/* 我的话：自己画的气泡，不依赖 stChatMessage 内部结构。 */
+.sl-user-bubble {{
+  width: fit-content; max-width: 78%;
+  margin: var(--space-2) 0 var(--space-4) auto;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--bubble-radius); border-bottom-right-radius: var(--bubble-tail);
+  background: var(--c-user-bubble-bg); color: var(--c-user-bubble-text);
+  border: var(--border-w) solid var(--c-line); box-shadow: var(--shadow-2);
+  font-size: var(--fs-md); line-height: 1.5;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}}
 
 /* ---------- 输入区 ---------- */
 [data-testid="stBottom"],
@@ -667,7 +719,7 @@ section[data-testid="stSidebar"] [data-testid="stAlert"] {{ border-radius: var(-
 @media (max-width: 900px) {{
   [data-testid="stMainBlockContainer"] {{ padding-left: var(--space-4); padding-right: var(--space-4); }}
   [data-testid="stExpandSidebarButton"] {{ top: 10px; left: 10px; }}
-  [data-testid="stMainBlockContainer"] {{ padding-top: calc(var(--page-head-h) + var(--space-3)); }}
+  [data-testid="stMainBlockContainer"] {{ padding-top: calc(var(--space-4) + var(--space-3)); }}
   .sl-page-head {{ padding: var(--space-3) var(--space-4); }}
   [data-testid="stBottomBlockContainer"] {{ padding-left: var(--space-4) !important; padding-right: var(--space-4) !important; }}
   .sl-rows {{ grid-template-columns: minmax(0, 1fr); }}
@@ -808,7 +860,7 @@ def render_empty(message: str) -> None:
 # ---------- 导航与右轨 ----------
 def brand_html() -> str:
     return (
-        '<div class="sl-brand"><div class="sl-mark">SL</div>'
+        '<div class="sl-brand">'
         '<div><div class="sl-brand-name">SmartLife</div>'
         '<div class="sl-brand-sub">Trip &amp; Gear</div></div></div>'
     )
@@ -818,24 +870,18 @@ def nav_label_html(text: str) -> str:
     return f'<div class="sl-nav-label">{_e(text)}</div>'
 
 
-def threads_html(threads: Sequence[Dict[str, Any]], active_thread: str = "") -> str:
-    rows = []
-    for thread in threads:
-        thread_id = str(thread.get("thread_id", ""))
-        title = thread.get("title") or "未命名会话"
-        meta = thread.get("updated_at") or thread.get("last_at") or ""
-        cls = "sl-thread sl-thread--active" if thread_id and thread_id == active_thread else "sl-thread"
-        rows.append(
-            f'<div class="{cls}"><div class="sl-thread-title">{_e(title)}</div>'
-            f'<div class="sl-thread-meta">{_e(str(meta)[:16])}</div></div>'
-        )
-    return "".join(rows)
+def user_bubble_html(text: str) -> str:
+    """我的话：自绘气泡。
+
+    ``st.chat_message`` 的内部结构各版本不一样，用 CSS 去改它的子节点风险太大，
+    所以用户消息不走 chat_message，直接输出一个受控的 div。
+    """
+    return f'<div class="sl-user-bubble">{_e(str(text or ""))}</div>'
 
 
 def user_html(user_id: str, role: str = "") -> str:
-    initials = (user_id[:2] or "U").upper()
     return (
-        f'<div class="sl-user"><div class="sl-avatar">{_e(initials)}</div>'
+        f'<div class="sl-user">'
         f'<div><div class="sl-user-name">{_e(user_id)}</div>'
         f'<div class="sl-user-role">{_e(role or "local actor")}</div></div></div>'
     )

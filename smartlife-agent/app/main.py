@@ -13,12 +13,21 @@ import streamlit as st
 import json
 import sys
 import os
+import importlib
 import threading
 import time
 import queue as thread_queue
 import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Streamlit 每次 rerun 只重跑主脚本，不会重载被 import 的模块。
+# 不改这一条，theme.py 的新函数会 ImportError、新 CSS 也上不了页面，
+# 只能靠手动重启；这里每次 rerun 强制同步一次（实测 0.2ms）。
+import app.ui.theme as _theme_module
+
+importlib.reload(_theme_module)
+
 from app.config import set_main_config, set_small_config, set_embedding_config, get_embedding_status
 from app.identity import ActorContext
 from app.observability import log_exception
@@ -41,7 +50,7 @@ from app.ui.theme import (
     render_page_header,
     render_review,
     render_section_header,
-    threads_html,
+    user_bubble_html,
     user_html,
 )
 
@@ -88,6 +97,8 @@ if "sensitive_action_service" not in st.session_state:
     st.session_state["sensitive_action_service"] = None
 if "assistant_msgs" not in st.session_state:
     st.session_state["assistant_msgs"] = []
+if "active_thread_id" not in st.session_state:
+    st.session_state["active_thread_id"] = ""
 
 
 def _migrate_legacy_in_memory_conversations():
@@ -986,8 +997,30 @@ def render_option_group(values, *, key, labels=None, default=None, columns=None)
     return selected
 
 
+def _current_thread_id() -> str:
+    """左栏高亮用：当前浏览器会话对应的对话 thread。"""
+    from app.session import build_thread_id
+
+    return build_thread_id(
+        st.session_state["user_id"],
+        "general",
+        st.session_state["browser_session_id"],
+    )
+
+
+THREAD_TITLE_CHARS = 9
+
+
+def _clip_thread_title(text: str, limit: int = THREAD_TITLE_CHARS) -> str:
+    """侧栏一行放得下的会话标题：只留前几个字，其余省略。"""
+    text = " ".join(str(text or "").split())
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "…"
+
+
 def _recent_threads(limit: int = 4):
-    """左栏「最近会话」：只读展示，点击交给对话区继续。"""
+    """左栏「最近会话」：按最近写入排序，每条都可由侧栏按钮点进去。"""
     try:
         from app.memory.conversation_store import ConversationStore
         rows = ConversationStore().list_threads(user_id=st.session_state["user_id"])
@@ -1002,10 +1035,139 @@ def _recent_threads(limit: int = 4):
             break
         output.append({
             "thread_id": row.get("thread_id", ""),
-            "title": preview,
+            "title": _clip_thread_title(preview),
+            "full_title": preview,
             "updated_at": str(row.get("last_at") or "")[:16].replace("T", " "),
         })
     return output
+
+
+def _thread_help(thread) -> str | None:
+    """会话行的悬浮提示：完整问题 + 更新时间。"""
+    meta = str(thread.get("updated_at") or thread.get("last_at") or "")[:16]
+    full = str(thread.get("full_title") or thread.get("title") or "").strip()
+    if not meta:
+        return full or None
+    return f"{full}\n\n最后更新 {meta}" if full else f"最后更新 {meta}"
+
+
+def _start_new_thread() -> None:
+    """新建对话：换一个浏览器会话 id，等于开一个全新的 thread。"""
+    st.session_state["browser_session_id"] = uuid.uuid4().hex
+    st.session_state["active_thread_id"] = ""
+    st.session_state["assistant_msgs"] = []
+    st.session_state["messages"] = []
+    # 旧会话没走完的交互状态不能带进新会话。
+    for stale_key in ("pending_assistant", "pending_clarify", "pending_compressed_summary"):
+        st.session_state.pop(stale_key, None)
+
+
+MAX_TURN_EVENT_BYTES = 256 * 1024
+
+
+def _turn_events_for_storage(events):
+    """历史回看只需要能撑起面板的事件；超量时退化成只留方案事件。"""
+    if not events:
+        return []
+    try:
+        if len(json.dumps(events, ensure_ascii=False)) <= MAX_TURN_EVENT_BYTES:
+            return list(events)
+    except (TypeError, ValueError):
+        pass
+    return [dict(evt) for evt in events if evt.get("event") == "plan_result"]
+
+
+def _annotate_last_assistant(thread_id: str, metadata: dict) -> bool:
+    """把元数据补进该 thread 最后一条助手消息。
+
+    Streamlit 热重载不会重载被 import 的模块，``ConversationStore`` 可能还是旧版
+    （没有 ``annotate_last_assistant``），取不到方法时直接写库兜底。
+    """
+    from app.memory.conversation_store import ConversationStore
+
+    store = ConversationStore()
+    method = getattr(store, "annotate_last_assistant", None)
+    if method is not None:
+        return bool(method(thread_id, metadata))
+
+    import sqlite3
+
+    with sqlite3.connect(store.db_path) as conn:
+        row = conn.execute(
+            "SELECT id, metadata_json FROM conversation_messages "
+            "WHERE thread_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT 1",
+            (thread_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        try:
+            merged = json.loads(row[1] or "{}")
+        except json.JSONDecodeError:
+            merged = {}
+        merged.update(metadata)
+        conn.execute(
+            "UPDATE conversation_messages SET metadata_json = ? WHERE id = ?",
+            (json.dumps(merged, ensure_ascii=False, sort_keys=True), row[0]),
+        )
+        conn.commit()
+    return True
+
+
+def _persist_turn_events(events) -> None:
+    """把本轮事件补进助手消息：切回该会话时结构化面板才在。"""
+    if not events:
+        return
+    try:
+        ok = _annotate_last_assistant(
+            _current_thread_id(),
+            {"process_events": _turn_events_for_storage(events)},
+        )
+        if ok:
+            st.session_state.pop("turn_persist_error", None)
+        else:
+            st.session_state["turn_persist_error"] = "没有找到本轮助手消息，事件未入库"
+    except Exception as exc:
+        st.session_state["turn_persist_error"] = f"{type(exc).__name__}: {exc}"
+        log_exception("ui.persist_turn_events", exc)
+
+
+def _activate_thread(thread_id: str) -> None:
+    """点左栏会话：让浏览器会话对齐到该 thread，并把历史消息载回对话区。
+
+    会话身份由 ``build_thread_id(user, scene, session_id)`` 组成，所以这里只改
+    ``browser_session_id``：之后的新消息自然续写同一个 thread，而不用另建会话。
+    """
+    from app.memory.conversation_store import ConversationStore
+
+    if not thread_id:
+        return
+    store = ConversationStore()
+    session_id = ConversationStore.split_thread_id(thread_id).get("session_id") or ""
+    if not session_id:
+        return
+
+    restored = []
+    for row in store.list_messages(thread_id):
+        role = str(row.get("role") or "")
+        content = str(row.get("content") or "").strip()
+        if not content:
+            continue
+        if role == "user":
+            restored.append({"role": "user", "content": content})
+        elif role == "assistant":
+            events = (row.get("metadata") or {}).get("process_events")
+            restored.append({
+                "role": "assistant",
+                "response": content,
+                "process_events": events if isinstance(events, list) else [],
+            })
+
+    st.session_state["browser_session_id"] = session_id
+    st.session_state["active_thread_id"] = thread_id
+    st.session_state["assistant_msgs"] = restored
+    # 换会话就丢弃上一轮没走完的交互状态，避免串到别的 thread 上。
+    for stale_key in ("pending_assistant", "pending_clarify", "pending_compressed_summary"):
+        st.session_state.pop(stale_key, None)
 
 
 def render_app_sidebar():
@@ -1024,16 +1186,32 @@ def render_app_sidebar():
                     st.session_state["active_page"] = page_key
                     st.rerun()
 
+        with st.container(key="new_thread"):
+            if st.button("＋ 新建对话", key="new_thread_button", use_container_width=True):
+                _start_new_thread()
+                st.rerun()
+
         threads = _recent_threads()
         st.markdown(nav_label_html("最近会话"), unsafe_allow_html=True)
-        if threads:
-            st.markdown(threads_html(threads), unsafe_allow_html=True)
-        else:
-            st.markdown(
-                '<div class="sl-thread"><div class="sl-thread-title">还没有会话</div>'
-                '<div class="sl-thread-meta">发出第一条需求试试</div></div>',
-                unsafe_allow_html=True,
-            )
+        active_thread_id = st.session_state.get("active_thread_id") or _current_thread_id()
+        with st.container(key="recent_threads"):
+            if threads:
+                for index, thread in enumerate(threads):
+                    if st.button(
+                        thread["title"],
+                        key=f"recent_thread_{index}",
+                        use_container_width=True,
+                        type="primary" if thread["thread_id"] == active_thread_id else "secondary",
+                        help=_thread_help(thread),
+                    ):
+                        _activate_thread(thread["thread_id"])
+                        st.rerun()
+            else:
+                st.markdown(
+                    '<div class="sl-thread"><div class="sl-thread-title">还没有会话</div>'
+                    '<div class="sl-thread-meta">发出第一条需求试试</div></div>',
+                    unsafe_allow_html=True,
+                )
 
         pending_count = int(bool(st.session_state.get("show_memory_extraction"))) + sum(
             1 for key, value in st.session_state.items()
@@ -1076,22 +1254,29 @@ def render_assistant_page():
 
     _refresh_background_memory_extraction()
 
+    # 一句话已经在路上时，空态卡片立刻让位：否则这一轮会同时出现"卡片 + 我的消息"。
+    pending_message = st.session_state.get("pending_assistant")
     with st.container():
-        if not st.session_state["assistant_msgs"]:
+        if not st.session_state["assistant_msgs"] and not pending_message:
             st.markdown(EMPTY_STATE_HTML, unsafe_allow_html=True)
 
         for msg in st.session_state["assistant_msgs"]:
-            with st.chat_message(msg["role"]):
-                render_assistant_message(msg)
+            if msg.get("role") == "user":
+                st.markdown(user_bubble_html(msg.get("content", "")), unsafe_allow_html=True)
+            else:
+                with st.chat_message("assistant"):
+                    render_assistant_message(msg)
+
+        if persist_error := st.session_state.get("turn_persist_error"):
+            st.caption(f"本轮的步骤记录没有写进会话库，切回来只会看到正文：{persist_error}")
 
         if st.session_state.get("show_memory_extraction"):
             st.info("本轮已生成待确认的记忆内容，可前往记忆中心查看和决定是否保存。")
 
-        if pending := st.session_state.get("pending_assistant"):
+        if pending_message:
             st.session_state.pop("pending_assistant", None)
-            st.session_state["assistant_msgs"].append({"role": "user", "content": pending})
-            with st.chat_message("user"):
-                st.markdown(pending)
+            st.session_state["assistant_msgs"].append({"role": "user", "content": pending_message})
+            st.markdown(user_bubble_html(pending_message), unsafe_allow_html=True)
             with st.chat_message("assistant"):
                 orch = get_turn_graph()
                 uid = st.session_state["user_id"]
@@ -1101,7 +1286,7 @@ def render_assistant_page():
                 if orch and resuming:
                     async def _gen():
                         async for line in orch.resume_streaming(
-                            pending,
+                            pending_message,
                             uid,
                             browser_session_id,
                             scene="general",
@@ -1110,7 +1295,7 @@ def render_assistant_page():
                 elif orch:
                     async def _gen():
                         async for line in orch.process_streaming(
-                            pending,
+                            pending_message,
                             uid,
                             browser_session_id,
                             scene="general",
@@ -1152,6 +1337,7 @@ def render_assistant_page():
                     response = "请先在个人中心配置主模型后开始对话。"
                     events = []
                     st.warning(response)
+            _persist_turn_events(events)
             st.session_state["assistant_msgs"].append({
                 "role": "assistant",
                 "response": response,
