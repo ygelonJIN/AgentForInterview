@@ -319,14 +319,14 @@ section[data-testid="stSidebar"] .st-key-new_thread .stButton > button p {{ whit
 }}
 .sl-panel + .sl-panel {{ margin-top: var(--space-3); }}
 .sl-panel-head {{
-  display: flex; align-items: baseline; gap: var(--space-3);
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-3);
   padding: var(--space-3) var(--space-5);
   border-bottom: var(--panel-rule-w) solid var(--c-line);
   background: var(--c-panel-head-bg);
 }}
 .sl-panel-idx {{ font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-text-faint); letter-spacing: var(--tracking-caps); }}
 .sl-panel-title {{ font-family: var(--font-display); font-size: var(--fs-md); font-weight: var(--fw-bold); letter-spacing: var(--tracking-display); }}
-.sl-panel-meta {{ margin-left: auto; font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-text-muted); }}
+.sl-panel-meta {{ margin-left: auto; flex: 0 0 auto; white-space: nowrap; font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-text-muted); }}
 .sl-panel-body {{ padding: var(--space-4) var(--space-5); }}
 .sl-panel-body--flush {{ padding: 0; }}
 
@@ -361,24 +361,31 @@ section[data-testid="stSidebar"] .st-key-new_thread .stButton > button p {{ whit
 /* ---------- 行程 ---------- */
 .sl-days {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(var(--day-min), 1fr)); gap: var(--space-4); }}
 .sl-day {{ border: var(--border-w) solid var(--c-line); border-radius: var(--radius-md); background: var(--c-surface-2); padding: var(--space-4); }}
-.sl-day-head {{ display: flex; align-items: baseline; gap: var(--space-3); margin-bottom: var(--space-3); }}
+.sl-day-head {{ display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2) var(--space-3); margin-bottom: var(--space-3); }}
 .sl-day-no {{ font-family: var(--font-mono); font-size: var(--fs-xs); font-weight: var(--fw-bold); color: var(--c-accent); letter-spacing: var(--tracking-caps); }}
 .sl-day-name {{ font-size: var(--fs-sm); font-weight: var(--fw-semibold); }}
-.sl-day-sum {{ margin-left: auto; font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-text-muted); }}
+.sl-day-sum {{ margin-left: auto; flex: 0 0 auto; white-space: nowrap; font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-text-muted); font-variant-numeric: tabular-nums; }}
 .sl-tl {{ display: flex; flex-direction: column; gap: var(--space-2); }}
+/* 时间 / 活动 / 金额三段。金额永不折行：窄的时候让它整体换到下一行，
+   而不是被挤成一列、把"¥340"拆成"¥ 3 4 0"。 */
 .sl-tl-item {{
-  display: grid; grid-template-columns: 52px minmax(0, 1fr) auto; gap: var(--space-3);
-  align-items: baseline; position: relative; padding-left: var(--space-3);
+  display: flex; flex-wrap: wrap; align-items: baseline;
+  gap: var(--space-1) var(--space-3);
+  position: relative; padding-left: var(--space-3);
   border-left: var(--timeline-w) solid var(--c-line-strong);
 }}
 .sl-tl-item::before {{
   content: ""; position: absolute; top: 0.5em; left: calc(-1 * (var(--timeline-w) + var(--timeline-dot) / 2));
   width: var(--timeline-dot); height: var(--timeline-dot); border-radius: var(--radius-pill); background: var(--c-accent);
 }}
-.sl-tl-time {{ font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-text-muted); font-variant-numeric: tabular-nums; }}
-.sl-tl-act {{ font-size: var(--fs-sm); min-width: 0; }}
+.sl-tl-time {{ flex: 0 0 52px; font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }}
+.sl-tl-act {{ flex: 1 1 8rem; min-width: 0; font-size: var(--fs-sm); overflow-wrap: anywhere; }}
 .sl-tl-act small {{ display: block; font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-text-faint); }}
-.sl-tl-cost {{ font-family: var(--font-mono); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }}
+.sl-tl-cost {{
+  flex: 0 0 auto; margin-left: auto;
+  font-family: var(--font-mono); font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}}
 
 /* ---------- 装备清单（按状态分组的横排 chips） ---------- */
 .sl-gear {{ display: flex; flex-direction: column; }}
@@ -400,7 +407,7 @@ section[data-testid="stSidebar"] .st-key-new_thread .stButton > button p {{ whit
 }}
 .sl-gear-item b {{ font-weight: var(--fw-medium); }}
 .sl-gear-item .qty {{ font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-text-muted); }}
-.sl-gear-item .sl-gear-price {{ font-family: var(--font-mono); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }}
+.sl-gear-item .sl-gear-price {{ font-family: var(--font-mono); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; white-space: nowrap; }}
 .sl-gear-item small {{ font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-text-faint); }}
 .sl-gear-foot {{ padding: var(--space-2) var(--space-5); font-size: var(--fs-2xs); color: var(--c-text-muted); background: var(--c-surface-2); border-top: var(--panel-rule-w) solid var(--c-line); }}
 
@@ -408,7 +415,7 @@ section[data-testid="stSidebar"] .st-key-new_thread .stButton > button p {{ whit
 .sl-budget {{ display: flex; flex-direction: column; gap: var(--space-3); }}
 .sl-budget-row {{ display: grid; grid-template-columns: auto minmax(80px, 1fr) auto auto; align-items: center; gap: var(--space-4); }}
 .sl-budget-num span {{ display: block; font-size: var(--fs-2xs); letter-spacing: var(--tracking-caps); text-transform: uppercase; color: var(--c-text-faint); }}
-.sl-budget-num b {{ font-family: var(--font-mono); font-size: var(--fs-lg); font-variant-numeric: tabular-nums; }}
+.sl-budget-num b {{ font-family: var(--font-mono); font-size: var(--fs-lg); font-variant-numeric: tabular-nums; white-space: nowrap; }}
 .sl-delta {{
   display: flex; flex-direction: column; align-items: flex-end; margin-left: auto;
   padding: var(--space-1) var(--space-3); border-radius: var(--radius-sm);
@@ -476,7 +483,7 @@ section[data-testid="stSidebar"] .st-key-new_thread .stButton > button p {{ whit
 
 .sl-metric {{ padding: var(--space-3) var(--space-4); border: var(--border-w) solid var(--c-line); border-radius: var(--radius-md); background: var(--c-surface); }}
 .sl-metric-label {{ font-size: var(--fs-2xs); letter-spacing: var(--tracking-caps); text-transform: uppercase; color: var(--c-text-faint); }}
-.sl-metric-value {{ font-family: var(--font-display); font-size: var(--fs-xl); line-height: 1.2; font-weight: var(--fw-bold); }}
+.sl-metric-value {{ font-family: var(--font-display); font-size: var(--fs-xl); line-height: 1.2; font-weight: var(--fw-bold); white-space: nowrap; }}
 .sl-metric-note {{ font-size: var(--fs-2xs); color: var(--c-text-muted); }}
 
 .sl-empty {{

@@ -58,3 +58,41 @@ def test_sidebar_new_thread_button_has_its_own_emphasis_style():
     block = theme[theme.index(".st-key-new_thread {{"):theme.index(".sl-brand {{")]
     assert "var(--c-accent) !important" in block
     assert "var(--radius-pill)" in block
+
+
+def _css_rule(theme: str, selector: str) -> str:
+    start = theme.index(selector)
+    end = theme.index("}}", start) + 2
+    return theme[start:end]
+
+
+def test_itinerary_prices_never_break_into_characters():
+    """金额被挤成"¥ 3 4 0"这种竖排是不可接受的：金额一律不折行。"""
+    theme = (Path(__file__).parents[1] / "app" / "ui" / "theme.py").read_text(encoding="utf-8")
+
+    assert "white-space: nowrap" in _css_rule(theme, ".sl-tl-cost {{")
+    assert "white-space: nowrap" in _css_rule(theme, ".sl-day-sum {{")
+    assert "white-space: nowrap" in _css_rule(theme, ".sl-gear-item .sl-gear-price {{")
+    assert "white-space: nowrap" in _css_rule(theme, ".sl-budget-num b {{")
+
+    # 时间/活动/金额改成可换行的 flex：窄的时候金额整体换行，而不是被压成一列
+    item_rule = _css_rule(theme, ".sl-tl-item {{")
+    assert "flex-wrap: wrap" in item_rule
+    assert "grid-template-columns" not in item_rule
+
+
+def test_plan_panel_keeps_cost_markup():
+    from app.ui.theme import plan_panels_html
+
+    html = plan_panels_html({
+        "itinerary": {
+            "days": [{
+                "day": 1,
+                "title": "西湖",
+                "items": [{"time": "09:00", "activity": "逛西湖", "cost": 340, "duration_min": 120}],
+            }]
+        },
+    })
+
+    assert 'class="sl-tl-cost"' in html
+    assert "¥340" in html
