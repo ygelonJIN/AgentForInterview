@@ -159,6 +159,8 @@ async def extract_memory(state: TurnState, runtime: Runtime[TurnContext]) -> Dic
             state["session_id"],
             state["scene"],
             excluded_contents=state.get("excluded_memories", []),
+            # 窗口由 UI 按游标切好，节点不再自己翻整段历史。
+            messages=state.get("memory_window") or None,
         )
         payload = result.as_dict()
     except Exception as exc:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -14,10 +15,21 @@ class ConversationStore:
     """把完整对话存入 SQLite，与长期偏好/事件向量记忆分离。"""
 
     def __init__(self, db_path: Optional[str] = None):
-        base_dir = Path(__file__).resolve().parents[2]
-        self.db_path = Path(db_path) if db_path else base_dir / "data" / "conversations.db"
+        self.db_path = Path(db_path) if db_path else self.default_db_path()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
+
+    @staticmethod
+    def default_db_path() -> Path:
+        """默认落在 ``data/conversations.db``；测试用 ``SMARTLIFE_CONVERSATIONS_DB`` 换库。
+
+        AppTest 跑 ``app/main.py`` 时会把 session_state 里的消息迁移进库，
+        不隔离就会把测试夹具写进真实会话历史里。
+        """
+        override = str(os.environ.get("SMARTLIFE_CONVERSATIONS_DB") or "").strip()
+        if override:
+            return Path(override)
+        return Path(__file__).resolve().parents[2] / "data" / "conversations.db"
 
     def _initialize(self) -> None:
         with sqlite3.connect(self.db_path) as conn:
@@ -43,6 +55,12 @@ class ConversationStore:
                     memory_id TEXT,
                     created_at TEXT NOT NULL,
                     PRIMARY KEY (thread_id, conversation_hash)
+                );
+
+                CREATE TABLE IF NOT EXISTS memory_extraction_cursor (
+                    thread_id TEXT PRIMARY KEY,
+                    last_message_id INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL
                 );
                 """
             )
@@ -337,5 +355,38 @@ class ConversationStore:
                 "DELETE FROM conversation_messages WHERE thread_id = ?",
                 (thread_id,),
             )
+            conn.execute(
+                "DELETE FROM memory_extraction_cursor WHERE thread_id = ?",
+                (thread_id,),
+            )
             conn.commit()
             return int(cursor.rowcount)
+
+    # ---------- 记忆提取游标 ----------
+    def get_extraction_cursor(self, thread_id: str) -> int:
+        """上次把哪些消息送去提取过；0 表示这个会话还没提取过。"""
+        if not thread_id:
+            return 0
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT last_message_id FROM memory_extraction_cursor WHERE thread_id = ?",
+                (thread_id,),
+            ).fetchone()
+        return int(row[0] or 0) if row else 0
+
+    def set_extraction_cursor(self, thread_id: str, last_message_id: int) -> None:
+        """只前进不后退：并发或重复点击都不能把游标拨回去重跑一遍。"""
+        if not thread_id or int(last_message_id or 0) <= 0:
+            return
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO memory_extraction_cursor (thread_id, last_message_id, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(thread_id) DO UPDATE SET
+                    last_message_id = MAX(last_message_id, excluded.last_message_id),
+                    updated_at = excluded.updated_at
+                """,
+                (thread_id, int(last_message_id), datetime.now().isoformat(timespec="seconds")),
+            )
+            conn.commit()

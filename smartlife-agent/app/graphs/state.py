@@ -53,6 +53,8 @@ class TurnState(TypedDict, total=False):
 
     # 记忆
     memory_extraction: Dict[str, Any]
+    # 按需提取时由 UI 传入的消息窗口（游标之后、已截断）
+    memory_window: List[Dict[str, str]]
 
     # 状态
     status: str

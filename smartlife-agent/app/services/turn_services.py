@@ -8,6 +8,7 @@
 """
 import asyncio
 import os
+import re
 import sys
 import uuid
 from typing import Any, Dict, List, Optional
@@ -21,6 +22,11 @@ from app.services.travel_service import TravelService
 from app.classifier import ClassificationResult, get_classifier
 from app.services.task_models import SharedConstraints
 from app.memory.short_term import ShortTermMemory
+
+# 记忆提取窗口：只取游标之后的用户消息，按条数和字数双重封顶。
+MEMORY_WINDOW_MAX_MESSAGES = 20
+MEMORY_WINDOW_MAX_CHARS = 4000
+MEMORY_WINDOW_PER_MESSAGE_CHARS = 800
 from app.memory.conversation_store import ConversationStore
 from app.memory.long_term import LongTermMemory
 from app.memory.compressor import MemoryCompressor
@@ -715,6 +721,21 @@ class TurnServices:
     # 记忆管理（新版本 - 手动保存）
     # ================================================================
 
+    @staticmethod
+    def _latest_user_message(history: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+        """取本轮用户说的那一句。
+
+        提取器只该看用户原话：助手的回答和更早的轮次都不该成为"事实来源"。
+        返回列表是因为 ``MemoryExtractor`` 的入参就是消息列表。
+        """
+        for message in reversed(list(history or [])):
+            if str(message.get("role") or "") != "user":
+                continue
+            content = str(message.get("content") or "").strip()
+            if content:
+                return [{"role": "user", "content": content}]
+        return []
+
     def _existing_memory_contents(self, user_id: str) -> List[str]:
         if not self.md_memory:
             return []
@@ -765,20 +786,81 @@ class TurnServices:
         session_id: str,
         scene: str,
         excluded_contents: Optional[List[str]] = None,
+        messages: Optional[List[Dict[str, str]]] = None,
     ) -> MemoryExtractionResult:
-        """提取候选记忆，并区分正常空结果与执行失败。"""
+        """提取候选记忆，并区分正常空结果与执行失败。
+
+        ``messages`` 有值时只提取这一段（按需按钮给的窗口），否则退回
+        "本会话最后一条用户消息"的旧行为。
+        """
         if not self.extractor:
             return MemoryExtractionResult(
                 diagnostic="记忆提取失败：记忆提取器未初始化",
                 status="error",
             )
-        thread_id = build_thread_id(user_id, scene, session_id)
-        history = self.short_term_memory.get_history(thread_id)
+        if messages is None:
+            thread_id = build_thread_id(user_id, scene, session_id)
+            history = self.short_term_memory.get_history(thread_id)
+            messages = self._latest_user_message(history)
         return self.extractor.extract_candidates_result(
-            self._latest_user_message(history),
+            messages,
             existing_contents=self._existing_memory_contents(user_id),
             excluded_contents=excluded_contents,
         )
+
+    def memory_extraction_window(
+        self,
+        user_id: str,
+        session_id: str,
+        scene: str,
+        *,
+        max_messages: int = MEMORY_WINDOW_MAX_MESSAGES,
+        max_chars: int = MEMORY_WINDOW_MAX_CHARS,
+        per_message_chars: int = MEMORY_WINDOW_PER_MESSAGE_CHARS,
+    ) -> Dict[str, Any]:
+        """从上次提取的位置往后取一段用户消息。
+
+        只取 ``role == 'user'``：提取器本来就只看用户原话，助手的回答既不该
+        成为事实来源，也不该白花 token。没有新内容时 ``messages`` 为空，
+        调用方据此直接跳过模型调用。
+        """
+        thread_id = build_thread_id(user_id, scene, session_id)
+        store = self.conversation_store
+        cursor = store.get_extraction_cursor(thread_id)
+        rows = store.list_messages(thread_id)
+        pending = [
+            row for row in rows
+            if str(row.get("role") or "") == "user" and int(row.get("id") or 0) > cursor
+        ]
+
+        messages: List[Dict[str, str]] = []
+        used_chars = 0
+        last_message_id = cursor
+        for row in pending[: max(1, int(max_messages))]:
+            content = re.sub(r"\s+", " ", str(row.get("content") or "")).strip()
+            if not content:
+                continue
+            if len(content) > per_message_chars:
+                content = content[:per_message_chars] + "…"
+            if messages and used_chars + len(content) > max_chars:
+                break
+            messages.append({"role": "user", "content": content})
+            used_chars += len(content)
+            last_message_id = int(row.get("id") or last_message_id)
+
+        return {
+            "thread_id": thread_id,
+            "cursor": cursor,
+            "messages": messages,
+            "pending": len(pending),
+            "remaining": max(0, len(pending) - len(messages)),
+            "last_message_id": last_message_id,
+            "chars": used_chars,
+        }
+
+    def record_memory_extraction(self, thread_id: str, last_message_id: int) -> None:
+        """记下"这些消息已经提取过"，下次不再送进模型。"""
+        self.conversation_store.set_extraction_cursor(thread_id, last_message_id)
 
     def extract_candidate_memories_with_diag(
         self,

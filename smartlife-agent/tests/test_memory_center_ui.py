@@ -92,8 +92,12 @@ def test_memory_center_shows_pending_candidate_memory_actions():
     next(button for button in app.sidebar.button if button.label.endswith("记忆中心")).click().run()
 
     assert not app.exception
-    assert any("记忆提取结果" in item.proto.body for item in app.subheader)
+    assert any("这次提取到 1 条" in item.proto.body for item in app.markdown)
     labels = [button.label for button in app.button]
-    assert any(label.endswith("确认写入选中") for label in labels)
-    assert any(label.endswith("拒绝写入") for label in labels)
-    assert any(label.endswith("全部写入") for label in labels)
+    # 候选卡片：每行一个写入按钮，另有全部写入 / 全部忽略 / 收起
+    assert "写入" in labels
+    assert "全部写入" in labels
+    assert "收起" in labels
+    # 不写入本身就是忽略，不再单独给"全部忽略"
+    assert "全部忽略" not in labels
+    assert not any("确认写入选中" in label for label in labels)

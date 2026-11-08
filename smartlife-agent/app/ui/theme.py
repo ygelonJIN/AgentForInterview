@@ -165,6 +165,30 @@ section[data-testid="stSidebar"] .stButton > button[kind="primary"]:hover {{
 }}
 section[data-testid="stSidebar"] [data-testid="stAlert"] {{ border-radius: var(--radius-sm); }}
 
+/* 品牌之下的「新建对话」：侧栏里唯一一个实心强调色药丸，和导航块明显不同。 */
+.st-key-new_thread {{ margin: var(--space-1) 0 var(--space-3); }}
+section[data-testid="stSidebar"] .st-key-new_thread .stButton > button {{
+  justify-content: center !important;
+  min-height: 38px !important;
+  padding: var(--space-2) var(--space-3) !important;
+  font-family: var(--font-display) !important;
+  font-size: var(--fs-sm) !important;
+  font-weight: var(--fw-bold) !important;
+  letter-spacing: var(--tracking-caps) !important;
+  color: var(--c-accent-ink) !important;
+  background: var(--c-accent) !important;
+  border: var(--border-w) solid var(--c-accent-strong) !important;
+  border-radius: var(--radius-pill) !important;
+  box-shadow: var(--shadow-2) !important;
+}}
+section[data-testid="stSidebar"] .st-key-new_thread .stButton > button:hover {{
+  background: var(--c-accent-strong) !important;
+  border-color: var(--c-accent-strong) !important;
+  color: var(--c-accent-ink) !important;
+}}
+section[data-testid="stSidebar"] .st-key-new_thread .stButton > button > div {{ justify-content: center !important; }}
+section[data-testid="stSidebar"] .st-key-new_thread .stButton > button p {{ white-space: nowrap; }}
+
 .st-key-nav_menu > [data-testid="stElementContainer"]:nth-child(1) .stButton button::before {{ content: "◈"; }}
 .st-key-nav_menu > [data-testid="stElementContainer"]:nth-child(2) .stButton button::before {{ content: "▤"; }}
 .st-key-nav_menu > [data-testid="stElementContainer"]:nth-child(3) .stButton button::before {{ content: "◇"; }}
@@ -176,24 +200,6 @@ section[data-testid="stSidebar"] [data-testid="stAlert"] {{ border-radius: var(-
   font-size: var(--fs-sm); font-weight: 400;
 }}
 .st-key-nav_menu .stButton button[kind="primary"]::before {{ color: var(--c-nav-active-text); }}
-
-/* 新建对话：导航之下的次级动作，虚线框和导航按钮区分开。 */
-.st-key-new_thread {{ margin-top: var(--space-2); }}
-.st-key-new_thread .stButton > button {{
-  justify-content: center !important;
-  font-size: var(--fs-xs) !important;
-  font-weight: var(--fw-medium) !important;
-  color: var(--c-nav-text) !important;
-  background: transparent !important;
-  border: var(--border-w) dashed var(--c-line) !important;
-  box-shadow: none !important;
-}}
-.st-key-new_thread .stButton > button p {{ white-space: nowrap; }}
-.st-key-new_thread .stButton > button:hover {{
-  background: var(--c-nav-hover-bg) !important;
-  border-style: solid !important;
-  color: var(--c-nav-active-text) !important;
-}}
 
 .sl-brand {{ display: flex; align-items: center; gap: var(--space-3); padding: 0 var(--space-1) var(--space-4); }}
 .sl-brand-name {{ font-family: var(--font-display); font-size: var(--fs-md); font-weight: var(--fw-bold); color: var(--c-nav-text); }}
@@ -214,21 +220,24 @@ section[data-testid="stSidebar"] [data-testid="stAlert"] {{ border-radius: var(-
 .sl-thread-title {{ font-size: var(--fs-xs); color: var(--c-nav-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
 .sl-thread-meta {{ font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-nav-muted); }}
 
-/* 最近会话：每行是一个真正的按钮（可点击进入）。
-   选择器挂在按钮自己的 key（st-key-recent_thread_0…）上，
-   不依赖外层 container 的 class 是否生成。 */
+/* 最近会话：一行一条，用左侧短竖线做"当前"标记。
+   刻意不跟导航的选中态同款（导航是整块强调底色 + 图标），
+   这里只有一条竖线 + 文字加深，安静一档。 */
+.st-key-recent_threads > [data-testid="stVerticalBlock"] {{ gap: 2px; }}
 [class*="st-key-recent_thread_"] .stButton > button {{
   justify-content: flex-start !important;
   width: 100% !important;
   max-width: 100% !important;
   min-height: 0 !important;
   height: auto !important;
-  padding: var(--space-2) var(--space-3) !important;
+  padding: var(--space-1) 0 var(--space-1) var(--space-3) !important;
   font-size: var(--fs-xs) !important;
   font-weight: var(--fw-body) !important;
-  color: var(--c-nav-text) !important;
+  color: var(--c-nav-muted) !important;
   background: transparent !important;
-  border: var(--border-w) solid transparent !important;
+  border: 0 !important;
+  border-left: 2px solid transparent !important;
+  border-radius: 0 !important;
   box-shadow: none !important;
 }}
 [class*="st-key-recent_thread_"] .stButton > button > div {{
@@ -249,13 +258,16 @@ section[data-testid="stSidebar"] [data-testid="stAlert"] {{ border-radius: var(-
   width: 100%; text-align: left; display: block;
 }}
 [class*="st-key-recent_thread_"] .stButton > button:hover {{
-  background: var(--c-nav-hover-bg) !important;
+  background: transparent !important;
   color: var(--c-nav-active-text) !important;
+  border-left-color: var(--c-line-strong) !important;
 }}
 [class*="st-key-recent_thread_"] .stButton > button[kind="primary"],
 [class*="st-key-recent_thread_"] .stButton > button[kind="primary"]:hover {{
-  background: var(--c-nav-active-bg) !important;
-  border-color: var(--c-nav-active-line) !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-left: 2px solid var(--c-accent) !important;
+  border-radius: 0 !important;
   color: var(--c-nav-active-text) !important;
   font-weight: var(--fw-semibold) !important;
 }}
@@ -518,6 +530,73 @@ section[data-testid="stSidebar"] [data-testid="stAlert"] {{ border-radius: var(-
   font-size: var(--fs-md); line-height: 1.5;
   white-space: pre-wrap; overflow-wrap: anywhere;
 }}
+
+/* ---------- 记忆提取：入口与候选卡片 ---------- */
+.st-key-memory_entry {{ margin-top: var(--space-3); }}
+.st-key-memory_entry .stButton > button {{
+  justify-content: center !important;
+  min-height: 32px !important;
+  padding: var(--space-1) var(--space-3) !important;
+  font-size: var(--fs-xs) !important;
+  font-weight: var(--fw-medium) !important;
+  letter-spacing: var(--tracking-caps) !important;
+  color: var(--c-accent-text) !important;
+  background: transparent !important;
+  border: var(--border-w) dashed var(--c-accent-line) !important;
+}}
+.st-key-memory_entry .stButton > button:hover {{
+  background: var(--c-accent-soft) !important;
+  border-style: solid !important;
+}}
+.sl-memory-hint {{
+  display: flex; align-items: baseline; gap: var(--space-2);
+  padding-top: 7px; font-size: var(--fs-xs); color: var(--c-text-muted);
+  line-height: var(--lh-tight);
+}}
+.sl-memory-hint-kicker {{
+  font-family: var(--font-mono); font-size: var(--fs-2xs);
+  letter-spacing: var(--tracking-caps); text-transform: uppercase;
+  color: var(--c-text-faint);
+}}
+
+.st-key-memory_panel {{
+  margin-top: var(--space-2); padding: var(--space-4);
+  border: var(--border-w) solid var(--c-line); border-radius: var(--radius-md);
+  background: var(--c-surface); box-shadow: var(--shadow-2);
+}}
+.st-key-memory_panel > [data-testid="stVerticalBlock"] {{ gap: 0; }}
+.sl-memory-head {{ display: flex; flex-direction: column; gap: var(--space-1); padding-bottom: var(--space-3); }}
+.sl-memory-head h3 {{
+  margin: 0; font-family: var(--font-display); font-size: var(--fs-lg);
+  letter-spacing: var(--tracking-display);
+}}
+.sl-memory-head p {{ margin: 0; font-size: var(--fs-xs); color: var(--c-text-muted); line-height: var(--lh-tight); }}
+
+[class*="st-key-memory_row_"] {{
+  padding: var(--space-2) 0;
+  border-top: var(--panel-rule-w) solid var(--c-line);
+}}
+[class*="st-key-memory_row_"] [data-testid="stHorizontalBlock"] {{ align-items: center; gap: var(--space-3); }}
+[class*="st-key-memory_row_"] .stButton > button {{
+  min-height: 30px !important; padding: 0 var(--space-3) !important;
+  font-size: var(--fs-2xs) !important; letter-spacing: var(--tracking-caps) !important;
+  white-space: nowrap;
+}}
+[class*="st-key-memory_row_"][class*="_written"] .stButton > button {{
+  background: var(--c-accent-soft) !important;
+  border-color: var(--c-accent-line) !important;
+  color: var(--c-accent-text) !important;
+}}
+[class*="st-key-memory_row_"][class*="_written"] .sl-memory-row-text {{ color: var(--c-text-muted); }}
+
+.sl-memory-row-body {{ display: flex; flex-direction: column; gap: 3px; }}
+.sl-memory-row-text {{ font-size: var(--fs-sm); color: var(--c-text); line-height: var(--lh-tight); }}
+.sl-memory-row-no {{
+  display: inline-block; min-width: 1.9em;
+  font-family: var(--font-mono); font-size: var(--fs-2xs);
+  color: var(--c-accent-text); letter-spacing: var(--tracking-caps);
+}}
+.sl-memory-row-meta {{ font-size: var(--fs-2xs); color: var(--c-text-faint); letter-spacing: var(--tracking-caps); }}
 
 /* ---------- 输入区 ---------- */
 [data-testid="stBottom"],

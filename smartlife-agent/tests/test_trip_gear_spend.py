@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
 from app.trip_gear.models import GearItem, TripFacts
@@ -79,6 +81,8 @@ class TestSpend:
         result = upgrade_within_budget(
             TripFacts(days=2, people=2, lodging="camp", start_date="2026-11-07"),
             _gear(), products, remaining=2000, find_alternatives=_finder(rows),
+            # 把"今天"钉死在出发前 6 天：不注入就会随真实日期漂移，过了 11-07 之后失效。
+            today=date(2026, 11, 1),
         )
         assert result.upgrades == []
 

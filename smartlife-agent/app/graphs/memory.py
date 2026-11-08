@@ -45,6 +45,7 @@ class MemoryExtractionRunner:
         session_id: str,
         scene: str,
         excluded_contents: Optional[List[str]] = None,
+        messages: Optional[List[Dict[str, str]]] = None,
     ) -> None:
         key = _key(user_id, session_id, scene)
         done = threading.Event()
@@ -55,7 +56,9 @@ class MemoryExtractionRunner:
         def run() -> None:
             payload: Dict[str, Any]
             try:
-                payload = self._run_graph(user_id, session_id, scene, list(excluded_contents or []))
+                payload = self._run_graph(
+                    user_id, session_id, scene, list(excluded_contents or []), list(messages or [])
+                )
             except Exception as exc:
                 payload = {
                     "candidates": [],
@@ -70,7 +73,14 @@ class MemoryExtractionRunner:
 
         threading.Thread(target=run, name=f"memory-graph:{user_id}:{scene}", daemon=True).start()
 
-    def _run_graph(self, user_id: str, session_id: str, scene: str, excluded: List[str]) -> Dict[str, Any]:
+    def _run_graph(
+        self,
+        user_id: str,
+        session_id: str,
+        scene: str,
+        excluded: List[str],
+        messages: Optional[List[Dict[str, str]]] = None,
+    ) -> Dict[str, Any]:
         collected: List[Dict[str, Any]] = []
         from app.graphs.events import TurnTiming
         from app.observability import new_trace_id
@@ -87,6 +97,7 @@ class MemoryExtractionRunner:
                 "session_id": session_id,
                 "scene": scene,
                 "excluded_memories": excluded,
+                "memory_window": list(messages or []),
                 "status": "started",
             },
             context=ctx,

@@ -89,8 +89,14 @@ if "memory_extraction_error" not in st.session_state:
     st.session_state["memory_extraction_error"] = False
 if "memory_extraction_scene" not in st.session_state:
     st.session_state["memory_extraction_scene"] = ""
-if "rejected_memories" not in st.session_state:
-    st.session_state["rejected_memories"] = []
+if "memory_saved_map" not in st.session_state:
+    # 候选记忆逐条的写入状态：索引 -> memory_id
+    st.session_state["memory_saved_map"] = {}
+if "memory_extraction_thread" not in st.session_state:
+    st.session_state["memory_extraction_thread"] = ""
+if "last_memory_extract" not in st.session_state:
+    # 本轮"要不要写记忆"的判断结果；空候选时界面也要有个交代，不能什么都不显示。
+    st.session_state["last_memory_extract"] = {}
 if "pending_compressed_summary" not in st.session_state:
     st.session_state["pending_compressed_summary"] = ""
 if "sensitive_action_service" not in st.session_state:
@@ -150,31 +156,6 @@ def get_turn_graph():
             st.error(f"初始化失败: {e}")
             return None
     return st.session_state["turn_graph"]
-
-
-def _begin_memory_approval(orch, user_id, candidates, scene):
-    if not orch or not candidates:
-        return None
-    result = orch.start_memory_approval(
-        user_id,
-        st.session_state["browser_session_id"],
-        scene,
-        candidates,
-    )
-    st.session_state["memory_approval_id"] = result["approval_id"]
-    return result
-
-
-def _resume_memory_approval(orch, action, selected_indices=None):
-    approval_id = st.session_state.get("memory_approval_id")
-    if not orch or not approval_id:
-        return {"status": "missing_approval", "state": {"saved_ids": []}}
-    decision = {"action": action}
-    if selected_indices is not None:
-        decision["selected_indices"] = selected_indices
-    result = orch.resume_memory_approval(approval_id, decision)
-    st.session_state.pop("memory_approval_id", None)
-    return result
 
 
 def get_sensitive_action_service():
@@ -270,152 +251,258 @@ def _start_inline_sensitive_action(pending):
 
 def _clear_memory_extraction_state():
     st.session_state["candidate_memories"] = []
+    st.session_state["memory_saved_map"] = {}
     st.session_state["memory_diag"] = ""
     st.session_state["memory_extraction_error"] = False
     st.session_state["show_memory_extraction"] = False
     st.session_state["memory_extraction_scene"] = ""
+    st.session_state["memory_extraction_thread"] = ""
 
 
-def _memory_step_event(*, failed=False, no_content=False, background=False):
-    if failed:
-        name = "记忆提取失败"
-        description = "提取未能完成，请查看下方失败诊断"
-        status = "error"
-    elif background:
-        name = "候选记忆确认"
-        description = "回答已完成，候选记忆正在后台提取"
-        status = "active"
-    elif no_content:
-        name = "候选记忆确认"
-        description = "检查完成，本轮没有需要写入长期记忆的内容"
-        status = "completed"
-    else:
-        name = "候选记忆确认"
-        description = "候选项已提取，等待用户确认是否写入长期记忆"
-        status = "waiting"
-    return {
-        "event": "step",
-        "data": {
-            "step": 4,
-            "total": 4,
-            "name": name,
-            "description": description,
-            "status": status,
-            "source": "post_process",
-        },
+# 按需提取：点一次按钮等一次模型，最多等这么久。
+MEMORY_WAIT_SECONDS = 25
+
+
+def _set_memory_extract_info(scene: str, state: str, *, count: int = 0, note: str = "", thread_id: str = ""):
+    """记下"上一次点提取"的结果，供按钮旁边那行说明展示。"""
+    st.session_state["last_memory_extract"] = {
+        "scene": scene,
+        "state": state,
+        "count": int(count),
+        "note": note,
+        "thread_id": thread_id,
+        "at": time.strftime("%H:%M"),
     }
 
 
-def _apply_memory_extraction_payload(orch, user_id, session_id, scene, payload):
+def _finish_memory_extract(note: str):
+    """候选记忆已经处理完：说明改成结论。"""
+    info = dict(st.session_state.get("last_memory_extract") or {})
+    info.update({"state": "done", "note": note, "count": 0})
+    st.session_state["last_memory_extract"] = info
+
+
+def _memory_progress(thread_id: str) -> tuple:
+    """(游标, 游标之后的用户消息数)；只读库，不建图、不调模型。"""
+    if not thread_id:
+        return 0, 0
+    try:
+        from app.memory.conversation_store import ConversationStore
+
+        store = ConversationStore()
+        cursor = store.get_extraction_cursor(thread_id)
+        rows = store.list_messages(thread_id)
+    except Exception:
+        return 0, 0
+    pending = sum(
+        1
+        for row in rows
+        if str(row.get("role") or "") == "user" and int(row.get("id") or 0) > cursor
+    )
+    return cursor, pending
+
+
+def _memory_entry_hint(thread_id: str) -> str:
+    """按钮旁边那句话：还有多少没提取 + 上次点完是什么结果。"""
+    cursor, pending = _memory_progress(thread_id)
+    info = st.session_state.get("last_memory_extract") or {}
+    if not cursor and pending:
+        parts = [f"还没提取过，共 {pending} 条"]
+    elif pending:
+        parts = [f"有 {pending} 条新消息"]
+    elif info.get("state") == "done":
+        parts = ["这个会话已处理完"]
+    else:
+        parts = ["没有待提取的新消息"]
+
+    tail = {
+        "no_content": "上次没提取到可写入的事实",
+        "no_new": "上次点击时没有新内容",
+        "timeout": "上次提取超时，可以再点一次",
+        "error": "上次提取失败，诊断见下方",
+        "candidates": f"上次提取到 {info.get('count', 0)} 条",
+        "done": info.get("note") or "已处理",
+    }.get(info.get("state"))
+    if tail:
+        parts.append(tail)
+    return "；".join(parts)
+
+
+def _run_memory_extraction(scene: str):
+    """按钮动作：按游标取一段新消息去提取，成功就把游标推进。"""
+    orch = get_turn_graph()
+    if not orch:
+        return
+    user_id = st.session_state["user_id"]
+    session_id = st.session_state["browser_session_id"]
+    thread_id = _current_thread_id()
+    with st.spinner("正在提取记忆…"):
+        window = orch.memory_extraction_window(user_id, session_id, scene)
+        if not window.get("messages"):
+            _clear_memory_extraction_state()
+            _set_memory_extract_info(scene, "no_new", note="没有新的用户消息", thread_id=thread_id)
+            return
+        orch.start_memory_extraction(
+            user_id,
+            session_id,
+            scene,
+            messages=window["messages"],
+        )
+        payload = orch.wait_for_memory_extraction(
+            user_id, session_id, scene, timeout=MEMORY_WAIT_SECONDS
+        )
+        payload = orch.pop_memory_extraction_result(user_id, session_id, scene) or payload
+
+    if payload is None:
+        _set_memory_extract_info(scene, "timeout", note="提取超时", thread_id=thread_id)
+        return
+
+    payload["messages_used"] = len(window["messages"])
+    payload["remaining"] = int(window.get("remaining") or 0)
+    _apply_memory_extraction_payload(
+        orch, user_id, session_id, scene, payload, thread_id=thread_id
+    )
+    if not payload.get("has_error") and window.get("last_message_id"):
+        # 失败不推进游标：这些消息还能重试，不能白丢。
+        orch.record_memory_extraction(thread_id, window["last_message_id"])
+
+
+def render_memory_entry(scene: str, key_suffix: str):
+    """对话区的记忆入口：只有一个按钮，点了才提取，平时不跑也不花 token。"""
+    thread_id = _current_thread_id()
+    _, pending = _memory_progress(thread_id)
+    if not st.session_state.get("assistant_msgs") and not pending:
+        # 还没开始对话：不摆这个按钮。
+        return
+    with st.container(key="memory_entry"):
+        button_col, hint_col = st.columns([1, 3.4])
+        with button_col:
+            clicked = st.button(
+                "◇ 提取记忆",
+                key=f"extract_memory_{key_suffix}",
+                use_container_width=True,
+                help="只提取上次之后的新消息；已经提取过的不会再送进模型",
+            )
+        with hint_col:
+            st.markdown(
+                '<div class="sl-memory-hint">'
+                '<span class="sl-memory-hint-kicker">Memory</span>'
+                f'<span>{_esc(_memory_entry_hint(thread_id))}</span></div>',
+                unsafe_allow_html=True,
+            )
+    if clicked:
+        _run_memory_extraction(scene)
+        st.rerun()
+
+
+def _apply_memory_extraction_payload(orch, user_id, session_id, scene, payload, *, thread_id=""):
+    """把提取结果落到界面上：有候选就出候选卡片，没有就只更新那行说明。"""
     candidates = list(payload.get("candidates", []))
     diagnostic = payload.get("diagnostic", "")
     has_error = bool(payload.get("has_error", payload.get("status") == "error"))
+    # 诊断只给失败用；正常结果那行说明由游标实时算，不铺模型原始输出。
+    note = diagnostic if has_error else ""
 
     if not candidates and not has_error:
         _clear_memory_extraction_state()
-        return [_memory_step_event(no_content=True)]
+        _set_memory_extract_info(scene, "no_content", note=note, thread_id=thread_id)
+        return
 
     st.session_state["candidate_memories"] = candidates
+    st.session_state["memory_saved_map"] = {}
     st.session_state["memory_diag"] = diagnostic if has_error else ""
     st.session_state["memory_extraction_error"] = has_error
     st.session_state["show_memory_extraction"] = True
     st.session_state["memory_extraction_scene"] = scene
+    st.session_state["memory_extraction_thread"] = thread_id
 
     if candidates:
-        _begin_memory_approval(orch, user_id, candidates, scene)
-    return [_memory_step_event(failed=has_error)]
+        _set_memory_extract_info(scene, "candidates", count=len(candidates), note=note)
+    else:
+        _set_memory_extract_info(scene, "error", note=diagnostic, thread_id=thread_id)
 
 
-def _extract_memories_after_stream(
-    orch,
-    user_id,
-    session_id,
-    scene,
-    stream_events=None,
-):
-    """消费图节点的记忆提取结果；兼容旧的图外提取接口。"""
-    if not orch:
-        _clear_memory_extraction_state()
-        return []
-
-    payload = None
-    for event in stream_events or []:
-        if event.get("event") == "memory_extraction":
-            payload = event.get("data", {}) or {}
-            break
-
-    if payload is not None:
-        return _apply_memory_extraction_payload(orch, user_id, session_id, scene, payload)
-
-    if hasattr(orch, "pop_memory_extraction_result"):
-        payload = orch.pop_memory_extraction_result(user_id, session_id, scene)
-        if payload is not None:
-            return _apply_memory_extraction_payload(orch, user_id, session_id, scene, payload)
-        if hasattr(orch, "is_memory_extraction_pending") and orch.is_memory_extraction_pending(
-            user_id, session_id, scene
-        ):
-            st.session_state["pending_background_memory"] = {
-                "user_id": user_id,
-                "session_id": session_id,
-                "scene": scene,
-            }
-            return [_memory_step_event(background=True)]
-        _clear_memory_extraction_state()
-        return [_memory_step_event(no_content=True)]
-
-    if hasattr(orch, "extract_candidate_memories_result"):
-        result = orch.extract_candidate_memories_result(
-            user_id,
-            session_id,
-            scene=scene,
-            excluded_contents=st.session_state.get("rejected_memories", []),
-        )
-        return _apply_memory_extraction_payload(
-            orch,
-            user_id,
-            session_id,
-            scene,
-            {
-                "candidates": result.candidates,
-                "diagnostic": result.diagnostic,
-                "has_error": result.has_error,
-                "status": "error" if result.has_error else "ok",
-            },
-        )
-
-    _clear_memory_extraction_state()
-    return [_memory_step_event(no_content=True)]
+def _memory_saved_map() -> dict:
+    return dict(st.session_state.get("memory_saved_map") or {})
 
 
-def _refresh_background_memory_extraction():
-    pending = st.session_state.get("pending_background_memory")
-    if not pending:
-        return
+def _write_memory_candidates(indices) -> int:
+    """把指定候选写进长期记忆，返回写入条数。"""
     orch = get_turn_graph()
-    if not orch or not hasattr(orch, "pop_memory_extraction_result"):
-        return
-    payload = orch.pop_memory_extraction_result(
-        pending["user_id"],
-        pending["session_id"],
-        pending["scene"],
+    candidates = list(st.session_state.get("candidate_memories") or [])
+    if not orch or not candidates:
+        return 0
+    saved = _memory_saved_map()
+    written = 0
+    with st.spinner("正在写入长期记忆…"):
+        for index in indices:
+            if not 0 <= index < len(candidates) or index in saved:
+                continue
+            try:
+                ids = orch.save_memory_candidates(
+                    st.session_state["user_id"], [candidates[index]], [0]
+                )
+            except Exception as exc:
+                log_exception("ui.memory_write", exc)
+                st.error(f"这条没写进去：{type(exc).__name__}: {exc}")
+                continue
+            if ids:
+                saved[index] = ids[0]
+                written += 1
+    st.session_state["memory_saved_map"] = saved
+    return written
+
+
+def _delete_memory_candidates(indices) -> int:
+    """撤销写入：删掉刚才存进去的那条，行回到"未写入"。"""
+    orch = get_turn_graph()
+    saved = _memory_saved_map()
+    removed = 0
+    for index in list(indices):
+        memory_id = saved.get(index)
+        if not memory_id or not orch:
+            continue
+        try:
+            ok = orch.delete_memory(st.session_state["user_id"], memory_id)
+        except Exception as exc:
+            log_exception("ui.memory_delete", exc)
+            st.error(f"撤销失败：{type(exc).__name__}: {exc}")
+            continue
+        if ok:
+            saved.pop(index, None)
+            removed += 1
+    st.session_state["memory_saved_map"] = saved
+    return removed
+
+
+MEMORY_CATEGORY_LABEL = {"shopping": "购物", "travel": "旅行", "general": "其他"}
+MEMORY_CONFIDENCE_LABEL = {"high": "高", "medium": "中", "low": "低"}
+
+
+def _memory_row_html(index: int, candidate: dict, saved: bool) -> str:
+    category = MEMORY_CATEGORY_LABEL.get(candidate.get("category", "general"), "其他")
+    confidence = MEMORY_CONFIDENCE_LABEL.get(candidate.get("confidence", "medium"), "中")
+    meta = f"{category} · 置信度{confidence}"
+    if saved:
+        meta += " · 已写入长期记忆"
+    return (
+        '<div class="sl-memory-row-body">'
+        f'<div class="sl-memory-row-text"><span class="sl-memory-row-no">{index + 1:02d}</span>'
+        f'{_esc(candidate.get("content", ""))}</div>'
+        f'<div class="sl-memory-row-meta">{_esc(meta)}</div>'
+        "</div>"
     )
-    if payload is None:
-        return
-    _apply_memory_extraction_payload(
-        orch,
-        pending["user_id"],
-        pending["session_id"],
-        pending["scene"],
-        payload,
-    )
-    st.session_state.pop("pending_background_memory", None)
 
 
 def render_memory_extraction_panel(scene, key_suffix):
-    """只在有候选记忆或提取失败时渲染结果；无价值诊断默认隐藏。"""
+    """候选记忆卡片：每行一个写入/撤销按钮，默认一条都不写入。"""
     if not st.session_state.get("show_memory_extraction"):
         return
     if scene and st.session_state.get("memory_extraction_scene") != scene:
+        return
+    owner = st.session_state.get("memory_extraction_thread") or ""
+    if owner and owner != _current_thread_id():
+        # 候选属于另一个会话：切回来再看，不在这里串场。
         return
 
     has_error = bool(st.session_state.get("memory_extraction_error"))
@@ -423,68 +510,78 @@ def render_memory_extraction_panel(scene, key_suffix):
     if not candidates and not has_error:
         return
 
-    if has_error:
-        st.subheader("⚠️ 记忆提取失败")
-        st.error("本轮记忆提取未能完成。")
-        diagnostic = st.session_state.get("memory_diag", "")
-        if diagnostic:
-            with st.expander("🔍 失败诊断"):
-                st.code(diagnostic)
-        if st.button("👌 知道了", key=f"dismiss_memory_error_{key_suffix}"):
-            _clear_memory_extraction_state()
-            st.rerun()
-        return
-
-    st.subheader("📝 记忆提取结果")
-    _orch = get_turn_graph()
-    selected_indices = []
-    for i, candidate in enumerate(candidates):
-        emoji = {"shopping": "🛍️", "travel": "✈️", "general": "📝"}.get(
-            candidate.get("category", "general"), "📝"
-        )
-        confidence = {"high": "高", "medium": "中", "low": "低"}.get(
-            candidate.get("confidence", "medium"), "中"
-        )
-        content_col, choice_col = st.columns([2.45, 1])
-        with content_col:
-            st.write(f"{i + 1}. {emoji} {candidate['content']} (置信度: {confidence})")
-        with choice_col:
-            should_save = render_option_group(
-                [False, True],
-                labels=["不保存", "保存这条"],
-                key=f"memory_choice_{key_suffix}_{i}",
-                default=False,
-                columns=2,
+    with st.container(key="memory_panel"):
+        if has_error:
+            st.markdown(
+                '<div class="sl-memory-head">'
+                '<div class="sl-card-kicker">Memory</div>'
+                "<h3>这次提取没成功</h3>"
+                "<p>正文已经生成，不影响这轮回答；可以再点一次「提取记忆」。</p>"
+                "</div>",
+                unsafe_allow_html=True,
             )
-            if should_save:
-                selected_indices.append(i)
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        if st.button("✅ 确认写入选中", key=f"save_selected_memories_{key_suffix}"):
-            if selected_indices and _orch:
-                result = _resume_memory_approval(_orch, "save_selected", selected_indices)
-                st.success(f"已保存 {len(result['state']['saved_ids'])} 条记忆")
+            diagnostic = st.session_state.get("memory_diag", "")
+            if diagnostic:
+                with st.expander("失败诊断"):
+                    st.code(diagnostic)
+            if st.button("知道了", key=f"dismiss_memory_error_{key_suffix}"):
+                _finish_memory_extract("上次提取失败，已忽略")
                 _clear_memory_extraction_state()
                 st.rerun()
-            else:
-                st.warning("请先选择要保存的记忆")
-    with col2:
-        if st.button("❌ 拒绝写入", key=f"skip_memories_{key_suffix}"):
-            if _orch:
-                _resume_memory_approval(_orch, "reject")
-            st.session_state["rejected_memories"].extend(
-                candidate["content"] for candidate in candidates
-            )
-            _clear_memory_extraction_state()
-            st.rerun()
-    with col3:
-        if st.button("💾 全部写入", key=f"save_all_memories_{key_suffix}"):
-            if _orch:
-                result = _resume_memory_approval(_orch, "save_all")
-                st.success(f"已保存 {len(result['state']['saved_ids'])} 条记忆")
+            return
+
+        saved = _memory_saved_map()
+        all_saved = bool(candidates) and len(saved) >= len(candidates)
+        st.markdown(
+            '<div class="sl-memory-head">'
+            '<div class="sl-card-kicker">Memory candidates</div>'
+            f"<h3>这次提取到 {len(candidates)} 条</h3>"
+            "<p>默认一条都不写入。点左边的「写入」才会存进长期记忆，再点一次就是撤销并删除。</p>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+        for index, candidate in enumerate(candidates):
+            is_saved = index in saved
+            with st.container(key=f"memory_row_{key_suffix}_{index}_{'written' if is_saved else 'fresh'}"):
+                button_col, body_col = st.columns([1, 3.4])
+                with button_col:
+                    label = "已写入 · 撤销" if is_saved else "写入"
+                    if st.button(
+                        label,
+                        key=f"memory_row_btn_{key_suffix}_{index}",
+                        use_container_width=True,
+                        type="primary" if is_saved else "secondary",
+                        help="再点一次会删掉这条记忆，回到未写入" if is_saved else "写进长期记忆（MD + 向量）",
+                    ):
+                        if is_saved:
+                            _delete_memory_candidates([index])
+                        else:
+                            _write_memory_candidates([index])
+                        st.rerun()
+                with body_col:
+                    st.markdown(
+                        _memory_row_html(index, candidate, is_saved),
+                        unsafe_allow_html=True,
+                    )
+
+        action_col, fold_col = st.columns([1.1, 1.1])
+        with action_col:
+            label = "全部撤销" if all_saved else "全部写入"
+            if st.button(label, key=f"memory_all_{key_suffix}", use_container_width=True):
+                if all_saved:
+                    _delete_memory_candidates(range(len(candidates)))
+                else:
+                    written = _write_memory_candidates(range(len(candidates)))
+                    _finish_memory_extract(f"已写入 {written} 条")
+                st.rerun()
+        with fold_col:
+            if st.button("收起", key=f"fold_memories_{key_suffix}", use_container_width=True):
+                written = len(_memory_saved_map())
+                _finish_memory_extract(f"已写入 {written} 条" if written else "这次没有写入")
                 _clear_memory_extraction_state()
                 st.rerun()
+
 
 # ========== 实时流式渲染器 ==========
 def run_streaming_realtime(async_gen_factory, *, postprocess=None):
@@ -1008,11 +1105,15 @@ def _current_thread_id() -> str:
     )
 
 
-THREAD_TITLE_CHARS = 9
+THREAD_TITLE_CHARS = 24
 
 
 def _clip_thread_title(text: str, limit: int = THREAD_TITLE_CHARS) -> str:
-    """侧栏一行放得下的会话标题：只留前几个字，其余省略。"""
+    """会话标题只做安全截断，显示宽度交给 CSS 的省略号。
+
+    这里截太狠会让不同的会话显示成同一个标题（"去苏州玩两天，一万…" 出现三遍），
+    看起来像历史被改过。
+    """
     text = " ".join(str(text or "").split())
     if len(text) <= limit:
         return text
@@ -1033,11 +1134,14 @@ def _recent_threads(limit: int = 4):
             continue
         if len(output) >= limit:
             break
+        updated_at = str(row.get("last_at") or "")[:16].replace("T", " ")
         output.append({
             "thread_id": row.get("thread_id", ""),
             "title": _clip_thread_title(preview),
             "full_title": preview,
-            "updated_at": str(row.get("last_at") or "")[:16].replace("T", " "),
+            "updated_at": updated_at,
+            # 同一句话问过好几次时，只有时间能把它们分开。
+            "time": updated_at[11:16],
         })
     return output
 
@@ -1058,7 +1162,8 @@ def _start_new_thread() -> None:
     st.session_state["assistant_msgs"] = []
     st.session_state["messages"] = []
     # 旧会话没走完的交互状态不能带进新会话。
-    for stale_key in ("pending_assistant", "pending_clarify", "pending_compressed_summary"):
+    for stale_key in ("pending_assistant", "pending_clarify", "pending_compressed_summary",
+                      "last_memory_extract"):
         st.session_state.pop(stale_key, None)
 
 
@@ -1166,13 +1271,37 @@ def _activate_thread(thread_id: str) -> None:
     st.session_state["active_thread_id"] = thread_id
     st.session_state["assistant_msgs"] = restored
     # 换会话就丢弃上一轮没走完的交互状态，避免串到别的 thread 上。
-    for stale_key in ("pending_assistant", "pending_clarify", "pending_compressed_summary"):
+    for stale_key in ("pending_assistant", "pending_clarify", "pending_compressed_summary",
+                      "last_memory_extract"):
         st.session_state.pop(stale_key, None)
 
 
 def render_app_sidebar():
     with st.sidebar:
         st.markdown(brand_html(), unsafe_allow_html=True)
+
+        # 品牌之下、导航之上：新建对话 + 记忆提示，都是"这一屏"的动作，不进导航。
+        with st.container(key="new_thread"):
+            if st.button(
+                "＋ 新建对话",
+                key="new_thread_side",
+                use_container_width=True,
+                help="开一个全新的会话，当前会话留在「最近会话」里",
+            ):
+                _start_new_thread()
+                st.rerun()
+
+        pending_count = _pending_confirm_count()
+        if pending_count:
+            st.markdown(
+                alert_html(
+                    "warn",
+                    f"{pending_count} 项待确认",
+                    "候选记忆在对话区就能选，敏感操作到记忆中心。",
+                ),
+                unsafe_allow_html=True,
+            )
+
         st.markdown(nav_label_html("工作台"), unsafe_allow_html=True)
         current = st.session_state.get("active_page", "assistant")
         with st.container(key="nav_menu"):
@@ -1186,11 +1315,6 @@ def render_app_sidebar():
                     st.session_state["active_page"] = page_key
                     st.rerun()
 
-        with st.container(key="new_thread"):
-            if st.button("＋ 新建对话", key="new_thread_button", use_container_width=True):
-                _start_new_thread()
-                st.rerun()
-
         threads = _recent_threads()
         st.markdown(nav_label_html("最近会话"), unsafe_allow_html=True)
         active_thread_id = st.session_state.get("active_thread_id") or _current_thread_id()
@@ -1198,7 +1322,7 @@ def render_app_sidebar():
             if threads:
                 for index, thread in enumerate(threads):
                     if st.button(
-                        thread["title"],
+                        f"{thread['time']}  {thread['title']}".strip(),
                         key=f"recent_thread_{index}",
                         use_container_width=True,
                         type="primary" if thread["thread_id"] == active_thread_id else "secondary",
@@ -1213,15 +1337,6 @@ def render_app_sidebar():
                     unsafe_allow_html=True,
                 )
 
-        pending_count = int(bool(st.session_state.get("show_memory_extraction"))) + sum(
-            1 for key, value in st.session_state.items()
-            if key.startswith("pending_inline_") and value
-        )
-        if pending_count:
-            st.markdown(
-                alert_html("warn", f"{pending_count} 项待确认", "到记忆中心处理候选记忆与敏感操作。"),
-                unsafe_allow_html=True,
-            )
         st.markdown(user_html(st.session_state["user_id"], "local actor"), unsafe_allow_html=True)
         return current
 
@@ -1252,8 +1367,6 @@ def render_assistant_page():
     if "assistant_msgs" not in st.session_state:
         st.session_state["assistant_msgs"] = []
 
-    _refresh_background_memory_extraction()
-
     # 一句话已经在路上时，空态卡片立刻让位：否则这一轮会同时出现"卡片 + 我的消息"。
     pending_message = st.session_state.get("pending_assistant")
     with st.container():
@@ -1270,8 +1383,9 @@ def render_assistant_page():
         if persist_error := st.session_state.get("turn_persist_error"):
             st.caption(f"本轮的步骤记录没有写进会话库，切回来只会看到正文：{persist_error}")
 
-        if st.session_state.get("show_memory_extraction"):
-            st.info("本轮已生成待确认的记忆内容，可前往记忆中心查看和决定是否保存。")
+        # 记忆入口就在对话里：一个按需按钮 + 上次结果 + 候选清单，不必跳到记忆中心。
+        render_memory_entry("general", "assistant")
+        render_memory_extraction_panel("general", "assistant")
 
         if pending_message:
             st.session_state.pop("pending_assistant", None)
@@ -1303,22 +1417,8 @@ def render_assistant_page():
                             yield line
 
                 if orch:
-                    def _postprocess(_response, stream_events):
-                        # 中断的轮次没有正文也没有记忆，跳过记忆提取。
-                        if any(
-                            (event.get("event") == "clarify")
-                            for event in (stream_events or [])
-                        ):
-                            return []
-                        return _extract_memories_after_stream(
-                            orch,
-                            uid,
-                            browser_session_id,
-                            "general",
-                            stream_events,
-                        )
-
-                    response, events = run_streaming_realtime(_gen, postprocess=_postprocess)
+                    # 记忆不再在回答后自动判断：提取由对话区的按钮按需触发。
+                    response, events = run_streaming_realtime(_gen)
                     clarify = next(
                         (event for event in events if event.get("event") == "clarify"),
                         None,
@@ -1970,6 +2070,7 @@ def render_memory_page():
         "Memory Center",
     )
     render_last_memory_action_result()
+    render_memory_entry("general", "memory_center")
     render_memory_extraction_panel("", "memory_center")
 
     try:

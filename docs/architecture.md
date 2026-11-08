@@ -321,9 +321,67 @@ Photon 有四个必须知道的行为：
 
 ## 记忆提取的位置
 
-记忆提取**不在主图关键路径**：`finalize` 之后由 UI 调 `MemoryExtractionRunner`
-单独跑（`app/graphs/memory.py`）。原先把 `extract_memory` 挂成顶层节点并判断
-`state["extract_memory"]`，但那个状态从来没有人置真，属于死分支，已删除。
+记忆提取**不在主图关键路径，也不自动跑**。回答结束后系统不做任何记忆判断，
+只在对话区留一个「🧠 提取记忆」按钮（`render_memory_entry`），点了才提取。
+
+历史上这里出过两次问题，都指向同一个事实——没人起跑就等于没有功能：
+
+- `extract_memory` 曾挂成顶层节点、靠 `state["extract_memory"]` 判断，那个状态
+  从来没被置真，是死分支，已删除；
+- 删掉之后 UI 只剩"等 `memory_extraction` 事件 / 取缓存结果"，没有一处调
+  `start`，于是每轮都落到"没有值得写入的内容"，界面上永远没有可勾选的入口。
+
+### 提取窗口：游标决定"从哪开始"
+
+`conversation_store.memory_extraction_cursor` 按 `thread_id` 记一条
+`last_message_id`，表示这个会话的消息**已经提取到哪一条**。点按钮时：
+
+1. `TurnServices.memory_extraction_window` 取游标之后的 `role == 'user'` 消息；
+2. 按条数（20）与字数（4000，单条 800）双重封顶，`remaining` 告诉界面还剩多少；
+3. `messages` 为空 → 直接返回"没有新消息"，**一次模型都不调**；
+4. 提取成功后 `record_memory_extraction` 推进游标；失败不推进，这些消息还能重试。
+
+游标只前进不后退（SQL 里 `MAX(last_message_id, excluded.last_message_id)`），
+重复点击或并发都不会把同一段再送一遍。删会话时游标一起删。
+
+窗口经 `TurnState.memory_window` 透传进记忆子图，节点不再自己翻整段历史——
+token 花多少由窗口决定，不由历史长度决定。
+
+### 界面上必须看得见的两件事
+
+- **还有多少没提取**：按钮旁边一行说明，区分"还没提取过，将从头提取 N 条"与
+  "自上次提取后有 N 条新消息"；这两句都只读库，不建图、不调模型。
+- **上次点完是什么结果**：`last_memory_extract` 记 `candidates` / `no_content` /
+  `no_new` / `timeout` / `error` / `done`，写在同一行说明里。
+
+没开始对话（既没有会话消息、游标后也没有新消息）时按钮不渲染：空会话里摆一个
+"提取记忆"只是噪声。
+
+### 候选卡片：默认不写，一键写、再点就撤
+
+有候选时 `render_memory_extraction_panel` 就地渲染一张卡片，**默认一条都不写入**：
+
+- 每行左边一个按钮：未写入时是「写入」，点一下立即写进 MD + 向量；写成功后
+  按钮变「已写入 · 撤销」，再点一次把这条删掉，行回到未写入，可以再写；
+- 底部「全部写入 / 全部撤销」是同一个按钮的两种状态（全写完就翻成撤销），
+  另有「全部忽略」（进 `rejected_memories`，之后不再提）与「收起」（只是关面板）。
+
+写入走 `TurnGraph.save_memory_candidates` → `services.save_user_selected_memories`，
+撤销走 `memory_repository.delete_memory`。这里**不再走 `interrupt` 审批图**：
+按钮点击本身就是确认，图往返只会让"点一下写入"变成两次跳转。`MemoryApprovalGraph`
+因此只剩测试在用，保留与否待定。
+
+候选属于哪个会话由 `memory_extraction_thread` 记住：切到别的会话不显示，切回来
+还在——没处理完的候选不会因为继续对话而消失。
+
+去重有三层，缺一层都会重复提问：游标（哪些消息送过）、`existing_contents`
+（MD 里已有的内容）、`rejected_memories`（用户拒过的，作为 `excluded_contents`）。
+
+### 一个必须留着的静态方法
+
+`TurnServices._latest_user_message` 只取本轮用户原话：助手回答和更早的轮次
+都不该成为事实来源。它曾经被调用却从未定义，让整条提取链路每次都以
+`AttributeError` 失败——改记忆相关代码时先确认它还在。
 
 ### 商品检索：2-gram 索引
 

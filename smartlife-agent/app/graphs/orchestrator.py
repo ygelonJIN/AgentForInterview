@@ -233,6 +233,46 @@ class TurnGraph:
             user_id, session_id, scene, excluded_contents=excluded_contents or []
         )
 
+    def start_memory_extraction(
+        self,
+        user_id: str,
+        session_id: str,
+        scene: str,
+        excluded_contents=None,
+        messages=None,
+    ) -> None:
+        """在后台线程里跑记忆子图。
+
+        主图已经不再挂 ``extract_memory`` 节点（那条分支从未被置真），候选记忆
+        只能由「提取记忆」按钮主动起一次。``messages`` 是 UI 按游标切好的窗口，
+        不传就退回"本会话最后一条用户消息"。
+        """
+        self._memory_runner.start(user_id, session_id, scene, excluded_contents or [], messages)
+
+    def memory_extraction_window(self, user_id: str, session_id: str, scene: str):
+        """游标之后还没提取过的用户消息；空表示没有新内容，不用调模型。"""
+        return self.services.memory_extraction_window(user_id, session_id, scene)
+
+    def record_memory_extraction(self, thread_id: str, last_message_id: int) -> None:
+        self.services.record_memory_extraction(thread_id, last_message_id)
+
+    def save_memory_candidates(self, user_id: str, candidates, selected_indices=None):
+        """候选记忆写入：按钮点击本身就是确认，不再起 interrupt 审批。
+
+        与 ``MemoryApprovalGraph`` 用的是同一个持久化入口
+        （``services.save_user_selected_memories``），只是省掉一次图往返。
+        """
+        indices = (
+            list(range(len(candidates)))
+            if selected_indices is None
+            else [int(index) for index in selected_indices]
+        )
+        return self.services.save_user_selected_memories(user_id, list(candidates), indices)
+
+    def delete_memory(self, user_id: str, memory_id: str) -> bool:
+        """撤销一条刚写入的记忆：MD 与向量一起删。"""
+        return bool(self.services.memory_repository.delete_memory(user_id, memory_id))
+
 
 def _interrupt_payload(body: Any) -> Optional[Dict[str, Any]]:
     """从 updates 分块里取出中断载荷；不是中断就返回 None。"""
