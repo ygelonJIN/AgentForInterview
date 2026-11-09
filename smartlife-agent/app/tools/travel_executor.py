@@ -17,17 +17,20 @@ class TravelToolExecutor:
         self,
         *,
         weather_tool: Optional[Callable[..., Any]] = None,
+        forecast_tool: Optional[Callable[..., Any]] = None,
         route_tool: Optional[Callable[..., Any]] = None,
         activities_dir: Optional[Path] = None,
         activities_tool: Optional[Callable[..., Any]] = None,
     ):
-        if weather_tool is None or route_tool is None:
+        if weather_tool is None or forecast_tool is None or route_tool is None:
             from app.tools.map import get_route
-            from app.tools.weather import get_weather
+            from app.tools.weather import get_weather, get_weather_forecast
 
             weather_tool = weather_tool or get_weather
+            forecast_tool = forecast_tool or get_weather_forecast
             route_tool = route_tool or get_route
         self.weather_tool = weather_tool
+        self.forecast_tool = forecast_tool
         self.route_tool = route_tool
         self.activities_dir = (
             Path(activities_dir)
@@ -90,6 +93,19 @@ class TravelToolExecutor:
             self.weather_tool,
             {"city": destination, "date": travel_date.isoformat()},
             "get_weather",
+        )
+
+    async def get_weather_forecast(
+        self,
+        destination: str,
+        start: date,
+        days: int,
+    ) -> Dict[str, Any]:
+        """一次取整段逐日天气；失败就整段失败，不拿单日冒充多日。"""
+        return await self._invoke_real(
+            self.forecast_tool,
+            {"city": destination, "start_date": start.isoformat(), "days": max(1, int(days))},
+            "get_weather_forecast",
         )
 
     @staticmethod

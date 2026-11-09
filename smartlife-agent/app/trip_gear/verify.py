@@ -425,6 +425,30 @@ def verify(
     # 1. 逐条约束核对
     issues = check_constraints(facts, constraints, itinerary, gear, products)
 
+    # 每晚住宿预算：内部按人均计价，这里也按人均比，避免"两人一间"被算成两倍
+    if facts.lodging_budget is not None:
+        over = [
+            (day.day, float(day.lodging_cost or 0) / max(1, facts.effective_people))
+            for day in itinerary.days
+            if float(day.lodging_cost or 0) / max(1, facts.effective_people)
+            > float(facts.lodging_budget) + 1e-6
+        ]
+        if over:
+            day_number, per_person = over[0]
+            issues.append(
+                Issue(
+                    constraint=(
+                        f"住宿：第{day_number}天人均每晚 {per_person:.0f} 元"
+                        f" 超过每晚预算 {facts.lodging_budget:g} 元"
+                    ),
+                    actual=round(per_person, 2),
+                    limit=facts.lodging_budget,
+                    hint="换更便宜的住处，或放宽每晚住宿预算",
+                    # 没有可自动执行的改法，只披露不判死
+                    severity="minor",
+                )
+            )
+
     # 2. 没选到商品的装备如实披露；但要分清"库里没有"和"预算不够"，
     #    否则用户会以为商品库缺货，实际是自己给的钱不够。
     _, unknown = gear_cost(gear, products)

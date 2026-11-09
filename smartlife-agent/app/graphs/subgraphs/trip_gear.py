@@ -6,7 +6,8 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date
+import inspect
+from datetime import date, timedelta
 from typing import Any, Callable, Dict, List, Optional, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -15,12 +16,19 @@ from langgraph.types import interrupt
 
 from app.graphs._util import resolve
 from app.graphs.context import TurnContext
+from app.nlu import lexicon
 from app.streaming import EventType
 from app.trip_gear.constraints import (
+    _vague_city_request,
     apply_assisted,
     derive_constraints,
     drop_owned_duplicates,
+    ensure_destination,
+    ensure_people,
     ensure_start_date,
+    enrich_air_quality,
+    enrich_exchange_rate,
+    enrich_holidays,
     enrich_weather,
     merge_inferred,
 )
@@ -50,6 +58,10 @@ CONSTRAINT_INFER_TIMEOUT = 6.0
 SLOT_ASSIST_TIMEOUT = 4.5
 # 模型挑款是锦上添花：超时就用打分结果，不能拖住整轮。
 MODEL_SELECT_TIMEOUT = 9.0
+# 外部事实（天气/空气质量/汇率/假日）并发取，每条单独限时。
+# provider 自己是 10s×3 重试，串起来最坏两分钟；并发 + 单条 8s 才有上限。
+# 8s 是按冷启动实测定的：一次地理编码 + 一次预报约 4~5s，4s 会把多城市全掐断。
+FACT_TIMEOUT_SECONDS = 8.0
 
 STEP_LABELS = {
     "derive": (1, "约束派生"),
@@ -118,6 +130,198 @@ def _dep(runtime: Runtime[TurnContext], name: str, fallback: Optional[Callable[.
     return getattr(service, fallback or name, None)
 
 
+async def _load_weather(
+    runtime: Runtime[TurnContext],
+    destination: str,
+    start_date: Optional[str],
+    days: Optional[int],
+    cities: Optional[List[str]] = None,
+) -> Optional[Dict[str, Any]]:
+    """逐日天气优先：行程有几天就查几天，只有单日接口时退回一天。
+
+    拿第 1 天代表整趟是最省事的错法：第 2 天降温、第 3 天下雨，装备和安排
+    都得跟着变，而约束清单里只看得到一个数字，用户没法发现被漏掉了。
+    """
+    place = str(destination or "").strip()
+    if not place:
+        return None
+    start = str(start_date or "") or date.today().isoformat()
+    forecast = _dep(runtime, "weather_forecast", "_weather_forecast")
+
+    # 多城市：按"城市→天"的分法逐天取天气，避免拿一个城市的天气代表整趟
+    city_list = [str(city) for city in (cities or []) if city]
+    if len(city_list) >= 2 and forecast is not None:
+        from app.trip_gear.itinerary import assign_cities
+
+        span = int(days or 1)
+        assignment = assign_cities(span, city_list)
+
+        async def _one(city: str):
+            """同步依赖走线程，异步依赖直接 await；都要能被单条超时掐断。"""
+            try:
+                if inspect.iscoroutinefunction(forecast):
+                    return await asyncio.wait_for(
+                        forecast(city, start, span), FACT_TIMEOUT_SECONDS
+                    )
+                return await asyncio.wait_for(
+                    asyncio.to_thread(forecast, city, start, span),
+                    FACT_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                return None
+
+        payloads = await asyncio.gather(*[_one(city) for city in city_list])
+        rows: List[Dict[str, Any]] = []
+        for index in range(1, span + 1):
+            city = assignment.get(index) or city_list[0]
+            payload = payloads[city_list.index(city)] if payloads else None
+            target = (date.fromisoformat(start) + timedelta(days=index - 1)).isoformat()
+            row = next(
+                (
+                    item
+                    for item in ((payload or {}).get("days") or [])
+                    if str(item.get("date") or "") == target
+                ),
+                None,
+            )
+            if row:
+                rows.append({**row, "city": city})
+        return {"days": rows} if rows else None
+
+    if forecast is not None:
+        try:
+            result = await resolve(forecast(place, start, int(days or 1)))
+            if result:
+                return result
+        except Exception:
+            pass
+    lookup = _dep(runtime, "weather_lookup", "_weather")
+    if lookup is None:
+        return None
+    try:
+        return await resolve(lookup(place, start))
+    except Exception:
+        return None
+
+
+def _trip_dates(start_date: Optional[str], days: Optional[int]) -> List[str]:
+    """行程覆盖的日期列表；没给出发日期就按今天起算，和天气口径一致。"""
+    try:
+        start = date.fromisoformat(str(start_date or "")[:10]) if start_date else date.today()
+    except ValueError:
+        start = date.today()
+    span = max(1, int(days or 1))
+    return [(start + timedelta(days=offset)).isoformat() for offset in range(span)]
+
+
+async def _load_air_quality(
+    runtime: Runtime[TurnContext],
+    destination: str,
+    start_date: Optional[str],
+    days: Optional[int],
+) -> Optional[Dict[str, Any]]:
+    """逐日空气质量；它是补充证据，取不到就不写（天气已经负责降级说明）。"""
+    place = str(destination or "").strip()
+    if not place:
+        return None
+    if int(days or 1) > 5:
+        return None  # 空气质量接口只给 5 天，超出不查也不猜
+    lookup = _dep(runtime, "air_quality", "_air_quality")
+    if lookup is None:
+        return None
+    start = str(start_date or "") or date.today().isoformat()
+    try:
+        return await resolve(lookup(place, start, int(days or 1)))
+    except Exception:
+        return None
+
+
+async def _load_exchange_rate(
+    runtime: Runtime[TurnContext],
+    destination: str,
+) -> tuple[Optional[Dict[str, Any]], Optional[tuple]]:
+    """境外目的地才查汇率；表外目的地不猜货币。"""
+    from app.tools.travel_facts import currency_for
+
+    currency = currency_for(destination)
+    if not currency:
+        return None, None
+    lookup = _dep(runtime, "exchange_rate", "_exchange_rate")
+    if lookup is None:
+        return None, currency
+    try:
+        return await resolve(lookup("CNY", currency[0])), currency
+    except Exception:
+        return None, currency
+
+
+async def _load_holidays(
+    runtime: Runtime[TurnContext],
+    destination: str,
+    start_date: Optional[str],
+    days: Optional[int],
+) -> Optional[list]:
+    """只查国内法定假日（CN），且必须出发日期明确。
+
+    没说日期时按"今天"推出来的假日提示是误报：用户下周才走，今天是不是假期
+    跟他这趟没关系。所以这里宁可不出这条，也不拿默认值凑。
+    """
+    if not start_date:
+        return None
+    from app.tools.travel_facts import currency_for
+
+    if currency_for(destination):
+        return None  # 境外不查：接口只有国家维度，货币表外也不猜
+    lookup = _dep(runtime, "holidays", "_holidays")
+    if lookup is None:
+        return None
+    dates = _trip_dates(start_date, days)
+    years = sorted({str(item)[:4] for item in dates if item})
+    hits: List[Dict[str, Any]] = []
+    for year in years:
+        try:
+            payload = await resolve(lookup("CN", int(year)))
+        except Exception:
+            continue
+        for item in (payload or {}).get("holidays") or []:
+            if str(item.get("date") or "") in dates:
+                hits.append(item)
+    return hits
+
+
+async def _guard_fact(coro):
+    """单条事实限时；超时或异常都算"没拿到"，不影响其他事实。"""
+    try:
+        return await asyncio.wait_for(coro, timeout=FACT_TIMEOUT_SECONDS)
+    except Exception:
+        return None
+
+
+async def _load_facts(
+    runtime: Runtime[TurnContext],
+    facts: TripFacts,
+) -> Dict[str, Any]:
+    """四个外部事实并发取，谁慢谁超时，彼此不拖累。
+
+    串行是之前的写法：天气 + 空气质量 + 汇率 + 假日一次出行就吃掉七八秒，
+    provider 重试时更久。这里并发 + 单条 4s，整轮才有上限。
+    """
+    jobs = {
+        "weather": _load_weather(
+            runtime, facts.destination, facts.start_date, facts.days, facts.cities
+        ),
+        "air_quality": _load_air_quality(
+            runtime, facts.destination, facts.start_date, facts.days
+        ),
+        "exchange_rate": _load_exchange_rate(runtime, facts.destination),
+        "holidays": _load_holidays(
+            runtime, facts.destination, facts.start_date, facts.days
+        ),
+    }
+    values = await asyncio.gather(*[_guard_fact(job) for job in jobs.values()])
+    return dict(zip(jobs, values))
+
+
 async def _notify(runtime: Runtime[TurnContext], node: str, message: str) -> None:
     sink = runtime.context.sink_for(runtime)
     step, name = STEP_LABELS.get(node, (1, "装备规划"))
@@ -139,6 +343,9 @@ async def derive(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[st
     if (not facts.destination or not facts.days) and history_text:
         prior, _ = derive_constraints(history_text)
         inherited: List[str] = []
+        if not facts.origin and prior.origin:
+            facts.origin = prior.origin
+            inherited.append(f"出发地：{prior.origin}")
         if not facts.destination and prior.destination:
             facts.destination = prior.destination
             inherited.append(f"目的地：{prior.destination}")
@@ -191,6 +398,19 @@ async def derive(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[st
             except Exception:
                 assisted = None
 
+    # 省份不是城市：广东、浙江这类没有天气和路线可言，排出来只会是"广东某地"。
+    if facts.destination in lexicon.PROVINCES and len(facts.cities) < 2:
+        await _notify(runtime, "derive", "目的地是省份，需要具体城市")
+        return {
+            "facts": facts.model_dump(),
+            "constraints": [item.model_dump() for item in constraints],
+            "status": "needs_info",
+            "response": (
+                f"「{facts.destination}」是省份，不是城市：天气、路线和住宿都要按城市查。"
+                "告诉我具体去哪些城市（比如「广州、深圳、珠海」），我按这几个城市排。"
+            ),
+        }
+
     missing = []
     if not facts.destination:
         missing.append("目的地")
@@ -205,17 +425,12 @@ async def derive(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[st
             "response": f"为了生成行程和装备清单，请先补充：{'、'.join(missing)}。",
         }
 
-    weather_lookup = _dep(runtime, "weather_lookup", "_weather")
-    weather = None
-    if weather_lookup and facts.destination:
-        try:
-            weather = await resolve(weather_lookup(
-                facts.destination,
-                facts.start_date or date.today().isoformat(),
-            ))
-        except Exception:
-            weather = None
-    constraints = enrich_weather(facts, constraints, weather)
+    facts_bag = await _load_facts(runtime, facts)
+    constraints = enrich_weather(facts, constraints, facts_bag.get("weather"))
+    constraints = enrich_air_quality(facts, constraints, facts_bag.get("air_quality"))
+    rate, currency = facts_bag.get("exchange_rate") or (None, None)
+    constraints = enrich_exchange_rate(facts, constraints, rate, currency)
+    constraints = enrich_holidays(facts, constraints, facts_bag.get("holidays"))
 
     # 规则优先、模型补充：只补规则漏掉的语义约束（带老人、不吃海鲜、要宽松行程等）。
     infer = _dep(runtime, "constraint_infer", "_infer_constraints")
@@ -265,6 +480,14 @@ async def plan(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str,
         itinerary = apply_fixed_events(itinerary, facts)
     if not itinerary.destination:
         itinerary.destination = facts.destination
+    # 多城市：模型没写 city 的按"顺序均分"补齐，渲染和天气都依赖这个字段
+    if len(facts.cities) >= 2:
+        from app.trip_gear.itinerary import assign_cities
+
+        assignment = assign_cities(len(itinerary.days), facts.cities)
+        for day in itinerary.days:
+            if not day.city:
+                day.city = assignment.get(day.day, "")
     await _notify(
         runtime, "plan",
         f"已生成 {len(itinerary.days)} 天行程和 {len(suggestions)} 条装备建议",
@@ -582,6 +805,8 @@ async def verify_clarify(state: TripGearState, runtime: Runtime[TurnContext]) ->
     槽位（目的地、天数），这个补的是"方案到底行不行"的判断依据（温标、
     预算口径）。后者只有算过一遍方案才知道该问什么。
     """
+    from app.services.clarify_questions import build_questions
+
     verdict = state.get("verdict") or {}
     ask = verdict.get("ask") or {}
     missing = list(ask.get("missing") or [])
@@ -595,6 +820,7 @@ async def verify_clarify(state: TripGearState, runtime: Runtime[TurnContext]) ->
             "question": question,
             "verdict": verdict,
             "round": rounds,
+            "questions": build_questions(missing),
         }
     )
 
@@ -710,6 +936,13 @@ def _merge_facts(base: TripFacts, extra: TripFacts, overwrite: bool = False) -> 
     这时新给的预算不是补充而是修正，必须采纳。
     """
     merged = base.model_copy(deep=True)
+    if (not merged.origin or overwrite) and extra.origin:
+        merged.origin = extra.origin
+    if extra.cities and (not merged.cities or overwrite):
+        merged.cities = list(extra.cities)
+    # 之前给的是省份，这次答了具体城市：以具体城市为准
+    if extra.destination and merged.destination in lexicon.PROVINCES:
+        merged.destination = extra.destination
     if (not merged.destination or overwrite) and extra.destination:
         merged.destination = extra.destination
     if (not merged.days or overwrite) and extra.days:
@@ -779,6 +1012,8 @@ async def clarify(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[s
         gaps: List[str] = []
         if not target.destination:
             gaps.append("目的地")
+        elif target.destination in lexicon.PROVINCES and len(target.cities) < 2:
+            gaps.append("具体城市")
         if not target.days:
             gaps.append("天数")
         return gaps
@@ -787,13 +1022,23 @@ async def clarify(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[s
     if not gaps:
         return {"status": "clarified"}
 
-    question = f"为了生成行程和装备清单，请先补充：{'、'.join(gaps)}。"
+    if "具体城市" in gaps:
+        question = (
+            f"「{facts.destination}」是省份，不是城市：天气、路线和住宿都要按城市查。"
+            "告诉我要去哪些城市（比如「广州、深圳、珠海」）。"
+        )
+    else:
+        question = f"为了生成行程和装备清单，请先补充：{'、'.join(gaps)}。"
+    from app.services.clarify_questions import build_questions
+
     answer = interrupt(
         {
             "type": "trip_gear_clarify",
             "missing": gaps,
             "question": question,
             "facts": facts.model_dump(),
+            # 一次问多个：每题三个可点选项 + 一个自己填
+            "questions": build_questions(gaps, facts),
         }
     )
 
@@ -812,7 +1057,25 @@ async def clarify(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[s
         if constraint.key and constraint.key in known_keys:
             continue
         constraints.append(constraint)
-    # 补充里带了日期就把占位那条换掉（key 去重会把它挡在外面）。
+    # "广东的很多城市"是授权我们挑，不是缺信息：按省份常用城市先排
+    if (
+        merged.destination in lexicon.PROVINCES
+        and len(merged.cities) < 2
+        and _vague_city_request(text)
+    ):
+        defaults = list(lexicon.PROVINCE_CITIES.get(merged.destination) or ())
+        if defaults:
+            merged.cities = defaults
+            if "cities" not in known_keys:
+                constraints.append(Constraint(
+                    text=f"串联城市：{' → '.join(defaults)}",
+                    source="规则推导（省份常用城市）",
+                    key="cities",
+                ))
+
+    # 目的地可能从省份换成具体城市，日期可能从占位换成真实值：都要重写，不能并存
+    constraints = ensure_destination(merged, constraints, source="追问补充")
+    constraints = ensure_people(merged, constraints, source="追问补充")
     constraints = ensure_start_date(merged, constraints, source="追问补充")
 
     remaining = _missing(merged)
@@ -825,19 +1088,12 @@ async def clarify(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[s
             "response": f"还需要补充：{'、'.join(remaining)}。",
         }
 
-    weather_lookup = _dep(runtime, "weather_lookup", "_weather")
-    weather = None
-    if weather_lookup and merged.destination:
-        try:
-            weather = await resolve(
-                weather_lookup(
-                    merged.destination,
-                    merged.start_date or date.today().isoformat(),
-                )
-            )
-        except Exception:
-            weather = None
-    constraints = enrich_weather(merged, constraints, weather)
+    facts_bag = await _load_facts(runtime, merged)
+    constraints = enrich_weather(merged, constraints, facts_bag.get("weather"))
+    constraints = enrich_air_quality(merged, constraints, facts_bag.get("air_quality"))
+    rate, currency = facts_bag.get("exchange_rate") or (None, None)
+    constraints = enrich_exchange_rate(merged, constraints, rate, currency)
+    constraints = enrich_holidays(merged, constraints, facts_bag.get("holidays"))
 
     await _notify(runtime, "clarify", f"已补齐 {'、'.join(gaps)}，继续生成方案")
     return {

@@ -83,7 +83,8 @@ def render(
         lines.append("")
         lines.append(f"## 行程（{itinerary.destination or facts.destination} · {len(itinerary.days)} 天）")
         for day in itinerary.days:
-            lines.append(f"### 第 {day.day} 天")
+            city = f"（{day.city}）" if getattr(day, "city", "") else ""
+            lines.append(f"### 第 {day.day} 天{city}")
             if not day.items:
                 lines.append("- 暂无安排")
                 continue

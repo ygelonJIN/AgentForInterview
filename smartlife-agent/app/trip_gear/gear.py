@@ -76,12 +76,14 @@ def derive_gear(
         add("雨伞", 1, f"降水概率 {facts.rain_probability:.0f}%")
         add("登山鞋", 1, f"降水概率 {facts.rain_probability:.0f}%")
 
-    if (facts.min_temp_c is not None and facts.min_temp_c >= 26) or any(
+    uv_high = facts.uv_index_max is not None and facts.uv_index_max >= 6
+    if (facts.min_temp_c is not None and facts.min_temp_c >= 26) or uv_high or any(
         word in text for word in _WATER_WORDS
     ):
-        add("防晒霜", 1, "户外日晒")
-        add("帽子", 1, "户外日晒")
-        add("墨镜", 1, "户外日晒")
+        reason = f"紫外线峰值 {facts.uv_index_max:g}" if uv_high else "户外日晒"
+        add("防晒霜", 1, reason)
+        add("帽子", 1, reason)
+        add("墨镜", 1, reason)
 
     if any(word in text for word in _WATER_WORDS):
         add("泳衣", 1, "水上活动")
@@ -95,6 +97,9 @@ def derive_gear(
     if (facts.days or 0) >= 3:
         add("T恤", max(1, int(facts.days) - 1), f"{facts.days} 天行程，按天数−1 准备")
         add("洗衣袋", 1, "长途换洗")
+
+    if facts.aqi_max is not None and facts.aqi_max >= 150:
+        add("口罩", 1, f"空气质量 AQI {facts.aqi_max:.0f}")
 
     if facts.with_kids:
         add("儿童", 1, "同行有儿童")

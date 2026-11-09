@@ -7,6 +7,7 @@ from app.nlu.slots import (
     parse_budget_detail,
     parse_days,
     parse_destination,
+    parse_origin,
     parse_people,
     parse_start_date,
 )
@@ -127,12 +128,47 @@ def test_days(text, expected):
         ("杭州两天行程", "杭州"),
         ("从北京到上海", "上海"),
         ("推荐800元以内的跑鞋，并规划杭州两天行程", "杭州"),
+        # "我"后面的"在"是出发地，不是目的地：同一句里"去上海"必须赢
+        ("我在广东，我要去上海玩三天", "上海"),
+        ("我在广东，去上海玩三天", "上海"),
+        ("我在杭州，周末想去莫干山露营", "莫干山"),
+        ("从广州飞上海", "上海"),
         ("去露营", ""),  # 场景词不是地名
         ("我想买个帐篷", ""),
     ],
 )
 def test_destination(text, expected):
     assert parse_destination(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("我在广东，我要去上海玩三天", "广东"),
+        ("我在上海，想去迪士尼玩两天", "上海"),
+        ("从广州出发去上海", "广州"),
+        ("从广州飞上海", "广州"),
+        ("我在浦东的朋友那边住一晚", ""),  # "的"后面是半截句子，不是地名
+        ("去杭州玩三天", ""),
+        ("预算3000", ""),
+    ],
+)
+def test_origin(text, expected):
+    assert parse_origin(text) == expected
+
+
+def test_visit_is_an_appointment_not_a_ticket():
+    """"有一天去找朋友"是约见：地点和事由固定，哪天由排程决定。"""
+    slots = extract_slots("我在广东，我要去上海玩三天，有一天去找一个我在浦东的朋友")
+
+    assert slots.destination == "上海"
+    assert slots.origin == "广东"
+    assert len(slots.fixed_events) == 1
+    event = slots.fixed_events[0]
+    assert event["title"] == "找朋友"
+    assert event["venue"] == "浦东"
+    assert event["status"] == "appointment"
+    assert event["day"] == 0
 
 
 @pytest.mark.parametrize(
@@ -195,3 +231,31 @@ def test_budget_still_excludes_gear_and_product_prices():
 
     # 手机单价不是出行预算
     assert extract_slots("上海2天，手机5000元").budget is None
+
+
+def test_nights_as_hotel_rate_is_not_trip_length():
+    """"酒店一晚不超400"里的"一晚"是房价单位，不能把一周行程算成两天。"""
+    text = "我有两个人要在上海出发去广东，打算一周，去广东的很多城市，预算酒店一晚不超400"
+
+    slots = extract_slots(text)
+
+    assert slots.days == 7
+    assert slots.lodging_budget == 400
+    assert slots.destination == "广东"
+    assert slots.origin == "上海"
+    assert slots.people == 2
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("每晚不超过300", 300),
+        ("住宿一晚500以内", 500),
+        ("酒店预算5000", None),   # 整趟预算，不是每晚
+        ("玩三晚", None),
+    ],
+)
+def test_lodging_budget(text, expected):
+    from app.nlu.slots import parse_lodging_budget
+
+    assert parse_lodging_budget(text) == expected

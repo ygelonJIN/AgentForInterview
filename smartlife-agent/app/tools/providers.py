@@ -39,6 +39,13 @@ _CIRCUIT_BREAKERS: Dict[str, CircuitBreaker] = {}
 _RESPONSE_CACHES: Dict[str, TTLCache[Dict[str, Any]]] = {}
 
 
+def _at(values: Any, index: int) -> Any:
+    """按索引取数组元素；缺字段或长度不够都返回 None，不抛异常。"""
+    if isinstance(values, list) and 0 <= index < len(values):
+        return values[index]
+    return None
+
+
 def _epoch_from_monotonic(created_at: float) -> float:
     return time.time() - max(0.0, time.monotonic() - created_at)
 
@@ -166,6 +173,9 @@ class JsonHttpProvider:
 
 OPEN_METEO_GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
 OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+OPEN_METEO_AIR_QUALITY_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
+FRANKFURTER_URL = "https://api.frankfurter.app/latest"
+NAGER_HOLIDAY_URL = "https://date.nager.at/api/v3/PublicHolidays"
 OSRM_ROUTING_BASE_URL = "https://routing.openstreetmap.de"
 OSRM_PUBLIC_FALLBACK_URL = "https://router.project-osrm.org"
 PHOTON_SEARCH_URL = "https://photon.komoot.io/api/"
@@ -250,11 +260,19 @@ class OpenMeteoWeatherProvider(JsonHttpProvider):
             url=OPEN_METEO_FORECAST_URL,
         )
 
+    MAX_FORECAST_DAYS = 16
+
     def _fetch_once(self, params: Dict[str, Any]) -> Dict[str, Any]:
         city = str(params["city"]).strip()
-        target = date.fromisoformat(str(params["date"]))
+        start = date.fromisoformat(str(params["date"]))
         today = date.today()
-        if target < today or target > today + timedelta(days=15):
+        try:
+            span = int(params.get("days") or 1)
+        except (TypeError, ValueError):
+            span = 1
+        span = max(1, min(span, self.MAX_FORECAST_DAYS))
+        end = start + timedelta(days=span - 1)
+        if start < today or end > today + timedelta(days=15):
             raise ValueError("Open-Meteo 预报仅支持今天至未来 15 天")
 
         location = _geocode(city)
@@ -265,11 +283,36 @@ class OpenMeteoWeatherProvider(JsonHttpProvider):
                 "longitude": location["longitude"],
                 "current": "temperature_2m,relative_humidity_2m,weather_code",
                 "hourly": "relative_humidity_2m",
-                "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+                "daily": (
+                    "weather_code,temperature_2m_max,temperature_2m_min,"
+                    "precipitation_probability_max,sunrise,sunset,uv_index_max"
+                ),
                 "forecast_days": 16,
                 "timezone": "auto",
             },
         )
+        rows = [
+            self._daily_row(location, forecast, start + timedelta(days=offset), today)
+            for offset in range(span)
+        ]
+        if span == 1:
+            return rows[0]
+        # 一次请求就拿整段：逐日排程只需要一次 HTTP，不必按天各发一次。
+        return {
+            "city": location["name"],
+            "start": start.isoformat(),
+            "days": rows,
+            "latitude": location["latitude"],
+            "longitude": location["longitude"],
+        }
+
+    def _daily_row(
+        self,
+        location: Dict[str, Any],
+        forecast: Dict[str, Any],
+        target: date,
+        today: date,
+    ) -> Dict[str, Any]:
         daily = forecast.get("daily") or {}
         times = daily.get("time") or []
         if target.isoformat() not in times:
@@ -319,9 +362,123 @@ class OpenMeteoWeatherProvider(JsonHttpProvider):
             "condition": condition,
             "humidity": f"{humidity}%",
             "precipitation_probability": precipitation,
+            # 日出日落与紫外线：查一次天气顺带就有，用来判"这天几点天黑""要不要防晒"
+            "sunrise": _at(daily.get("sunrise"), index),
+            "sunset": _at(daily.get("sunset"), index),
+            "uv_index_max": _at(daily.get("uv_index_max"), index),
             "suggestion": suggestion,
             "latitude": location["latitude"],
             "longitude": location["longitude"],
+        }
+
+
+class OpenMeteoAirQualityProvider(JsonHttpProvider):
+    """Open-Meteo 空气质量：免 key，按小时取，聚合成每天的最大值。"""
+
+    MAX_FORECAST_DAYS = 5
+
+    def __init__(self):
+        super().__init__(name="air-quality-open-meteo", url=OPEN_METEO_AIR_QUALITY_URL)
+
+    def _fetch_once(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        city = str(params["city"]).strip()
+        start = date.fromisoformat(str(params["date"]))
+        try:
+            span = int(params.get("days") or 1)
+        except (TypeError, ValueError):
+            span = 1
+        span = max(1, min(span, self.MAX_FORECAST_DAYS))
+        today = date.today()
+        if start < today or start + timedelta(days=span - 1) > today + timedelta(days=self.MAX_FORECAST_DAYS - 1):
+            raise ValueError(f"空气质量预报仅支持今天至未来 {self.MAX_FORECAST_DAYS} 天")
+
+        location = _geocode(city)
+        payload = _request_json(
+            OPEN_METEO_AIR_QUALITY_URL,
+            {
+                "latitude": location["latitude"],
+                "longitude": location["longitude"],
+                "hourly": "pm2_5,us_aqi",
+                "forecast_days": self.MAX_FORECAST_DAYS,
+                "timezone": "auto",
+            },
+        )
+        hourly = payload.get("hourly") or {}
+        times = hourly.get("time") or []
+        rows = []
+        for offset in range(span):
+            target = (start + timedelta(days=offset)).isoformat()
+            pm25 = [
+                float(value)
+                for timestamp, value in zip(times, hourly.get("pm2_5") or [])
+                if str(timestamp).startswith(target) and value is not None
+            ]
+            aqi = [
+                float(value)
+                for timestamp, value in zip(times, hourly.get("us_aqi") or [])
+                if str(timestamp).startswith(target) and value is not None
+            ]
+            rows.append({
+                "date": target,
+                "pm2_5_max": round(max(pm25), 1) if pm25 else None,
+                "aqi_max": round(max(aqi), 1) if aqi else None,
+            })
+        if not any(row["aqi_max"] is not None for row in rows):
+            raise ValueError("Open-Meteo 未返回空气质量数据")
+        return {
+            "city": location["name"],
+            "start": start.isoformat(),
+            "days": rows,
+            "standard": "us_aqi",
+        }
+
+
+class FrankfurterFxProvider(JsonHttpProvider):
+    """欧洲央行参考汇率（Frankfurter）：免 key，按自然日更新。"""
+
+    def __init__(self):
+        super().__init__(name="fx-frankfurter", url=FRANKFURTER_URL)
+
+    def _fetch_once(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        base = str(params["base"]).strip().upper()
+        quote = str(params["quote"]).strip().upper()
+        payload = _request_json(FRANKFURTER_URL, {"from": base, "to": quote})
+        rates = payload.get("rates") or {}
+        if quote not in rates:
+            raise ValueError(f"汇率 provider 未返回 {base}->{quote}")
+        return {
+            "base": base,
+            "quote": quote,
+            "rate": float(rates[quote]),
+            "date": str(payload.get("date") or ""),
+        }
+
+
+class NagerHolidayProvider(JsonHttpProvider):
+    """Nager.Date 公共假日：免 key，按国家 + 年份查。"""
+
+    def __init__(self):
+        super().__init__(name="holidays-nager", url=NAGER_HOLIDAY_URL)
+
+    def _fetch_once(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        country = str(params["country"]).strip().upper()
+        year = int(params["year"])
+        payload = _request_json(f"{NAGER_HOLIDAY_URL}/{year}/{country}", {})
+        items = payload.get("results") if isinstance(payload, dict) else payload
+        if not isinstance(items, list):
+            raise ValueError("假日 provider 返回格式异常")
+        return {
+            "country": country,
+            "year": year,
+            "holidays": [
+                {
+                    "date": str(item.get("date") or ""),
+                    "name": str(item.get("name") or ""),
+                    "local_name": str(item.get("localName") or ""),
+                }
+                for item in items
+                if isinstance(item, dict) and item.get("date")
+            ],
         }
 
 
@@ -579,6 +736,18 @@ def get_weather_provider() -> JsonHttpProvider:
     return OpenMeteoWeatherProvider()
 
 
+def get_air_quality_provider() -> JsonHttpProvider:
+    return OpenMeteoAirQualityProvider()
+
+
+def get_fx_provider() -> JsonHttpProvider:
+    return FrankfurterFxProvider()
+
+
+def get_holiday_provider() -> JsonHttpProvider:
+    return NagerHolidayProvider()
+
+
 def get_route_provider() -> JsonHttpProvider:
     custom_url = os.environ.get("SMARTLIFE_ROUTE_API_URL", "")
     if custom_url:
@@ -609,6 +778,9 @@ def get_provider_status() -> Dict[str, Any]:
         activities_name, activities_ready = f"unavailable: {type(exc).__name__}", False
     return {
         "weather": get_weather_provider().configured,
+        "air_quality": get_air_quality_provider().configured,
+        "fx": get_fx_provider().configured,
+        "holidays": get_holiday_provider().configured,
         "route": get_route_provider().configured,
         "activities": activities_ready,
         "activities_provider": activities_name,

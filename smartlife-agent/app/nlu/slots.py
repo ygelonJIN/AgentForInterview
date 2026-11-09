@@ -19,10 +19,46 @@ from app.nlu.numerals import cn_or_arabic, find_amounts
 
 _NUM = r"\d+|[零〇一二两三四五六七八九十百千]+"
 
-# 目的地：动词后面跟 2~8 个汉字
-_DEST_VERB = re.compile(r"(?:去|到|在|前往|想去|准备去|打算去|飞往|飞到|飞|坐高铁去|自驾去|回到|回)")
+# 目的地：动词后面跟 2~8 个汉字。
+# 分强弱两档：`我/我们` 后面的"在"说的是"人在哪儿"（出发地），不是目的地。
+# "我在广东，我要去上海" 里先扫强动词才抽得到上海，否则第一个命中的"在广东"直接胜出。
+_DEST_VERB_STRONG = re.compile(
+    r"(?:想去|准备去|打算去|坐高铁去|自驾去|前往|飞往|飞到|回到|去|到|飞|回)"
+)
+_DEST_VERB_WEAK = re.compile(r"(?:在)")
 _CJK_RUN = re.compile(r"[\u4e00-\u9fa5]{2,8}")
+
+# 出发地：``我在广东`` / ``从广州出发``。必须和目的地分开抽——
+# 合成一个槽位就是二选一，选错整趟行程的方向都反了。
+_ORIGIN_IN = re.compile(
+    r"(?:我|我们|本人|咱|俺)\s*(?:现在|目前|人)?\s*(?:在|住在|住|来自)\s*([\u4e00-\u9fa5]{2,6})"
+)
+_ORIGIN_FROM = re.compile(r"从\s*([\u4e00-\u9fa5]{2,6}?)\s*(?:出发|飞|坐|开车|过去|到|去|来)")
+# "在上海出发去广东"：出发地不一定是"我"开头的句子
+_ORIGIN_DEPART = re.compile(r"(?:在|从)\s*([\u4e00-\u9fa5]{2,6}?)\s*出发")
+# "上海到广州"：没有"从"也要认出起点
+_ORIGIN_TO = re.compile(r"(?:^|[，。；;、\s])\s*([\u4e00-\u9fa5]{2,6}?)\s*(?:到|至)\s*[\u4e00-\u9fa5]{2,6}")
+_ORIGIN_SUBJECTS = ("我", "我们", "本人", "咱", "俺", "他", "她", "住", "住在")
 _LEADING_PARTICLES = re.compile(r"^(?:并|和|再|然后|顺便|规划|安排|去|到|在|回)+")
+
+# 否定：只看紧挨着的前几个字，且排除"特别/分别/区别"这类词里的"别"
+_NEGATION_WORDS = ("不", "没", "别", "免", "无需")
+_NEGATION_FALSE = ("特别", "分别", "区别", "个别")
+
+
+def _negated_before(source: str, position: int, window: int = 3) -> bool:
+    head = source[max(0, position - window):position]
+    if any(word in head for word in _NEGATION_FALSE):
+        return False
+    return any(word in head for word in _NEGATION_WORDS)
+
+
+# 景区/地标不是独立城市：出现在同一句里要归并到它的城市
+_SUB_PLACES = {
+    "鼓浪屿": "厦门", "曾厝垵": "厦门", "西湖": "杭州", "外滩": "上海",
+    "迪士尼": "上海", "故宫": "北京", "兵马俑": "西安", "亚龙湾": "三亚",
+    "宽窄巷子": "成都", "夫子庙": "南京", "回民街": "西安", "洱海": "大理",
+}
 _PLACES_BY_LENGTH = tuple(sorted(lexicon.PLACES, key=len, reverse=True))
 _PLACE_BEFORE_DURATION = re.compile(
     rf"([\u4e00-\u9fa5]{{2,6}}?)\s*(?:{_NUM})\s*(?:天|日|晚)"
@@ -40,6 +76,8 @@ _PEOPLE_RELATION = re.compile(
 
 # 天数
 _DAYS = re.compile(rf"(?<![今明后昨前第月])(?P<n>{_NUM})\s*(?:天|日)")
+# "广州、深圳、珠海各玩两天"：这是每城天数，整趟要乘城市数
+_PER_CITY_DAYS = re.compile(rf"各\s*(?:玩|待|住|安排)?\s*(?P<n>{_NUM})\s*(?:天|日)")
 _NIGHTS = re.compile(rf"(?P<n>{_NUM})\s*晚")
 _WEEKS = re.compile(rf"(?P<n>{_NUM}|半)\s*个?\s*(?:周|星期|礼拜)")
 _HALF_MONTH = re.compile(r"(?:半|0\.5)\s*个?\s*月")
@@ -57,6 +95,14 @@ _WEEKDAY_WORDS = {
 }
 _FIXED_HOLIDAYS = {
     "国庆": (10, 1), "十一": (10, 1), "五一": (5, 1), "劳动节": (5, 1), "元旦": (1, 1),
+}
+# 农历节日没有固定公历日期：只列已知年份，查不到就不猜
+_LUNAR_HOLIDAYS = {
+    "春节": {2026: (2, 17), 2027: (2, 6), 2028: (1, 26)},
+    "过年": {2026: (2, 17), 2027: (2, 6), 2028: (1, 26)},
+    "清明": {2026: (4, 5), 2027: (4, 5), 2028: (4, 4)},
+    "端午": {2026: (6, 19), 2027: (6, 9), 2028: (5, 28)},
+    "中秋": {2026: (9, 25), 2027: (9, 15), 2028: (10, 3)},
 }
 
 # 预算语境
@@ -90,8 +136,15 @@ _CN_BEFORE_BUDGET = re.compile(
 _SCOPE_EXCLUDE = (
     "不含装备", "装备另算", "装备另计", "装备不算", "装备除外",
     "装备单独算", "装备单算", "装备自己买", "不含装备预算",
+    "不需要装备", "不用装备", "不带装备", "不买装备", "装备不买",
 )
 _SCOPE_INCLUDE = ("含装备", "包含装备", "装备也算", "算上装备", "预算含装备", "连装备")
+
+# "酒店一晚不超400"：单价口径，不是住几晚，也不是总预算
+_LODGING_RATE = re.compile(
+    r"(?:(?:酒店|住宿|房费|民宿|住店)[^，。；;！？\n]{0,10}?)?"
+    r"(?:一晚|每晚|一晚上|每夜)[^0-9，。；;！？\n]{0,8}(?P<num>\d{2,5}(?:\.\d+)?)"
+)
 
 _CAMP_WORDS = ("露营", "营地", "扎营", "帐篷过夜")
 _HOTEL_WORDS = ("酒店", "民宿", "青旅", "宾馆", "客栈", "住店")
@@ -129,6 +182,20 @@ _EVENT_HHMM = re.compile(r"(\d{1,2})\s*[:：]\s*(\d{2})")
 _EVENT_HOUR = re.compile(r"(\d{1,2})\s*[点时]")
 _EVENT_PRICE = re.compile(r"(\d+(?:\.\d+)?)\s*元")
 _EVENT_DATE = re.compile(r"(?:(20\d{2})\s*年)?\s*(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]")
+# "有一天去找朋友" 这类约见：人和地点是明确的，哪天不明确
+_VISIT_PEOPLE = ("朋友", "同学", "亲戚", "家人", "发小", "闺蜜", "老乡")
+_VISIT_VERBS = ("探望", "拜访", "约见", "看看", "去找", "去找个", "见", "找", "看")
+_VISIT_CUE = re.compile(
+    rf"(?P<verb>{'|'.join(_VISIT_VERBS)})\s*(?:一个|一位|个|位|下)?\s*(?:我|你)?\s*"
+    rf"(?:在\s*[\u4e00-\u9fa5]{{2,6}}\s*的)?\s*(?P<who>{'|'.join(_VISIT_PEOPLE)})"
+)
+_VISIT_PLACE = re.compile(
+    rf"(?:在|去|到)\s*([\u4e00-\u9fa5]{{2,6}}?)\s*的\s*(?:{'|'.join(_VISIT_PEOPLE)})"
+)
+# "去浦东找朋友"：地点夹在"去"和"找"之间
+_VISIT_PLACE_VERB = re.compile(
+    rf"(?:去|到)\s*([\u4e00-\u9fa5]{{2,6}}?)\s*(?:{'|'.join(_VISIT_VERBS)})"
+)
 # "在上海音乐厅看XX" → 地点 + 动作 + 标题
 _EVENT_VENUE = re.compile(r"(?:^|[了，,、\s])在\s*(.{2,14}?)\s*(?:看|听|参加|上|逛)\s*(.+)$")
 _EVENT_LEAD = re.compile(r"^[了，,、\s的是]+")
@@ -140,9 +207,12 @@ class Slots:
     """一条消息里能抽到的全部槽位。``None`` 表示"用户没说"，不是 0。"""
 
     destination: str = ""
+    origin: str = ""
+    cities: List[str] = field(default_factory=list)
     days: Optional[int] = None
     people: Optional[int] = None
     budget: Optional[float] = None
+    lodging_budget: Optional[float] = None
     gear_budget: Optional[float] = None
     budget_scope: str = "all_in"
     start_date: Optional[str] = None
@@ -197,6 +267,9 @@ def _valid_destination(candidate: str) -> bool:
         return False
     if any(text.startswith(word) for word in lexicon.DESTINATION_STOPWORDS):
         return False
+    # 夹着虚词或动词的，是半截句子不是地名（"找一个我在浦东"）。地名里没有这几个字。
+    if any(char in text for char in "我的了在找去"):
+        return False
     # "去露营"抓到的是场景词，不是地名
     if text in lexicon.TRAVEL_SCENE or text in lexicon.TRAVEL_STRONG:
         return False
@@ -207,11 +280,17 @@ def _valid_destination(candidate: str) -> bool:
     return True
 
 
-def parse_destination(text: str) -> str:
-    """先按"去 X"抓，再按"X 两天"抓，最后查地名表。"""
-    source = str(text or "")
+def _follows_subject(source: str, position: int) -> bool:
+    """"我/我们"后面紧跟的"在"是"人在哪"，不是"要去哪"。"""
+    return source[:position].rstrip().endswith(_ORIGIN_SUBJECTS)
 
-    for match in _DEST_VERB.finditer(source):
+
+def _verb_destination(source: str, pattern, skip_origin: bool) -> str:
+    for match in pattern.finditer(source):
+        if _negated_before(source, match.start()):
+            continue
+        if skip_origin and _follows_subject(source, match.start()):
+            continue
         run = _CJK_RUN.match(source, match.end())
         if not run:
             continue
@@ -224,6 +303,21 @@ def parse_destination(text: str) -> str:
         candidate = _trim_destination(raw)
         if _valid_destination(candidate):
             return candidate
+    return ""
+
+
+def parse_destination(text: str) -> str:
+    """先按"去 X"抓，再按"X 两天"抓，最后查地名表。"""
+    source = str(text or "")
+
+    # 强动词（去/到/回/飞）优先于"在"：一句话里同时出现起点和终点时，
+    # "去上海"必须赢过"在广东"。
+    found = _verb_destination(source, _DEST_VERB_STRONG, skip_origin=False)
+    if found:
+        return found
+    found = _verb_destination(source, _DEST_VERB_WEAK, skip_origin=True)
+    if found:
+        return found
 
     for place in sorted(lexicon.PLACES, key=len, reverse=True):
         if place in source:
@@ -236,6 +330,50 @@ def parse_destination(text: str) -> str:
         if _valid_destination(candidate):
             return candidate
     return ""
+
+
+def parse_origin(text: str) -> str:
+    """出发地："我在广东" 里的广东。
+
+    目的地和出发地同句出现是常态（"我在广东，我要去上海"）。只抽目的地，
+    起点就没了，行程里的交通和时长也只能靠猜；只抽到一个槽位更糟——会把
+    起点当终点。
+    """
+    source = str(text or "")
+    for pattern in (_ORIGIN_IN, _ORIGIN_FROM, _ORIGIN_DEPART, _ORIGIN_TO):
+        for match in pattern.finditer(source):
+            candidate = _trim_destination(match.group(1))
+            if _valid_destination(candidate):
+                return candidate
+    return ""
+
+
+def parse_cities(text: str, origin: str = "") -> List[str]:
+    """按出现顺序抽所有城市，用于"去广东的很多城市"这类多城需求。
+
+    只认地名表里的城市；省份不算城市。出发地要排掉，否则"从上海去广州"
+    会把上海也算进行程城市。
+    """
+    source = str(text or "")
+    hits = []
+    for place in lexicon.PLACES:
+        start = source.find(place)
+        if start < 0:
+            continue
+        hits.append((start, -len(place), place))
+    ordered: List[str] = []
+    for start, _neg_len, place in sorted(hits):
+        if place == origin or place in ordered:
+            continue
+        if _negated_before(source, start, window=4):
+            continue
+        ordered.append(place)
+    # 鼓浪屿归厦门、西湖归杭州：景点不算多城市
+    return [
+        place
+        for place in ordered
+        if not (place in _SUB_PLACES and _SUB_PLACES[place] in ordered)
+    ]
 
 
 # ---------------------------------------------------------------- 人数
@@ -263,6 +401,9 @@ def parse_people(text: str) -> Optional[int]:
         if value:
             return int(value)
 
+    extras = _relation_extras(source)
+    if extras:
+        return 1 + extras
     if any(word in source for word in _PEOPLE_PAIR_WORDS):
         if _PEOPLE_RELATION.search(source) and any(word in source for word in ("孩子", "娃", "女儿", "儿子")):
             return 3
@@ -272,6 +413,20 @@ def parse_people(text: str) -> Optional[int]:
     if _PEOPLE_RELATION.search(source):
         return 2
     return None
+
+
+def _relation_extras(source: str) -> int:
+    """"带爸妈/带娃/和朋友"里跟着的人数；自己算 1 个，由调用方加上。"""
+    total = 0
+    if re.search(r"带(?:上|着)?(?:爸妈|父母|爹妈|双亲)", source):
+        total += 2
+    elif re.search(r"带(?:上|着)?(?:老人|长辈|爷爷|奶奶|外公|外婆)", source):
+        total += 1
+    if re.search(r"带(?:上|着)?(?:娃|孩子|小孩|儿童|宝宝|小朋友)", source):
+        total += 1
+    if re.search(r"(?:和|跟|与|带上)(?:一个|一位|个)?(?:朋友|同事|同学|闺蜜|发小|伴侣|对象)", source):
+        total += 1
+    return total
 
 
 def parse_people_detail(text: str):
@@ -284,6 +439,20 @@ def parse_people_detail(text: str):
 # ---------------------------------------------------------------- 天数
 
 
+_RATE_AFTER = re.compile(
+    r"^\s*(?:不超|不超过|以内|以下|上限|最多|不到|低于|\d|"
+    r"[零〇一二两三四五六七八九十百千]+\s*(?:元|块))"
+)
+
+
+def _nights_is_price(source: str, match) -> bool:
+    """判断这个"N 晚"是住宿时长还是房价口径。"""
+    before = source[max(0, match.start() - 4):match.start()]
+    if any(word in before for word in ("每", "酒店", "房价", "住宿", "房")):
+        return True
+    return bool(_RATE_AFTER.match(source[match.end():]))
+
+
 def parse_days(text: str) -> Optional[int]:
     source = str(text or "")
 
@@ -293,13 +462,17 @@ def parse_days(text: str) -> Optional[int]:
         if value:
             return int(value)
 
-    match = _NIGHTS.search(source)
-    if match:
+    for match in _NIGHTS.finditer(source):
+        # "酒店一晚不超400" 里的"一晚"是房价单位，不是住几晚
+        if _nights_is_price(source, match):
+            continue
         value = cn_or_arabic(match.group("n"))
         if value:
             # "3 晚" ≈ 4 天（住 3 晚占 4 个白天）
             return int(value) + 1
 
+    if any(word in source for word in ("当天来回", "当天往返", "一日游", "一天往返", "当日往返")):
+        return 1
     if "周末" in source:
         return 2
     if "小长假" in source:
@@ -429,6 +602,22 @@ def parse_budget(text: str) -> Optional[float]:
     return parse_budget_detail(text)[0]
 
 
+_PER_PERSON_CUES = ("人均", "每人", "一人")
+
+
+def parse_per_person_budget(text: str) -> Optional[float]:
+    """人均预算：只认"人均/每人 + 金额"，不和人头数相乘（换算在外层做）。"""
+    source = str(text or "")
+    for cue in _PER_PERSON_CUES:
+        match = re.search(rf"{cue}[^0-9]{{0,4}}(\d+(?:\.\d+)?)", source)
+        if match:
+            return float(match.group(1))
+        match = re.search(rf"(\d+(?:\.\d+)?)\s*(?:元|块)?\s*(?:左右)?{cue}", source)
+        if match:
+            return float(match.group(1))
+    return None
+
+
 def parse_gear_budget(text: str) -> Optional[float]:
     source = str(text or "")
     for value, start, end in _budget_candidates(source):
@@ -497,11 +686,45 @@ def parse_start_date(text: str, today=None) -> Optional[str]:
     if "周末" in source:
         return _shift_weekday(base, 5, next_week=("下" in source)).isoformat()
 
+    if "下个月" in source or "下月" in source:
+        year = base.year + (1 if base.month == 12 else 0)
+        month = 1 if base.month == 12 else base.month + 1
+        return date(year, month, 1).isoformat()
+
+    if "月底" in source:
+        year = base.year + (1 if base.month == 12 else 0)
+        month = 1 if base.month == 12 else base.month + 1
+        return (date(year, month, 1) - timedelta(days=1)).isoformat()
+
+    for word, table in _LUNAR_HOLIDAYS.items():
+        if word not in source:
+            continue
+        for year in (base.year, base.year + 1):
+            if year in table:
+                candidate = date(year, *table[year])
+                if candidate >= base:
+                    return candidate.isoformat()
+        return None
+
     for word, (month, day) in _FIXED_HOLIDAYS.items():
-        if word in source:
+        # "十一月"不是"十一"：节日词后面不许紧跟"月"
+        if re.search(re.escape(word) + r"(?!月)", source):
             candidate = date(base.year, month, day)
             if candidate < base:
                 candidate = date(base.year + 1, month, day)
+            return candidate.isoformat()
+
+    # "三月去婺源"：只有月份时取该月 1 号，已过就顺延到明年
+    month_match = re.search(
+        r"(?<!\d)([一二三四五六七八九十]{1,3}|[1-9]|1[0-2])\s*月(?!\s*[\d一二三四五六七八九十])",
+        source,
+    )
+    if month_match:
+        month = cn_or_arabic(month_match.group(1))
+        if month:
+            candidate = date(base.year, int(month), 1)
+            if candidate < base:
+                candidate = date(base.year + 1, int(month), 1)
             return candidate.isoformat()
 
     match = _SLASH_DATE.search(source)
@@ -518,10 +741,14 @@ def parse_start_date(text: str, today=None) -> Optional[str]:
 
 def parse_lodging(text: str) -> str:
     source = str(text or "")
-    if any(word in source for word in _CAMP_WORDS):
-        return "camp"
-    if any(word in source for word in _HOTEL_WORDS):
-        return "hotel"
+    for word in _CAMP_WORDS:
+        position = source.find(word)
+        if position >= 0 and not _negated_before(source, position):
+            return "camp"
+    for word in _HOTEL_WORDS:
+        position = source.find(word)
+        if position >= 0 and not _negated_before(source, position):
+            return "hotel"
     return ""
 
 
@@ -648,39 +875,113 @@ def parse_fixed_events(text: str) -> List[Dict[str, Any]]:
     return events
 
 
+def parse_visits(text: str) -> List[Dict[str, Any]]:
+    """抽"有一天去找朋友""第 2 天去浦东见同学"这类约见。
+
+    和 ``parse_fixed_events`` 分开抽，是因为硬度不同：已订票的活动钉死在
+    某一天，约朋友只保证"这趟得有半天"，哪天可以调。当成 ``booked`` 会假装
+    用户买过票（还会挤掉别的安排），当成 ``planned`` 又会被行程挤掉，
+    所以给它单独一档 ``appointment``：地点和事由固定，日期由排程决定。
+    """
+    source = str(text or "")
+    match = _VISIT_CUE.search(source)
+    if not match:
+        return []
+
+    venue = ""
+    place = _VISIT_PLACE.search(source) or _VISIT_PLACE_VERB.search(source)
+    if place:
+        venue = place.group(1)
+
+    day = 0
+    day_match = _EVENT_DAY.search(source)
+    if day_match:
+        day = int(day_match.group(1))
+
+    verb = match.group("verb")
+    if verb.startswith("去"):
+        verb = verb[1:] or "找"
+    return [{
+        "title": f"{verb}{match.group('who')}",
+        "day": day,
+        "date": "",
+        "start": "",
+        "venue": venue,
+        "cost": 0.0,
+        "duration_min": 180,
+        "status": "appointment",
+        "source": "用户原话",
+    }]
+
+
+def parse_lodging_budget(text: str) -> Optional[float]:
+    """每晚住宿预算：只认"一晚/每晚 + 金额"的写法，取值范围 50~3000。"""
+    match = _LODGING_RATE.search(str(text or ""))
+    if not match:
+        return None
+    try:
+        value = float(match.group("num"))
+    except ValueError:
+        return None
+    return value if 50 <= value <= 3000 else None
+
+
 def extract_slots(text: str, today=None) -> Slots:
     source = str(text or "")
     budget, budget_kind = parse_budget_detail(source)
+    per_person = parse_per_person_budget(source)
+    lodging_budget = parse_lodging_budget(source)
     gear_budget = parse_gear_budget(source)
     scope, scope_source = parse_budget_scope(source)
     if gear_budget is not None:
         scope, scope_source = "trip_only", "用户原话"
 
     destination = parse_destination(source)
+    origin = parse_origin(source)
+    cities = parse_cities(source, origin=origin)
     days, days_source = parse_days_detail(source)
+    each = _PER_CITY_DAYS.search(source)
+    if each and len(cities) >= 2:
+        per_city = cn_or_arabic(each.group("n"))
+        if per_city:
+            days, days_source = int(per_city) * len(cities), "规则推导（各城天数 × 城市数）"
     if days is None and "周末" in source:
         days, days_source = 2, "规则推导（周末按 2 天）"
     people, people_source = parse_people_detail(source)
+    if budget is None and per_person is not None:
+        budget = per_person * (people or 1)
+        budget_kind = "人均×人数" if people else "人均（按 1 人计）"
+    # "预算3000到5000"：区间按上限算，并在来源里写明
+    range_match = re.search(r"预算[^\d]{0,4}(\d+)[^\d]{0,3}(?:到|至|~|-)[^\d]{0,3}(\d+)", source)
+    if range_match:
+        budget = float(range_match.group(2))
+        budget_kind = f"区间上限（{range_match.group(1)}~{range_match.group(2)}）"
 
     slots = Slots(
         destination=destination,
+        origin=origin,
+        cities=cities,
         days=days,
         people=people,
         budget=budget,
+        lodging_budget=lodging_budget,
         gear_budget=gear_budget,
         budget_scope=scope,
         start_date=parse_start_date(source, today),
         lodging=parse_lodging(source),
         transport=parse_transport(source),
         with_kids=parse_with_kids(source),
-        fixed_events=parse_fixed_events(source),
+        fixed_events=parse_fixed_events(source) + parse_visits(source),
         wants_activity=parse_wants_activity(source),
     )
     slots.sources.update({
         "destination": "用户原话" if destination else "未指定",
+        "origin": "用户原话" if origin else "未指定",
+        "cities": "用户原话" if len(cities) >= 2 else "未指定",
         "days": days_source,
         "people": people_source,
         "budget": f"用户原话（{budget_kind}）" if budget is not None else "未指定",
+        "lodging_budget": "用户原话" if lodging_budget is not None else "未指定",
         "budget_scope": scope_source,
         "start_date": "用户原话" if slots.start_date else "未指定",
         "lodging": "用户原话" if slots.lodging else "未指定",

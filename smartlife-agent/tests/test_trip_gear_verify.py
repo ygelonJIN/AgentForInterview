@@ -178,3 +178,25 @@ class TestCampingCompleteness:
         facts = _facts(lodging="hotel", min_temp_c=None)
         issues = verify(facts, [], _itinerary(), gear, {})
         assert not [i for i in issues if "露营装备" in str(i.constraint)]
+
+
+def test_lodging_over_nightly_budget_is_disclosed():
+    """每晚预算按人均比：两人 ¥800/晚 = ¥400/人，超过 ¥300/人 就要说出来。"""
+    facts = TripFacts(destination="广州", days=1, people=2, lodging="hotel", lodging_budget=300)
+    itinerary = Itinerary(
+        destination="广州",
+        days=[
+            DayPlan(
+                day=1,
+                lodging="hotel",
+                lodging_cost=800,
+                items=[ItineraryItem(time="10:00", activity="逛街", duration_min=60)],
+            )
+        ],
+    )
+
+    issues = verify(facts, [], itinerary, [], {}, today="2026-11-09")
+
+    hits = [issue for issue in issues if "每晚预算" in issue.constraint]
+    assert hits and hits[0].severity == "minor"
+    assert hits[0].actual == 400

@@ -20,7 +20,7 @@ from app.observability import extract_model_usage, log_exception, timed_span
 from app.retrieval.repositories import ProductRepository
 from app.tools.travel_executor import TravelToolExecutor
 from app.trip_gear.catalog import catalog_digest
-from app.trip_gear.itinerary import fallback_itinerary
+from app.trip_gear.itinerary import assign_cities, fallback_itinerary
 from app.trip_gear.models import (
     Constraint,
     DayPlan,
@@ -51,6 +51,7 @@ class _PlanItem(BaseModel):
 
 class _PlanDay(BaseModel):
     day: int
+    city: str = Field(default="", description="这天在哪个城市；单城市行程留空")
     items: List[_PlanItem]
 
 
@@ -73,6 +74,7 @@ _JSON_SCHEMA_HINT = """只输出一个 JSON 对象，不要任何解释文字，
   "days": [
     {
       "day": 1,
+      "city": "城市名（多城市行程必填，单城市可留空）",
       "items": [
         {"time": "09:00", "activity": "活动描述", "duration_min": 90, "cost": 0}
       ]
@@ -153,8 +155,10 @@ class TripGearService:
     ) -> tuple[Itinerary, List[GearItem]]:
         facts_text = "\n".join(
             [
+                f"出发地：{facts.origin or '未指定'}",
                 f"目的地：{facts.destination}",
                 f"天数：{facts.days}",
+                f"行程城市：{'、'.join(facts.cities) if len(facts.cities) >= 2 else facts.destination or '未指定'}",
                 f"人数：{facts.people if facts.people is not None else '未指定（按 1 人计）'}",
                 f"预算：{facts.budget if facts.budget is not None else '未指定'}"
                 f"（{'含装备' if facts.budget_scope == 'all_in' else '不含装备'}）",
@@ -222,9 +226,13 @@ class TripGearService:
         facts: TripFacts,
         result: "_PlanOutput",
     ) -> tuple[Optional[Itinerary], List[GearItem]]:
+        assignment = assign_cities(
+            max(facts.days or 0, len(result.days)), facts.cities
+        )
         days = [
             DayPlan(
                 day=day.day,
+                city=(day.city or assignment.get(day.day, "")),
                 items=[
                     ItineraryItem(
                         time=item.time,
@@ -301,6 +309,58 @@ class TripGearService:
         except Exception:
             return None
         return evidence if evidence.get("accepted") else None
+
+    async def _weather_forecast(
+        self,
+        destination: str,
+        start_date: str,
+        days: int = 1,
+    ) -> Optional[Dict[str, Any]]:
+        """整段逐日天气；拿不到返回 None，交给单日接口兜底。"""
+        try:
+            executor = TravelToolExecutor()
+            evidence = await executor.get_weather_forecast(
+                destination, date.fromisoformat(start_date), days
+            )
+        except Exception:
+            return None
+        return evidence if evidence.get("accepted") else None
+
+    @staticmethod
+    async def _call_tool(tool, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """调用一个 LangChain 工具；失败返回 None，由上层决定降级。"""
+        try:
+            result = await tool.ainvoke(dict(payload))
+        except Exception:
+            return None
+        return result if isinstance(result, dict) else None
+
+    async def _air_quality(
+        self,
+        destination: str,
+        start_date: str,
+        days: int = 1,
+    ) -> Optional[Dict[str, Any]]:
+        from app.tools.weather import get_air_quality
+
+        return await self._call_tool(
+            get_air_quality,
+            {"city": destination, "start_date": start_date, "days": max(1, int(days))},
+        )
+
+    async def _exchange_rate(self, base: str, quote: str) -> Optional[Dict[str, Any]]:
+        from app.tools.travel_facts import get_exchange_rate
+
+        return await self._call_tool(
+            get_exchange_rate, {"base": base, "quote": quote}
+        )
+
+    async def _holidays(self, country: str, year: int) -> Optional[Dict[str, Any]]:
+        from app.tools.travel_facts import get_public_holidays
+
+        return await self._call_tool(
+            get_public_holidays, {"country": country, "year": int(year)}
+        )
 
     async def _memories(self, user_id: str, query: str) -> List[Dict[str, Any]]:
         memory = self.memory

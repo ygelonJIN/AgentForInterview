@@ -44,6 +44,10 @@ def test_agent_registry_plug_in_exposes_only_its_tools():
         "get_local_activities",
         "plan_itinerary",
         "get_weather",
+        "get_weather_forecast",
+        "get_air_quality",
+        "get_exchange_rate",
+        "get_public_holidays",
         "get_route",
         "get_current_time",
     }

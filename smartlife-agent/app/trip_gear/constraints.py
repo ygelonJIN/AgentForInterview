@@ -13,11 +13,23 @@ from __future__ import annotations
 from datetime import date
 from typing import Iterable, List, Optional, Tuple
 
+from app.nlu import lexicon
 from app.nlu.slots import extract_slots
 from app.services.task_models import SharedConstraints
 from app.trip_gear.models import Constraint, FixedEvent, TripFacts
 
 _TRANSPORT_LABELS = {"flight": "飞机", "train": "高铁/火车", "drive": "自驾"}
+
+
+# 用户只说"广东的很多城市/你定/都行"：这是授权我们挑，不是缺信息
+_VAGUE_CITY_WORDS = (
+    "很多城市", "几个城市", "好些城市", "城市都行", "都行", "随便", "你定",
+    "你安排", "你看着", "不知道", "不限", "任意", "帮我选", "挑几个",
+)
+
+
+def _vague_city_request(text: str) -> bool:
+    return any(word in str(text or "") for word in _VAGUE_CITY_WORDS)
 
 
 def _float(value) -> Optional[float]:
@@ -107,11 +119,21 @@ def derive_constraints(
     budget = slots.budget if slots.budget is not None else (shared.budget if shared else None)
     budget_source = slots.source("budget") if slots.budget is not None else "共享约束"
 
+    cities = list(slots.cities or [])
+    cities_source = "用户原话"
+    if destination in lexicon.PROVINCES and len(cities) < 2 and _vague_city_request(text):
+        defaults = list(lexicon.PROVINCE_CITIES.get(destination) or ())
+        if defaults:
+            cities, cities_source = defaults, "规则推导（省份常用城市）"
+
     facts = TripFacts(
+        origin=slots.origin,
         destination=destination,
+        cities=cities,
         days=days,
         people=people,
         budget=budget,
+        lodging_budget=slots.lodging_budget,
         gear_budget=slots.gear_budget,
         budget_scope=slots.budget_scope,
         start_date=slots.start_date,
@@ -123,10 +145,20 @@ def derive_constraints(
     )
 
     constraints: List[Constraint] = []
+    # 出发地在前、目的地在后：一句话里的两个地名按"从哪儿到哪儿"念才对得上。
+    if facts.origin:
+        constraints.append(Constraint(text=f"出发地：{facts.origin}", source="用户原话", key="origin"))
     if destination:
         constraints.append(Constraint(text=f"目的地：{destination}", source="用户原话", key="destination"))
 
     # 用户没指名活动、但表达了"想参加"：这是一条软取向，不是日程
+    if len(facts.cities) >= 2:
+        constraints.append(Constraint(
+            text=f"串联城市：{' → '.join(facts.cities)}",
+            source=cities_source,
+            key="cities",
+        ))
+
     if facts.wants_activity:
         constraints.append(Constraint(
             text="希望行程里有可参与的活动（演出、工作坊、市集、体验课），不要只有景点",
@@ -134,7 +166,8 @@ def derive_constraints(
             hard=False,
             key="wants_activity",
         ))
-    # 用户点名的固定活动：已订是硬约束，其它安排要让路
+    # 用户点名的固定活动：已订是硬约束，其它安排要让路；约见只锁"哪天要有"，
+    # 哪天排由排程决定，因此是软约束。
     for event in facts.fixed_events:
         when = " ".join(
             part for part in (
@@ -144,10 +177,22 @@ def derive_constraints(
             ) if part
         ) or "时间待定"
         where = f"，{event.venue}" if event.venue else ""
+        if event.status == "appointment":
+            constraints.append(Constraint(
+                text=(
+                    f"固定安排：{event.title}（{when if event.day else '哪天未定，排在中间那天'}"
+                    f"{where}），这半天不再排别的景点"
+                ),
+                source="用户原话",
+                hard=False,
+                key="appointment",
+            ))
+            continue
+        booked = event.status == "booked"
         constraints.append(Constraint(
-            text=f"指定活动：{event.title}（{when}{where}）",
+            text=f"{'指定活动' if booked else '想去'}：{event.title}（{when}{where}）",
             source="用户原话",
-            hard=True,
+            hard=booked,
             key="fixed_event",
         ))
     if days:
@@ -193,6 +238,14 @@ def derive_constraints(
                 key="lodging",
             )
         )
+    if slots.lodging_budget is not None:
+        constraints.append(
+            Constraint(
+                text=f"每晚住宿预算：≤ {slots.lodging_budget:g} 元",
+                source="用户原话",
+                key="lodging_budget",
+            )
+        )
     if slots.transport:
         constraints.append(
             Constraint(
@@ -216,6 +269,43 @@ def derive_constraints(
     # 悄悄算（那正是"校验结果一直说没有出发日期"的来源）。
     constraints = ensure_start_date(facts, constraints, today=today)
     return facts, constraints
+
+
+def ensure_destination(
+    facts: TripFacts,
+    constraints: List[Constraint],
+    source: str = "追问补充",
+) -> List[Constraint]:
+    """追问后目的地可能从省份换成具体城市：清单那条要跟着改写，不能两条并存。"""
+    kept = [item for item in constraints if item.key != "destination"]
+    if not facts.destination:
+        return kept
+    position = 1 if any(item.key == "origin" for item in kept) else 0
+    kept.insert(
+        position,
+        Constraint(text=f"目的地：{facts.destination}", source=source, key="destination"),
+    )
+    return kept
+
+
+def ensure_people(
+    facts: TripFacts,
+    constraints: List[Constraint],
+    source: str = "追问补充",
+) -> List[Constraint]:
+    """追问里补了人数：清单那条"未指定（按 1 人计）"要换成真实人数。"""
+    if facts.people is None:
+        return constraints
+    kept = [item for item in constraints if item.key != "people"]
+    position = next(
+        (index + 1 for index, item in enumerate(kept) if item.key == "days"),
+        len(kept),
+    )
+    kept.insert(
+        position,
+        Constraint(text=f"人数：{facts.people} 人", source=source, key="people"),
+    )
+    return kept
 
 
 def apply_assisted(
@@ -346,8 +436,16 @@ def enrich_weather(
     constraints: List[Constraint],
     weather: Optional[dict],
 ) -> List[Constraint]:
-    """把天气事实并入约束清单；拿不到就明确降级，不猜温度。"""
-    if not weather:
+    """把天气事实并入约束清单；拿不到就明确降级，不猜温度。
+
+    ``weather`` 可以是单日结果、``{"days": [...]}`` 的逐日预报，或直接一个列表。
+    逐日预报按天各写一条约束——第 2、3 天有没有查过，用户要能在清单里看见。
+    """
+    rows = _weather_rows(weather)
+    # 重写不追加：追问轮会再算一次天气，旧的那几条必须先撤掉，否则同一天会出现两次。
+    stale_keys = {"weather", "rain", "sleeping_bag_temp", "uv"}
+    constraints = [item for item in constraints if item.key not in stale_keys]
+    if not rows:
         constraints.append(
             Constraint(
                 text="天气：未获取到可验证数据，按通用情况准备",
@@ -359,17 +457,67 @@ def enrich_weather(
         )
         return constraints
 
-    min_temp = _float(weather.get("temperature_min"))
-    max_temp = _float(weather.get("temperature_max"))
-    rain = _float(weather.get("precipitation_probability"))
-    condition = str(weather.get("condition") or "").strip()
+    temps_min = [_float(row.get("temperature_min")) for row in rows]
+    temps_max = [_float(row.get("temperature_max")) for row in rows]
+    rains = [_float(row.get("precipitation_probability")) for row in rows]
+    known_mins = [value for value in temps_min if value is not None]
+    known_rains = [value for value in rains if value is not None]
 
-    parts = [part for part in (condition, _temp_text(min_temp, max_temp)) if part]
-    summary = "，".join(parts) or "天气数据已获取"
+    # 整趟按"最低温最冷那天、降水最高那天"派生装备，不按第 1 天拍板。
+    min_temp = min(known_mins) if known_mins else None
+    rain = max(known_rains) if known_rains else None
     facts.min_temp_c = min_temp
     facts.rain_probability = rain
-    facts.weather_summary = summary
-    constraints.append(Constraint(text=f"天气：{summary}", source="天气工具", key="weather"))
+
+    # 紫外线：整趟取峰值，它决定防晒装备，不看是哪一天
+    uv_values = [_float(row.get("uv_index_max")) for row in rows]
+    known_uv = [value for value in uv_values if value is not None]
+    if known_uv:
+        facts.uv_index_max = max(known_uv)
+
+    if len(rows) == 1:
+        row = rows[0]
+        summary = "，".join(
+            part
+            for part in (
+                str(row.get("condition") or "").strip(),
+                _temp_text(temps_min[0], temps_max[0]),
+            )
+            if part
+        ) or "天气数据已获取"
+        facts.weather_summary = summary
+        constraints.append(
+            Constraint(
+                text=f"天气：{summary}{_daylight_text(row)}",
+                source="天气工具",
+                key="weather",
+            )
+        )
+    else:
+        lines = []
+        for index, row in enumerate(rows, start=1):
+            day_text = str(row.get("date") or "")[5:] or f"第{index}天"
+            summary = "，".join(
+                part
+                for part in (
+                    str(row.get("condition") or "").strip(),
+                    _temp_text(temps_min[index - 1], temps_max[index - 1]),
+                )
+                if part
+            ) or "天气数据已获取"
+            rain_value = rains[index - 1]
+            rain_text = f"（降水 {rain_value:g}%）" if rain_value is not None else ""
+            city = str(row.get("city") or "").strip()
+            where = f" {city}" if city else ""
+            constraints.append(
+                Constraint(
+                    text=f"天气（第{index}天 {day_text}{where}）：{summary}{rain_text}{_daylight_text(row)}",
+                    source="天气工具",
+                    key="weather",
+                )
+            )
+            lines.append(f"第{index}天 {day_text}{where} {summary}")
+        facts.weather_summary = "；".join(lines)
 
     if facts.is_camping and min_temp is not None:
         constraints.append(
@@ -379,10 +527,157 @@ def enrich_weather(
                 key="sleeping_bag_temp",
             )
         )
-    if rain is not None and rain >= 40:
+    if facts.uv_index_max is not None and facts.uv_index_max >= 6:
         constraints.append(
-            Constraint(text=f"降水概率：{rain:g}%", source="天气工具", key="rain")
+            Constraint(
+                text=f"紫外线：峰值 {facts.uv_index_max:g}（{_uv_level(facts.uv_index_max)}），需防晒",
+                source="天气工具",
+                key="uv",
+            )
         )
+    if rain is not None and rain >= 40:
+        rain_at = next(
+            (index for index, value in enumerate(rains, start=1) if value == rain),
+            1,
+        )
+        suffix = f"（第{rain_at}天最高）" if len(rows) > 1 else ""
+        constraints.append(
+            Constraint(text=f"降水概率：{rain:g}%{suffix}", source="天气工具", key="rain")
+        )
+    return constraints
+
+
+def _weather_rows(weather) -> List[dict]:
+    """把单日、逐日预报、列表三种形态统一成逐日列表。"""
+    if isinstance(weather, list):
+        return [row for row in weather if isinstance(row, dict)]
+    if not isinstance(weather, dict) or not weather:
+        return []
+    days = weather.get("days")
+    if isinstance(days, list) and days:
+        return [row for row in days if isinstance(row, dict)]
+    return [weather]
+
+
+def _daylight_text(row: dict) -> str:
+    """日出日落：有就带上，用来判"几点天黑"，拿不到就不写。"""
+    sunrise = str(row.get("sunrise") or "")
+    sunset = str(row.get("sunset") or "")
+    if sunrise and sunset:
+        return f"（日出 {sunrise[-5:]} / 日落 {sunset[-5:]}）"
+    return ""
+
+
+def _uv_level(value: float) -> str:
+    if value >= 11:
+        return "极强"
+    if value >= 8:
+        return "很强"
+    if value >= 6:
+        return "强"
+    if value >= 3:
+        return "中等"
+    return "弱"
+
+
+def enrich_air_quality(
+    facts: TripFacts,
+    constraints: List[Constraint],
+    air_quality: Optional[dict],
+) -> List[Constraint]:
+    """空气质量进清单：只在真的有风险（AQI ≥ 100）时单独说一句。
+
+    拿不到数据不写"未知"条目——它是补充证据，不是每趟都必须有的约束；
+    天气那条已经承担了"降级要说明"的责任。整趟按最高的那天判。
+    """
+    constraints = [item for item in constraints if item.key != "air_quality"]
+    rows = _weather_rows(air_quality)
+    aqi_values = [_float(row.get("aqi_max")) for row in rows]
+    known = [value for value in aqi_values if value is not None]
+    if not known:
+        return constraints
+    facts.aqi_max = max(known)
+    for index, value in enumerate(aqi_values, start=1):
+        if value is None or value < 100:
+            continue
+        day_text = str(rows[index - 1].get("date") or "")[5:]
+        constraints.append(
+            Constraint(
+                text=(
+                    f"空气质量（第{index}天 {day_text}）：AQI {value:g}"
+                    f"（{_aqi_level(value)}），减少长时间户外"
+                ),
+                source="空气质量工具",
+                hard=False,
+                key="air_quality",
+            )
+        )
+    return constraints
+
+
+def _aqi_level(value: float) -> str:
+    if value >= 301:
+        return "严重污染"
+    if value >= 201:
+        return "重度污染"
+    if value >= 151:
+        return "中度污染"
+    if value >= 101:
+        return "轻度污染"
+    if value >= 51:
+        return "良"
+    return "优"
+
+
+def enrich_exchange_rate(
+    facts: TripFacts,
+    constraints: List[Constraint],
+    rate: Optional[dict],
+    currency: Optional[tuple[str, str]] = None,
+) -> List[Constraint]:
+    """境外行程给一条参考汇率；境内目的地不写。只做换算参考，不改预算口径。"""
+    constraints = [item for item in constraints if item.key != "fx"]
+    if not rate or not currency:
+        return constraints
+    code, label = currency
+    amount = _float(rate.get("rate"))
+    if amount is None or amount <= 0:
+        return constraints
+    when = str(rate.get("date") or "")
+    suffix = f"（{when}，欧洲央行参考价）" if when else "（欧洲央行参考价）"
+    constraints.append(
+        Constraint(
+            text=f"汇率：1 人民币 ≈ {amount:g} {label}{suffix}",
+            source="汇率工具",
+            hard=False,
+            key="fx",
+        )
+    )
+    return constraints
+
+
+def enrich_holidays(
+    facts: TripFacts,
+    constraints: List[Constraint],
+    hits: Optional[list],
+) -> List[Constraint]:
+    """行程落在法定假日：提示人流与价格，属软约束；没有就不写。"""
+    constraints = [item for item in constraints if item.key != "holiday"]
+    if not hits:
+        return constraints
+    names = "、".join(
+        f"{str(item.get('local_name') or item.get('name') or '法定假日')}"
+        f"（{str(item.get('date') or '')}）"
+        for item in hits[:3]
+    )
+    constraints.append(
+        Constraint(
+            text=f"行程含法定假日：{names}，人流与住宿价格会明显上涨",
+            source="节假日工具",
+            hard=False,
+            key="holiday",
+        )
+    )
     return constraints
 
 

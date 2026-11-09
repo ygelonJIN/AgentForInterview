@@ -56,6 +56,11 @@ V2_TOKENS: Dict[str, str] = {
     "c-panel-head-bg": "#fbf4e6",
     # —— 组件 ——
     "c-chip-bg": "#f6ecda",
+    # —— 追问卡片 ——
+    "c-ask-bg": "#fffaf1",
+    "c-ask-option-bg": "#f6ecda",
+    "c-ask-option-active-bg": "#f7e7d3",
+    "c-ask-option-active-line": "#e0bd97",
     "c-chip-text": "#6d5940",
     "c-user-bubble-bg": "#ecdcc1",
     "c-user-bubble-text": "#3a2c1b",

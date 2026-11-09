@@ -58,6 +58,10 @@ def extract_owned(text: str, source: str = "对话") -> List[OwnedItem]:
             name, qty, specs = _parse_item(part)
             if len(name) < 2 or name in _GENERIC:
                 continue
+            # "有一天去找一个我在浦东的朋友"：这里的"有"是"存在某一天"，不是"我拥有"。
+            # 装备名里不会出现人称、虚词和这些动词，带一个就说明抓的是半截句子。
+            if any(char in name for char in "我你他她它在去找玩"):
+                continue
             # "一堆装备""那些东西"是泛称，没有可购买的具体品类，跳过并留给确认入口。
             if name.endswith(("装备", "东西", "物品", "用品", "家伙什")):
                 continue

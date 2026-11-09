@@ -87,6 +87,11 @@ def test_wish_to_buy_is_not_treated_as_owned():
     assert extract_owned("需要买一个防潮垫") == []
 
 
+def test_existential_you_is_not_ownership():
+    """"有一天去找朋友"里的"有"是"存在某一天"，不是"我拥有"。"""
+    assert extract_owned("我在广东，我要去上海玩三天，有一天去找一个我在浦东的朋友") == []
+
+
 def test_memory_ownership_keeps_its_source():
     memories = [
         {

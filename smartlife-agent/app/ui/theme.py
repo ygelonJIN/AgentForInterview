@@ -107,9 +107,14 @@ p {{ line-height: var(--lh-normal); }}
 [data-testid="stExpandSidebarButton"] button:hover {{ background: var(--c-nav-hover-bg) !important; }}
 
 /* ---------- 页面骨架 ---------- */
-[data-testid="stAppViewContainer"] {{ background: transparent; }}
+/* 只有右栏（stMain）滚动：body 不滚，滚轮在对话区也只滚对话区 */
+html, body, #root {{ height: 100%; overflow: hidden; }}
+.stApp {{ height: 100vh; overflow: hidden; }}
+[data-testid="stAppViewContainer"] {{ background: transparent; height: 100vh; overflow: hidden; }}
+[data-testid="stMain"] {{ min-height: 0; overflow-y: auto; overscroll-behavior: contain; }}
 [data-testid="stMainBlockContainer"] {{
-  max-width: 1180px;
+  /* 侧栏收起时对话区要铺满：不再固定 1180，只靠左右留白控制行长 */
+  max-width: 100%;
   /* 页头已回到文档流；顶部留足空白，第一条消息不会贴着窗口顶 */
   padding: var(--space-6) var(--space-6) 9.5rem;
 }}
@@ -121,8 +126,15 @@ p {{ line-height: var(--lh-normal); }}
 section[data-testid="stSidebar"] {{
   background: var(--c-nav-bg) !important;
   border-right: var(--border-w) solid var(--c-line);
+}}
+/* 只在展开时钉宽度：收起时若继续 !important 钉住，主区永远补不上来 */
+section[data-testid="stSidebar"][aria-expanded="true"] {{
   width: var(--nav-w) !important;
   min-width: var(--nav-w) !important;
+}}
+section[data-testid="stSidebar"][aria-expanded="false"] {{
+  width: 0 !important;
+  min-width: 0 !important;
 }}
 section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {{
   padding: var(--space-5) var(--space-4) var(--space-5) !important;
@@ -165,28 +177,8 @@ section[data-testid="stSidebar"] .stButton > button[kind="primary"]:hover {{
 }}
 section[data-testid="stSidebar"] [data-testid="stAlert"] {{ border-radius: var(--radius-sm); }}
 
-/* 品牌之下的「新建对话」：侧栏里唯一一个实心强调色药丸，和导航块明显不同。 */
-.st-key-new_thread {{ margin: var(--space-1) 0 var(--space-3); }}
-section[data-testid="stSidebar"] .st-key-new_thread .stButton > button {{
-  justify-content: center !important;
-  min-height: 38px !important;
-  padding: var(--space-2) var(--space-3) !important;
-  font-family: var(--font-display) !important;
-  font-size: var(--fs-sm) !important;
-  font-weight: var(--fw-bold) !important;
-  letter-spacing: var(--tracking-caps) !important;
-  color: var(--c-accent-ink) !important;
-  background: var(--c-accent) !important;
-  border: var(--border-w) solid var(--c-accent-strong) !important;
-  border-radius: var(--radius-pill) !important;
-  box-shadow: var(--shadow-2) !important;
-}}
-section[data-testid="stSidebar"] .st-key-new_thread .stButton > button:hover {{
-  background: var(--c-accent-strong) !important;
-  border-color: var(--c-accent-strong) !important;
-  color: var(--c-accent-ink) !important;
-}}
-section[data-testid="stSidebar"] .st-key-new_thread .stButton > button > div {{ justify-content: center !important; }}
+/* 「新建对话」用 type="primary"，跟工作台选中项共用同一条规则，这里只留间距。 */
+.st-key-new_thread {{ margin: var(--space-1) 0 var(--space-2); }}
 section[data-testid="stSidebar"] .st-key-new_thread .stButton > button p {{ white-space: nowrap; }}
 
 .st-key-nav_menu > [data-testid="stElementContainer"]:nth-child(1) .stButton button::before {{ content: "◈"; }}
@@ -223,8 +215,32 @@ section[data-testid="stSidebar"] .st-key-new_thread .stButton > button p {{ whit
 /* 最近会话：一行一条，用左侧短竖线做"当前"标记。
    刻意不跟导航的选中态同款（导航是整块强调底色 + 图标），
    这里只有一条竖线 + 文字加深，安静一档。 */
-.st-key-recent_threads > [data-testid="stVerticalBlock"] {{ gap: 2px; }}
-[class*="st-key-recent_thread_"] .stButton > button {{
+/* 侧栏不再整体滚动：只有会话列表内部滚动。
+   滚轮停在侧栏其它位置时不带动整页：让侧栏自身永远有 2px 可滚空间 +
+   overscroll-behavior: contain，事件在这里被吃掉，不会链到页面。 */
+section[data-testid="stSidebar"] {{
+  overflow-y: scroll !important;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}}
+section[data-testid="stSidebar"]::-webkit-scrollbar {{ width: 0; height: 0; }}
+section[data-testid="stSidebar"] [data-testid="stSidebarContent"] {{ overflow: hidden !important; }}
+section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {{ overflow: hidden !important; height: 100%; }}
+section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] > div {{ height: 100%; min-height: 0; overflow: hidden; }}
+section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] > div > [data-testid="stVerticalBlock"] {{
+  height: calc(100% + 2px); min-height: 0; overflow: hidden;
+  display: flex; flex-direction: column; gap: var(--space-2);
+}}
+section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] > div > [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"] {{ flex: 0 0 auto; min-height: 0; }}
+
+.st-key-recent_threads {{
+  flex: 1 1 auto; min-height: 0; max-height: 52vh;
+  overflow-y: auto; overflow-x: hidden; padding-right: 2px;
+  overscroll-behavior: contain;
+}}
+.st-key-recent_threads [data-testid="stVerticalBlockBorderWrapper"] {{ border: none !important; box-shadow: none !important; background: transparent !important; }}
+.st-key-recent_threads > [data-testid="stVerticalBlock"] {{ gap: 0; }}
+section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton > button {{
   justify-content: flex-start !important;
   width: 100% !important;
   max-width: 100% !important;
@@ -240,13 +256,13 @@ section[data-testid="stSidebar"] .st-key-new_thread .stButton > button p {{ whit
   border-radius: 0 !important;
   box-shadow: none !important;
 }}
-[class*="st-key-recent_thread_"] .stButton > button > div {{
+section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton > button > div {{
   justify-content: flex-start !important;
   min-width: 0 !important;
 }}
-[class*="st-key-recent_thread_"] .stButton button,
-[class*="st-key-recent_thread_"] .stButton button > div,
-[class*="st-key-recent_thread_"] .stButton button p {{
+section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton button,
+section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton button > div,
+section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton button p {{
   white-space: nowrap !important;
   overflow: hidden !important;
   text-overflow: ellipsis !important;
@@ -254,16 +270,16 @@ section[data-testid="stSidebar"] .st-key-new_thread .stButton > button p {{ whit
   word-break: keep-all !important;
   max-width: 100% !important;
 }}
-[class*="st-key-recent_thread_"] .stButton button p {{
+section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton button p {{
   width: 100%; text-align: left; display: block;
 }}
-[class*="st-key-recent_thread_"] .stButton > button:hover {{
+section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton > button:hover {{
   background: transparent !important;
   color: var(--c-nav-active-text) !important;
   border-left-color: var(--c-line-strong) !important;
 }}
-[class*="st-key-recent_thread_"] .stButton > button[kind="primary"],
-[class*="st-key-recent_thread_"] .stButton > button[kind="primary"]:hover {{
+section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton > button[kind="primary"],
+section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton > button[kind="primary"]:hover {{
   background: transparent !important;
   border: 0 !important;
   border-left: 2px solid var(--c-accent) !important;
@@ -609,7 +625,7 @@ section[data-testid="stSidebar"] .st-key-new_thread .stButton > button p {{ whit
 [data-testid="stBottom"],
 [data-testid="stBottom"] > div,
 [data-testid="stBottomBlockContainer"] > div {{ background: transparent !important; }}
-[data-testid="stBottomBlockContainer"] {{ max-width: 1180px; padding: 0 var(--space-6) var(--space-4) !important; }}
+[data-testid="stBottomBlockContainer"] {{ max-width: 100%; padding: 0 var(--space-6) var(--space-4) !important; }}
 [data-testid="stBottomBlockContainer"] [data-testid="stChatInput"] {{
   border: var(--border-w) solid var(--c-line-strong) !important;
   border-radius: var(--radius-lg) !important;
@@ -800,6 +816,42 @@ section[data-testid="stSidebar"] .st-key-new_thread .stButton > button p {{ whit
 ::-webkit-scrollbar {{ width: 9px; height: 9px; }}
 ::-webkit-scrollbar-thumb {{ background: var(--c-line-strong); border: 2px solid transparent; background-clip: content-box; border-radius: var(--radius-pill); }}
 ::-webkit-scrollbar-track {{ background: transparent; }}
+
+/* ---------- 追问卡片：A/B/C 药丸选项 + D 自己填 ---------- */
+.st-key-clarify_card {{
+  border: var(--border-w) solid var(--c-line);
+  border-radius: var(--radius-lg);
+  background: var(--c-ask-bg);
+  padding: var(--space-4);
+  box-shadow: var(--shadow-1);
+  margin: var(--space-3) 0 var(--space-2);
+}}
+.sl-ask-head {{ display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-2); margin-bottom: var(--space-2); }}
+.sl-ask-kicker {{ font-family: var(--font-display); font-size: var(--fs-sm); font-weight: var(--fw-bold); color: var(--c-accent-text); }}
+.sl-ask-tip {{ font-size: var(--fs-2xs); color: var(--c-text-muted); }}
+.sl-ask-q {{ margin: var(--space-3) 0 var(--space-1); font-size: var(--fs-sm); font-weight: var(--fw-semibold); color: var(--c-text); }}
+
+.st-key-clarify_card [data-testid="stForm"] {{ border: none; padding: 0; }}
+.st-key-clarify_card [role="radiogroup"] {{ display: flex; flex-wrap: wrap; gap: var(--space-2); }}
+.st-key-clarify_card [role="radiogroup"] > label {{
+  margin: 0; padding: 5px 12px; cursor: pointer;
+  background: var(--c-ask-option-bg);
+  border: var(--border-w) solid var(--c-line);
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-xs); color: var(--c-text);
+}}
+.st-key-clarify_card [role="radiogroup"] > label:hover {{ border-color: var(--c-ask-option-active-line); }}
+.st-key-clarify_card [role="radiogroup"] > label:has(input:checked) {{
+  background: var(--c-ask-option-active-bg);
+  border-color: var(--c-ask-option-active-line);
+  color: var(--c-accent-text); font-weight: var(--fw-semibold);
+}}
+.st-key-clarify_card [role="radiogroup"] input[type="radio"] {{ display: none; }}
+.st-key-clarify_card .stButton > button {{
+  background: var(--c-accent); color: var(--c-accent-ink);
+  border: var(--border-w) solid var(--c-accent-strong);
+  border-radius: var(--radius-pill);
+}}
 
 /* ---------- 响应式 ---------- */
 @media (max-width: 900px) {{

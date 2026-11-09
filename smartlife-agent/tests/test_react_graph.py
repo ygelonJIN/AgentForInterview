@@ -2,7 +2,7 @@
 
 import asyncio
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from app.graphs.context import TurnContext
 from app.graphs.subgraphs.react import build_react_graph, initial_react_state
@@ -121,3 +121,30 @@ def test_react_graph_records_model_and_tool_trace_spans():
     spans = recorder.summary()["spans"]
     assert spans["model.react_agent"]["count"] == 2
     assert spans["tool.echo"]["count"] == 1
+
+
+class _CapturingModel(_Model):
+    def __init__(self):
+        super().__init__()
+        self.seen = []
+
+    async def ainvoke(self, messages):
+        self.seen = list(messages)
+        return AIMessage(content="最终回答")
+
+
+def test_tool_use_rules_are_injected_when_tools_exist():
+    model = _CapturingModel()
+
+    _run(model, [_Tool()])
+
+    assert isinstance(model.seen[0], SystemMessage)
+    assert "查不到就说查不到" in model.seen[0].content
+
+
+def test_no_tool_rules_without_tools():
+    model = _CapturingModel()
+
+    _run(model, [])
+
+    assert not any(isinstance(message, SystemMessage) for message in model.seen)

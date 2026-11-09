@@ -381,3 +381,313 @@ def test_verify_clarify_gives_up_after_round_limit():
 
     assert not state.get("__interrupt__"), "到达轮次上限后不应继续追问"
     assert state.get("clarify_rounds", 0) <= 2
+
+
+def test_origin_is_not_mistaken_for_destination():
+    """"我在广东，我要去上海"：起点不能变成终点，约好的那半天要进行程。"""
+    state = _run(
+        "我在广东，我要去上海玩三天，有一天去找一个我在浦东的朋友",
+        planner=_Planner("外滩", "豫园"),
+        weather_lookup=lambda _destination, _date: {
+            "temperature_min": 12,
+            "temperature_max": 16,
+            "condition": "阴",
+            "precipitation_probability": 40,
+        },
+    )
+
+    assert state["status"] == "ok"
+    response = state["response"]
+    assert "出发地：广东" in response
+    assert "目的地：上海" in response
+    assert "目的地：广东" not in response
+    assert "找朋友" in response and "浦东" in response
+
+
+def test_multi_day_forecast_covers_every_trip_day():
+    """三天行程要查三天天气：逐日一行，不能只拿第 1 天代表整趟。"""
+    forecast_days = [
+        {"date": "2026-11-10", "condition": "阴", "temperature_min": 12,
+         "temperature_max": 16, "precipitation_probability": 10},
+        {"date": "2026-11-11", "condition": "小雨", "temperature_min": 6,
+         "temperature_max": 12, "precipitation_probability": 70},
+        {"date": "2026-11-12", "condition": "多云", "temperature_min": 9,
+         "temperature_max": 15, "precipitation_probability": 20},
+    ]
+    calls = []
+
+    def forecast(destination, start, count):
+        calls.append((destination, start, count))
+        return {"city": destination, "days": forecast_days}
+
+    state = _run(
+        "我在广东，我要去上海玩三天",
+        planner=_Planner("外滩", "豫园"),
+        weather_forecast=forecast,
+    )
+
+    assert state["status"] == "ok"
+    assert calls and calls[0][0] == "上海" and calls[0][2] == 3
+    response = state["response"]
+    assert "天气（第1天 11-10）" in response
+    assert "天气（第3天 11-12）" in response
+    # 降水取整趟最高的一天
+    assert "降水概率：70%（第2天最高）" in response
+
+
+def test_holiday_hint_reaches_constraints_but_good_air_does_not():
+    """假日提示要进清单；AQI 只是"良"的时候不该多占一行。"""
+    holidays = [{"date": "2026-11-10", "name": "Test", "local_name": "测试节"}]
+
+    state = _run(
+        "2026-11-10 去上海玩三天",
+        planner=_Planner("外滩"),
+        weather_lookup=lambda _destination, _date: {
+            "temperature_min": 12, "temperature_max": 16,
+            "condition": "阴", "precipitation_probability": 10,
+        },
+        air_quality=lambda _city, _start, _days: {
+            "days": [{"date": "2026-11-10", "aqi_max": 40}]
+        },
+        holidays=lambda _country, _year: {"holidays": holidays},
+    )
+
+    assert state["status"] == "ok"
+    assert "测试节" in state["response"]
+    assert "空气质量（第" not in state["response"]
+
+
+def test_overseas_trip_gets_exchange_rate_hint():
+    state = _run(
+        "去东京玩三天",
+        planner=_Planner("浅草寺"),
+        weather_lookup=lambda _destination, _date: {
+            "temperature_min": 12, "temperature_max": 18,
+            "condition": "晴", "precipitation_probability": 0,
+        },
+        exchange_rate=lambda base, quote: {
+            "base": base, "quote": quote, "rate": 23.73, "date": "2026-11-06"
+        },
+    )
+
+    assert state["status"] == "ok"
+    assert "汇率：1 人民币 ≈ 23.73 日元" in state["response"]
+
+
+def test_holiday_check_skips_when_departure_date_is_unknown():
+    """没说出发日期就按今天推假日 = 误报；宁可不给这条提示。"""
+    calls = []
+
+    def holidays(country, year):
+        calls.append((country, year))
+        return {"holidays": [{"date": "2026-11-09", "local_name": "测试节"}]}
+
+    state = _run(
+        "去上海玩三天",
+        planner=_Planner("外滩"),
+        weather_lookup=lambda _destination, _date: {
+            "temperature_min": 12, "temperature_max": 16,
+            "condition": "阴", "precipitation_probability": 10,
+        },
+        holidays=holidays,
+    )
+
+    assert state["status"] == "ok"
+    assert calls == []
+    assert "法定假日" not in state["response"]
+
+
+def test_air_quality_is_skipped_beyond_its_forecast_window():
+    """空气质量接口只给 5 天：七天行程不查，也不猜后面几天。"""
+    calls = []
+
+    def air(_city, _start, _days):
+        calls.append((_city, _start, _days))
+        return {"days": []}
+
+    state = _run(
+        "2026-11-10 去上海玩七天",
+        planner=_Planner("外滩"),
+        weather_lookup=lambda _destination, _date: {
+            "temperature_min": 12, "temperature_max": 16,
+            "condition": "阴", "precipitation_probability": 10,
+        },
+        air_quality=air,
+    )
+
+    assert state["status"] == "ok"
+    assert calls == []
+
+
+def test_one_slow_fact_does_not_block_the_others(monkeypatch):
+    """天气卡住时，假日提示照样要出现——四条事实是并发的。"""
+    import app.graphs.subgraphs.trip_gear as tg
+
+    monkeypatch.setattr(tg, "FACT_TIMEOUT_SECONDS", 0.05)
+
+    async def slow_weather(*_args):
+        await asyncio.sleep(0.5)
+        return {"days": []}
+
+    state = _run(
+        "2026-11-10 去上海玩三天",
+        planner=_Planner("外滩"),
+        weather_forecast=slow_weather,
+        holidays=lambda _country, _year: {
+            "holidays": [{"date": "2026-11-10", "local_name": "测试节"}]
+        },
+    )
+
+    assert state["status"] == "ok"
+    assert "测试节" in state["response"]
+
+
+def test_province_destination_asks_for_cities():
+    """广东是省不是市：天气和路线都按城市查，不能拿省份硬排。"""
+    state = _run("两个人从上海去广东玩一周，酒店一晚不超400")
+
+    interrupts = state.get("__interrupt__") or []
+    assert interrupts, "省份应触发反问"
+    payload = interrupts[0].value
+    assert payload["missing"] == ["具体城市"]
+    assert "省份" in payload["question"]
+    # 已经识别到的条件不能因为反问就丢
+    facts = payload["facts"]
+    assert facts["days"] == 7
+    assert facts["lodging_budget"] == 400
+    assert facts["origin"] == "上海"
+
+
+def test_multi_city_trip_assigns_a_city_to_every_day():
+    """"广州、深圳、珠海各玩两天"：六天要落到三个城市，不能只排一个城。"""
+    state = _run(
+        "从上海去广州、深圳、珠海各玩两天，酒店一晚不超400",
+        planner=_Planner("城市漫步"),
+        weather_lookup=lambda _destination, _date: {
+            "temperature_min": 18, "temperature_max": 25,
+            "condition": "多云", "precipitation_probability": 10,
+        },
+    )
+
+    assert state["status"] == "ok"
+    response = state["response"]
+    assert "串联城市：广州 → 深圳 → 珠海" in response
+    assert "天数：6 天" in response
+    assert "### 第 1 天（广州）" in response
+    assert "### 第 5 天（珠海）" in response
+
+
+def test_many_cities_request_plans_with_default_province_cities():
+    """"广东的很多城市"是授权我们挑，不该反问；挑完要标来源。"""
+    state = _run(
+        "两个人从上海去广东玩一周，去广东的很多城市，酒店一晚不超400",
+        planner=_Planner("城市漫步"),
+        weather_lookup=lambda _destination, _date: {
+            "temperature_min": 18, "temperature_max": 25,
+            "condition": "多云", "precipitation_probability": 10,
+        },
+    )
+
+    assert state["status"] == "ok"
+    texts = [item["text"] for item in state["constraints"]]
+    assert "串联城市：广州 → 深圳 → 珠海" in texts
+    sources = [item["source"] for item in state["constraints"] if item["key"] == "cities"]
+    assert sources == ["规则推导（省份常用城市）"]
+
+
+def test_vague_answer_to_province_question_still_moves_forward():
+    """答"广东的很多城市"不能原地再问一遍。"""
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.types import Command
+
+    graph = build_trip_gear_graph(checkpointer=InMemorySaver())
+    cfg = {"configurable": {"thread_id": "trip-gear-vague"}}
+    ctx = TurnContext(services=_Services(None), trace_id="trip-gear").with_extra(
+        product_search=_search,
+        planner=_Planner("城市漫步"),
+        weather_lookup=lambda _destination, _date: {
+            "temperature_min": 18, "temperature_max": 25,
+            "condition": "多云", "precipitation_probability": 10,
+        },
+    )
+
+    first = asyncio.run(graph.ainvoke(
+        {"user_message": "去广东玩一周", "user_id": "user-1", "thread_id": "trip-gear-vague"},
+        cfg, context=ctx,
+    ))
+    assert first.get("__interrupt__"), "省份应先反问具体城市"
+
+    second = asyncio.run(graph.ainvoke(Command(resume="广东的很多城市"), cfg, context=ctx))
+    assert second["status"] == "ok"
+    assert "串联城市：广州 → 深圳 → 珠海" in second["response"]
+
+
+def test_single_city_answer_replaces_the_province():
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.types import Command
+
+    graph = build_trip_gear_graph(checkpointer=InMemorySaver())
+    cfg = {"configurable": {"thread_id": "trip-gear-onecity"}}
+    ctx = TurnContext(services=_Services(None), trace_id="trip-gear").with_extra(
+        product_search=_search,
+        planner=_Planner("城市漫步"),
+        weather_lookup=lambda _destination, _date: {
+            "temperature_min": 18, "temperature_max": 25,
+            "condition": "多云", "precipitation_probability": 10,
+        },
+    )
+
+    asyncio.run(graph.ainvoke(
+        {"user_message": "去广东玩一周", "user_id": "user-1", "thread_id": "trip-gear-onecity"},
+        cfg, context=ctx,
+    ))
+    second = asyncio.run(graph.ainvoke(Command(resume="只去广州"), cfg, context=ctx))
+
+    assert second["status"] == "ok"
+    assert "目的地：广州" in second["response"]
+
+
+def test_clarify_payload_offers_selectable_options():
+    """追问要带可点的选项，不是只给一段问题文字。"""
+    state = _run("帮我规划个行程")
+
+    payload = (state.get("__interrupt__") or [])[0].value
+    keys = [item["key"] for item in payload["questions"]]
+    assert keys[:2] == ["destination", "days"]
+    assert all(item["options"] for item in payload["questions"][:2])
+    assert all(item["allow_custom"] for item in payload["questions"])
+
+
+def test_answering_with_chosen_options_resumes_the_plan():
+    """点选后拼出来的那句话要能直接继续规划，不用再问一遍。"""
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.types import Command
+
+    from app.services.clarify_questions import compose_answer
+
+    graph = build_trip_gear_graph(checkpointer=InMemorySaver())
+    cfg = {"configurable": {"thread_id": "trip-gear-options"}}
+    ctx = TurnContext(services=_Services(None), trace_id="trip-gear").with_extra(
+        product_search=_search,
+        planner=_Planner("西湖"),
+        weather_lookup=lambda _destination, _date: {
+            "temperature_min": 12, "temperature_max": 18,
+            "condition": "晴", "precipitation_probability": 0,
+        },
+    )
+    asyncio.run(graph.ainvoke(
+        {"user_message": "帮我规划个行程", "user_id": "user-1", "thread_id": "trip-gear-options"},
+        cfg, context=ctx,
+    ))
+
+    answer = compose_answer([
+        {"prefix": "目的地", "value": "杭州"},
+        {"prefix": "天数", "value": "3 天"},
+        {"prefix": "人数", "value": "2 人"},
+    ])
+    second = asyncio.run(graph.ainvoke(Command(resume=answer), cfg, context=ctx))
+
+    assert second["status"] == "ok"
+    assert "目的地：杭州" in second["response"]
+    assert "天数：3 天" in second["response"]
+    assert "人数：2 人" in second["response"]

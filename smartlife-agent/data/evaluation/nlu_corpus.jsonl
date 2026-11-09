@@ -1,0 +1,36 @@
+{"message": "我明天去杭州玩三天，两个人，预算3000", "today": "2026-11-09", "expect": {"destination": "杭州", "days": 3, "people": 2, "budget": 3000, "start_date": "2026-11-10"}}
+{"message": "下周一去北京出差，住酒店", "today": "2026-11-09", "expect": {"destination": "北京", "days": null, "lodging": "hotel", "start_date": "2026-11-16"}}
+{"message": "国庆去成都，5天4晚，带爸妈", "today": "2026-11-09", "expect": {"destination": "成都", "days": 5, "people": 3, "start_date": "2027-10-01"}}
+{"message": "周末去莫干山露营，预算1500，我有帐篷", "today": "2026-11-09", "expect": {"destination": "莫干山", "days": 2, "lodging": "camp", "budget": 1500, "start_date": "2026-11-14"}}
+{"message": "从上海飞东京玩5天，预算1万，酒店一晚不超600", "today": "2026-11-09", "expect": {"destination": "东京", "origin": "上海", "days": 5, "budget": 10000, "lodging_budget": 600}}
+{"message": "广东五天，去广州深圳", "today": "2026-11-09", "expect": {"destination": "广州", "cities": ["广州", "深圳"], "days": 5}}
+{"message": "去三亚过年，7天，2大1小", "today": "2026-11-09", "expect": {"destination": "三亚", "days": 7, "people": 3, "with_kids": true, "start_date": "2027-02-06"}}
+{"message": "帮我规划下个月去云南玩10天", "today": "2026-11-09", "expect": {"destination": "云南", "days": 10, "start_date": "2026-12-01"}}
+{"message": "一个人去西安3天，预算2000以内", "today": "2026-11-09", "expect": {"destination": "西安", "days": 3, "people": 1, "budget": 2000}}
+{"message": "三天两晚去苏州，不要酒店", "today": "2026-11-09", "expect": {"destination": "苏州", "days": 3, "lodging": ""}}
+{"message": "十一去厦门鼓浪屿，三天", "today": "2026-11-09", "expect": {"destination": "厦门", "cities": ["厦门"], "days": 3, "start_date": "2027-10-01"}}
+{"message": "九月去青岛，4天，3个人，预算5000", "today": "2026-11-09", "expect": {"destination": "青岛", "days": 4, "people": 3, "budget": 5000, "start_date": "2027-09-01"}}
+{"message": "我住广州，想去长沙玩两天", "today": "2026-11-09", "expect": {"destination": "长沙", "origin": "广州", "days": 2}}
+{"message": "周末去杭州，2个人，预算3千", "today": "2026-11-09", "expect": {"destination": "杭州", "days": 2, "people": 2, "budget": 3000, "start_date": "2026-11-14"}}
+{"message": "不想去杭州了，改去苏州玩三天", "today": "2026-11-09", "expect": {"destination": "苏州", "cities": ["苏州"], "days": 3}}
+{"message": "去杭州玩三天，不露营，住酒店", "today": "2026-11-09", "expect": {"destination": "杭州", "days": 3, "lodging": "hotel"}}
+{"message": "上海到广州，玩四天", "today": "2026-11-09", "expect": {"destination": "广州", "origin": "上海", "cities": ["广州"], "days": 4}}
+{"message": "周末去露营，两天一晚，预算800", "today": "2026-11-09", "expect": {"days": 2, "budget": 800, "lodging": "camp", "lodging_budget": null}}
+{"message": "人均3000去杭州玩三天", "today": "2026-11-09", "expect": {"destination": "杭州", "days": 3, "budget": 3000}}
+{"message": "带爸妈去成都玩五天", "today": "2026-11-09", "expect": {"destination": "成都", "days": 5, "people": 3}}
+{"message": "和朋友去西安", "today": "2026-11-09", "expect": {"destination": "西安", "people": 2}}
+{"message": "带娃去杭州", "today": "2026-11-09", "expect": {"destination": "杭州", "people": 2, "with_kids": true}}
+{"message": "4个人去青岛", "today": "2026-11-09", "expect": {"destination": "青岛", "people": 4}}
+{"message": "预算3000到5000，去成都四天", "today": "2026-11-09", "expect": {"destination": "成都", "days": 4, "budget": 5000}}
+{"message": "去杭州玩三天，预算3000，不需要装备", "today": "2026-11-09", "expect": {"destination": "杭州", "days": 3, "budget": 3000, "budget_scope": "trip_only"}}
+{"message": "从深圳去广州，当天来回", "today": "2026-11-09", "expect": {"destination": "广州", "origin": "深圳", "days": 1}}
+{"message": "去香港玩三天，预算6000", "today": "2026-11-09", "expect": {"destination": "香港", "days": 3, "budget": 6000}}
+{"message": "十一月去成都", "today": "2026-11-09", "expect": {"destination": "成都", "start_date": "2027-11-01"}}
+{"message": "月底去成都", "today": "2026-11-09", "expect": {"destination": "成都", "start_date": "2026-11-30"}}
+{"message": "春节去哈尔滨", "today": "2026-11-09", "expect": {"destination": "哈尔滨", "start_date": "2027-02-06"}}
+{"message": "去上海迪士尼玩两天", "today": "2026-11-09", "expect": {"destination": "上海", "cities": ["上海"], "days": 2}}
+{"message": "五月去西安", "today": "2026-11-09", "expect": {"destination": "西安", "start_date": "2027-05-01"}}
+{"message": "2大1小去三亚", "today": "2026-11-09", "expect": {"destination": "三亚", "people": 3, "with_kids": true}}
+{"message": "情侣去三亚", "today": "2026-11-09", "expect": {"destination": "三亚", "people": 2}}
+{"message": "去成都吃火锅，玩四天", "today": "2026-11-09", "expect": {"destination": "成都", "days": 4}}
+{"message": "我明天去杭州玩三天，两个人，预算3000", "today": "2026-11-09", "expect": {"destination": "杭州", "days": 3, "people": 2, "budget": 3000}}

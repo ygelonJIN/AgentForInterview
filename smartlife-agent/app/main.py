@@ -367,6 +367,79 @@ def _run_memory_extraction(scene: str):
         orch.record_memory_extraction(thread_id, window["last_message_id"])
 
 
+def render_clarify_card() -> None:
+    """追问卡片：每题 A/B/C 可直接点，D 自己填；一次可以问多个。"""
+    pending = st.session_state.get("pending_clarify") or {}
+    questions = pending.get("questions") or []
+    if not questions or st.session_state.get("pending_assistant"):
+        return
+
+    from app.services.clarify_questions import compose_answer
+
+    with st.container(key="clarify_card"):
+        st.markdown(
+            '<div class="sl-ask-head">'
+            '<span class="sl-ask-kicker">还差几个信息</span>'
+            '<span class="sl-ask-tip">点一个，或自己填</span>'
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        with st.form("clarify_form", clear_on_submit=False):
+            answers = []
+            for question in questions:
+                key = str(question.get("key") or "")
+                labels = [option["label"] for option in question.get("options") or []]
+                st.markdown(
+                    f'<div class="sl-ask-q">{_esc(question.get("title") or "")}</div>',
+                    unsafe_allow_html=True,
+                )
+                choice = ""
+                if labels:
+                    choice = st.radio(
+                        question.get("title") or key,
+                        labels + [CUSTOM_OPTION_LABEL],
+                        index=None,
+                        key=f"clarify_{key}",
+                        label_visibility="collapsed",
+                        horizontal=True,
+                    )
+                value = ""
+                if not labels or choice == CUSTOM_OPTION_LABEL:
+                    value = st.text_input(
+                        "自己填",
+                        key=f"clarify_custom_{key}",
+                        label_visibility="collapsed",
+                        placeholder="例如：3 天 / 每周二出发",
+                    )
+                elif choice:
+                    value = choice
+                answers.append({
+                    "prefix": question.get("answer_prefix") or "",
+                    "value": value,
+                })
+            submitted = st.form_submit_button("就这样，继续", use_container_width=True)
+        if submitted:
+            text = compose_answer(answers)
+            if text:
+                st.session_state["pending_assistant"] = text
+                st.rerun()
+
+
+@st.cache_resource(show_spinner=False)
+def _long_term_memory():
+    """Chroma + embedding 初始化很贵；每页重建一次就会卡好几秒。"""
+    from app.memory.long_term import LongTermMemory
+
+    return LongTermMemory()
+
+
+@st.cache_resource(show_spinner=False)
+def _md_memory():
+    from app.memory.md_memory import MDMemory
+
+    return MDMemory()
+
+
 def render_memory_entry(scene: str, key_suffix: str):
     """对话区的记忆入口：只有一个按钮，点了才提取，平时不跑也不花 token。"""
     thread_id = _current_thread_id()
@@ -1069,6 +1142,8 @@ def _run_streaming_impl(async_gen_factory, *, postprocess=None):
 
 # ========== 导航与页面组件 ==========
 PAGE_BY_LABEL = {label: key for _icon, label, key in NAV_ITEMS}
+# 目录一页渲染多少件：太多会卡，太少翻页累
+CATALOG_PAGE_SIZE = 24
 
 
 def render_option_group(values, *, key, labels=None, default=None, columns=None):
@@ -1106,6 +1181,8 @@ def _current_thread_id() -> str:
 
 
 THREAD_TITLE_CHARS = 24
+# 最近会话全量显示，列表自己滚，不再折叠
+CUSTOM_OPTION_LABEL = "D · 自己填"
 
 
 def _clip_thread_title(text: str, limit: int = THREAD_TITLE_CHARS) -> str:
@@ -1120,8 +1197,11 @@ def _clip_thread_title(text: str, limit: int = THREAD_TITLE_CHARS) -> str:
     return text[:limit].rstrip() + "…"
 
 
-def _recent_threads(limit: int = 4):
-    """左栏「最近会话」：按最近写入排序，每条都可由侧栏按钮点进去。"""
+def _recent_threads(limit: int | None = 4):
+    """左栏「最近会话」：按最近写入排序，每条都可由侧栏按钮点进去。
+
+    ``limit=None`` 表示取全部，供"展开全部"用。
+    """
     try:
         from app.memory.conversation_store import ConversationStore
         rows = ConversationStore().list_threads(user_id=st.session_state["user_id"])
@@ -1132,7 +1212,7 @@ def _recent_threads(limit: int = 4):
         preview = str(row.get("preview") or "").strip()
         if not preview or not int(row.get("message_count") or 0):
             continue
-        if len(output) >= limit:
+        if limit is not None and len(output) >= limit:
             break
         updated_at = str(row.get("last_at") or "")[:16].replace("T", " ")
         output.append({
@@ -1286,6 +1366,8 @@ def render_app_sidebar():
                 "＋ 新建对话",
                 key="new_thread_side",
                 use_container_width=True,
+                # 和工作台里"选中的那一项"同一个按钮类型，样式自然一致
+                type="primary",
                 help="开一个全新的会话，当前会话留在「最近会话」里",
             ):
                 _start_new_thread()
@@ -1315,21 +1397,24 @@ def render_app_sidebar():
                     st.session_state["active_page"] = page_key
                     st.rerun()
 
-        threads = _recent_threads()
-        st.markdown(nav_label_html("最近会话"), unsafe_allow_html=True)
+        threads = _recent_threads(limit=None)
         active_thread_id = st.session_state.get("active_thread_id") or _current_thread_id()
+        st.markdown(nav_label_html("最近会话"), unsafe_allow_html=True)
         with st.container(key="recent_threads"):
             if threads:
-                for index, thread in enumerate(threads):
-                    if st.button(
-                        f"{thread['time']}  {thread['title']}".strip(),
-                        key=f"recent_thread_{index}",
-                        use_container_width=True,
-                        type="primary" if thread["thread_id"] == active_thread_id else "secondary",
-                        help=_thread_help(thread),
-                    ):
-                        _activate_thread(thread["thread_id"])
-                        st.rerun()
+                with st.container():
+                    for index, thread in enumerate(threads):
+                        is_active = thread["thread_id"] == active_thread_id
+                        if st.button(
+                            f"{'▍' if is_active else ''}{thread['time']}  {thread['title']}".strip(),
+                            key=f"recent_thread_{index}",
+                            use_container_width=True,
+                            # tertiary = 纯文字，没有边框和底色，天然不是卡片
+                            type="tertiary",
+                            help=_thread_help(thread),
+                        ):
+                            _activate_thread(thread["thread_id"])
+                            st.rerun()
             else:
                 st.markdown(
                     '<div class="sl-thread"><div class="sl-thread-title">还没有会话</div>'
@@ -1337,7 +1422,6 @@ def render_app_sidebar():
                     unsafe_allow_html=True,
                 )
 
-        st.markdown(user_html(st.session_state["user_id"], "local actor"), unsafe_allow_html=True)
         return current
 
 
@@ -1386,6 +1470,7 @@ def render_assistant_page():
         # 记忆入口就在对话里：一个按需按钮 + 上次结果 + 候选清单，不必跳到记忆中心。
         render_memory_entry("general", "assistant")
         render_memory_extraction_panel("general", "assistant")
+        render_clarify_card()
 
         if pending_message:
             st.session_state.pop("pending_assistant", None)
@@ -1428,6 +1513,7 @@ def render_assistant_page():
                         st.session_state["pending_clarify"] = {
                             "thread_id": data.get("thread_id", ""),
                             "missing": data.get("missing", []),
+                            "questions": data.get("questions", []),
                         }
                         response = (
                             data.get("question")
@@ -1521,14 +1607,25 @@ def render_product_catalog_view():
         search=search,
         max_price=float(max_price),
     )
-    st.caption(f"共找到 {len(products)} 件商品")
+    total = len(products)
+    st.caption(f"共找到 {total} 件商品")
     if not products:
         render_empty("没有符合当前条件的商品。")
         return
 
-    for start in range(0, len(products), 3):
+    # 只渲染当前页：几千件商品逐个建按钮会让页面卡十几秒
+    signature = f"{category}|{subcategory}|{search}|{max_price}"
+    if st.session_state.get("catalog_filter_sig") != signature:
+        st.session_state["catalog_filter_sig"] = signature
+        st.session_state["catalog_page"] = 1
+    pages = max(1, (total + CATALOG_PAGE_SIZE - 1) // CATALOG_PAGE_SIZE)
+    page = min(max(1, int(st.session_state.get("catalog_page", 1))), pages)
+    start = (page - 1) * CATALOG_PAGE_SIZE
+    visible = products[start:start + CATALOG_PAGE_SIZE]
+
+    for offset in range(0, len(visible), 3):
         cols = st.columns(3)
-        for col, product in zip(cols, products[start:start + 3]):
+        for col, product in zip(cols, visible[offset:offset + 3]):
             with col:
                 render_card(
                     product["name"],
@@ -1544,6 +1641,16 @@ def render_product_catalog_view():
                 if st.button("查看详情", key=f"product_detail_{product['id']}", use_container_width=True):
                     st.session_state["selected_product_id"] = product["id"]
                     st.rerun()
+
+    if pages > 1:
+        prev_col, info_col, next_col = st.columns([1, 2, 1])
+        if prev_col.button("← 上一页", key="catalog_prev", disabled=page <= 1, use_container_width=True):
+            st.session_state["catalog_page"] = page - 1
+            st.rerun()
+        info_col.caption(f"第 {page} / {pages} 页 · 每页 {CATALOG_PAGE_SIZE} 件")
+        if next_col.button("下一页 →", key="catalog_next", disabled=page >= pages, use_container_width=True):
+            st.session_state["catalog_page"] = page + 1
+            st.rerun()
 
 
 def render_product_reviews_view():
@@ -1689,8 +1796,8 @@ def render_memory_search():
     try:
         from app.memory.long_term import LongTermMemory
         from app.memory.md_memory import MDMemory
-        long_term = LongTermMemory()
-        md_memory = MDMemory()
+        long_term = _long_term_memory()
+        md_memory = _md_memory()
         vector_results = long_term.recall(st.session_state["user_id"], query, k=6)
         md_results = md_memory.search_memories(st.session_state["user_id"], query)
     except Exception as exc:
@@ -1822,7 +1929,7 @@ def render_md_memory_manager():
     render_section_header("记忆管理", "按类型与分类筛选，支持编辑、删除和安全审批")
     try:
         from app.memory.md_memory import MDMemory
-        md_memory = MDMemory()
+        md_memory = _md_memory()
         all_memories = md_memory.get_all_memories(st.session_state["user_id"])
     except Exception as exc:
         st.warning(f"记忆加载失败：{exc}")
@@ -1915,7 +2022,7 @@ def render_vector_memory_browser():
     render_section_header("向量记忆", "默认仅显示统计，点击后查看全部向量内容和元数据")
     try:
         from app.memory.long_term import LongTermMemory
-        memories = LongTermMemory().list_user_memories(st.session_state["user_id"], limit=200)
+        memories = _long_term_memory().list_user_memories(st.session_state["user_id"], limit=200)
     except Exception as exc:
         st.warning(f"向量记忆加载失败：{exc}")
         return
@@ -1996,7 +2103,7 @@ def render_md_document_editor():
     render_section_header("MD 原文编辑", "直接编辑 preferences.md / events.md，保存后同步索引和向量记忆")
     try:
         from app.memory.md_memory import MDMemory
-        md_memory = MDMemory()
+        md_memory = _md_memory()
         user_id = st.session_state["user_id"]
         preferences_content = md_memory.get_raw_document(user_id, "preferences")
         events_content = md_memory.get_raw_document(user_id, "events")
@@ -2076,8 +2183,8 @@ def render_memory_page():
     try:
         from app.memory.long_term import LongTermMemory
         from app.memory.md_memory import MDMemory
-        long_term = LongTermMemory()
-        md_memory = MDMemory()
+        long_term = _long_term_memory()
+        md_memory = _md_memory()
         vector_count = long_term.get_memory_count(st.session_state["user_id"])
         md_profile = md_memory.get_user_profile(st.session_state["user_id"])
         md_count = md_profile.get("memory_count", 0)

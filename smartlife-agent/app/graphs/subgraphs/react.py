@@ -10,7 +10,7 @@ import json
 import time
 from typing import Any, Dict, List, Optional
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 from langgraph.types import RetryPolicy
@@ -48,6 +48,20 @@ async def _log(sink, node: str, kind: str, message: str, **kwargs: Any) -> None:
     await sink.emit_execution_log(payload)
 
 
+TOOL_USE_RULES = (
+    "工具用法：只查你现在确实不知道的实时事实（天气、空气、汇率、节假日、路线、时间），"
+    "能直接回答的不要查；查不到就说查不到，不拿常识补数字；"
+    "不要把工具结果拼成多天行程或装备清单，那是行程规划链路的职责。"
+)
+
+
+def _with_tool_rules(messages, tools):
+    """绑了工具才加用法约束；已经有系统消息就不重复加。"""
+    if not tools or (messages and isinstance(messages[0], SystemMessage)):
+        return list(messages)
+    return [SystemMessage(content=TOOL_USE_RULES)] + list(messages)
+
+
 def _tools_for(runtime: Runtime[TurnContext]):
     services = runtime.context.services
     actor_id = runtime.context.extra.get("actor_id") or ""
@@ -67,6 +81,7 @@ async def agent(state: ReactState, runtime: Runtime[TurnContext]) -> Dict[str, A
     tools = _tools_for(runtime)
     model = runtime.context.services.llm
     model_with_tools = model.bind_tools(tools) if hasattr(model, "bind_tools") else model
+    messages = _with_tool_rules(state["messages"], tools)
 
     await sink.emit("agent_started", {"step": state.get("step_count", 0) + 1}, step="react")
     with timed_span(
@@ -74,7 +89,7 @@ async def agent(state: ReactState, runtime: Runtime[TurnContext]) -> Dict[str, A
         trace_id=state.get("trace_id", ""),
         attributes={"step": state.get("step_count", 0) + 1},
     ) as measurement:
-        response = await model_with_tools.ainvoke(state["messages"])
+        response = await model_with_tools.ainvoke(messages)
         measurement.add_attributes(extract_model_usage(response))
 
     step_count = state.get("step_count", 0) + 1

@@ -94,7 +94,8 @@ def build_tool_registry(
     """
     from app.tools.map import get_route
     from app.tools.time import get_current_time
-    from app.tools.weather import get_weather
+    from app.tools.travel_facts import get_exchange_rate, get_public_holidays
+    from app.tools.weather import get_air_quality, get_weather, get_weather_forecast
     from app.tools.memory_tools import MemoryToolProvider
     from app.tools.shopping_tools import ShoppingToolProvider
     from app.tools.travel_tools import TravelToolProvider
@@ -110,7 +111,15 @@ def build_tool_registry(
             return
         registry.register(item)
 
-    for item in (get_weather, get_route, get_current_time):
+    for item in (
+        get_weather,
+        get_weather_forecast,
+        get_air_quality,
+        get_exchange_rate,
+        get_public_holidays,
+        get_route,
+        get_current_time,
+    ):
         add(item)
 
     shopping_tools = ShoppingToolProvider(actor_id=actor or None).get_tools()

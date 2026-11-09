@@ -52,12 +52,23 @@ def test_recent_thread_rows_are_not_styled_like_nav_selection():
     assert "var(--c-nav-active-bg)" not in recent_block
 
 
-def test_sidebar_new_thread_button_has_its_own_emphasis_style():
-    theme = (Path(__file__).parents[1] / "app" / "ui" / "theme.py").read_text(encoding="utf-8")
+def test_sidebar_new_thread_uses_the_same_button_type_as_nav_selection():
+    """新建对话跟工作台选中项同一套样式：都走 type="primary"，不再单独写一套 CSS。"""
+    main = (Path(__file__).parents[1] / "app" / "main.py").read_text(encoding="utf-8")
 
-    block = theme[theme.index(".st-key-new_thread {{"):theme.index(".sl-brand {{")]
-    assert "var(--c-accent) !important" in block
-    assert "var(--radius-pill)" in block
+    block = main[main.index('key="new_thread_side"'):]
+    block = block[: block.index("):")]
+    assert 'type="primary"' in block
+
+
+def test_recent_threads_use_plain_text_buttons_not_cards():
+    """最近会话是纯文字行：type="tertiary"，不用 secondary 的卡片底。"""
+    main = (Path(__file__).parents[1] / "app" / "main.py").read_text(encoding="utf-8")
+
+    block = main[main.index('key=f"recent_thread_{index}"'):]
+    block = block[: block.index("):")]
+    assert 'type="tertiary"' in block
+    assert 'type="secondary"' not in block
 
 
 def _css_rule(theme: str, selector: str) -> str:

@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import re
-from typing import List, Optional
+from typing import Dict, List, Optional, Sequence
 
-from app.trip_gear.models import DayPlan, Issue, Itinerary, ItineraryItem, TripFacts
+from app.trip_gear.models import DayPlan, FixedEvent, Issue, Itinerary, ItineraryItem, TripFacts
 
 DAY_WINDOW_MIN = 840  # 8:00-22:00
 
@@ -101,36 +101,97 @@ def _sort_key(item: ItineraryItem) -> int:
     return start if start is not None else 24 * 60
 
 
-def apply_fixed_events(itinerary: Itinerary, facts: TripFacts) -> Itinerary:
-    """把已订的固定活动钉进对应那天。
+def assign_cities(days: int, cities: Sequence[str]) -> Dict[int, str]:
+    """把城市按顺序均分到各天，余数给前面的城市（7 天 3 城 → 3/2/2）。
 
-    只处理 ``status="booked"``：``planned`` 只是"想去"，排不进去也不该挤掉
-    别的安排。钉进去后当天若超时，**让路的是可调整的条目，不是固定活动**——
-    固定活动是外部约束，删它等于替用户退票。
+    这是规则不是建议：天气要按天落到具体城市，所以先定一个确定的分法，
+    模型和兜底都照它排；用户改主意就改城市顺序。
     """
-    events = [event for event in (facts.fixed_events or []) if event.status == "booked"]
-    if not events:
-        return itinerary
+    ordered = [str(city) for city in cities if city]
+    total = max(1, int(days or 1))
+    if not ordered:
+        return {}
+    base, extra = divmod(total, len(ordered))
+    result: Dict[int, str] = {}
+    day = 1
+    for index, city in enumerate(ordered):
+        span = base + (1 if index < extra else 0)
+        for _ in range(span):
+            if day > total:
+                break
+            result[day] = city
+            day += 1
+    return result
 
+
+def _appointment_day(event: FixedEvent, day_numbers: List[int]) -> int:
+    """约见没定哪天时排中间那天：第一天多在赶路，最后一天要返程。"""
+    if event.day and event.day in day_numbers:
+        return event.day
+    if not day_numbers:
+        return 0
+    return day_numbers[len(day_numbers) // 2]
+
+
+def apply_fixed_events(itinerary: Itinerary, facts: TripFacts) -> Itinerary:
+    """把固定活动钉进对应那天。
+
+    - ``booked`` 只处理写明了第几天的：没说是哪天就不猜——猜一天等于替用户
+      决定哪天去。
+    - ``appointment``（约好见人）必须排进去，哪天没定就排中间那天；它锁的是
+      "这趟要留出这半天"，不是"必须在这一天"。
+    - ``planned`` 只是"想去"，排不进去也不该挤掉别的安排。
+
+    钉进去后当天若超时，**让路的是可调整的条目，不是固定活动**——固定活动是
+    外部约束，删它等于替用户退票。
+    """
     by_day = {day.day: day for day in itinerary.days}
-    for event in events:
-        if not event.day:
-            # 没说第几天就不钉：猜一天等于替用户决定哪天去
-            continue
-        plan = by_day.get(event.day)
+    day_numbers = sorted(by_day)
+    events = [
+        (event, event.day)
+        for event in (facts.fixed_events or [])
+        if event.status == "booked" and event.day
+    ]
+    events += [
+        (event, _appointment_day(event, day_numbers))
+        for event in (facts.fixed_events or [])
+        if event.status == "appointment"
+    ]
+    for event, day_number in events:
+        plan = by_day.get(day_number)
         if plan is None:
             continue
+        # 模型已经排了这件事，别再排一遍
+        if any(
+            event.title in item.activity or (event.venue and event.venue in item.activity)
+            for item in plan.items
+        ):
+            continue
+        booked = event.status == "booked"
         pinned = ItineraryItem(
-            time=event.start or "19:30",
-            activity=f"{event.title}" + (f"（{event.venue}）" if event.venue else ""),
+            time=event.start or ("19:30" if booked else "14:00"),
+            activity=(
+                f"{event.title}" if booked else f"{event.title}（半天，地点固定）"
+            ) + (f"（{event.venue}）" if event.venue else ""),
             duration_min=max(30, int(event.duration_min or 120)),
             cost=float(event.cost or 0),
         )
-        # 那天原本安排了返程/离开，而固定活动在它之后——说明当天不走，
-        # 删掉返程而不是把活动挪走：活动是用户已经买票的外部约束。
-        for item in list(plan.items):
-            if any(word in item.activity for word in ("返程", "回程", "离开")) and _sort_key(item) <= _sort_key(pinned):
-                plan.items.remove(item)
+        # 那天原本安排了返程/离开，而已订活动在它之后——说明当晚不走，
+        # 删掉返程而不是把活动挪走：已订活动是用户已经买票的外部约束。
+        # 约见不享受这条：见完朋友照样可以走。
+        if booked:
+            for item in list(plan.items):
+                if any(word in item.activity for word in ("返程", "回程", "离开")) and _sort_key(item) <= _sort_key(pinned):
+                    plan.items.remove(item)
+        else:
+            # 约见占的是半天：和它撞时段的安排删掉，否则同一天 14:00 排两件事。
+            start = _sort_key(pinned)
+            end = start + max(30, pinned.duration_min)
+            for item in list(plan.items):
+                other_start = _sort_key(item)
+                other_end = other_start + max(0, int(item.duration_min or 0))
+                if other_start < end and start < other_end:
+                    plan.items.remove(item)
 
         plan.items.append(pinned)
         plan.items.sort(key=_sort_key)
@@ -149,33 +210,49 @@ def fallback_itinerary(facts: TripFacts) -> Itinerary:
     """没有模型时也能跑通链路；费用只是保守估算。"""
     days = max(1, int(facts.days or 2))
     place = facts.destination or "目的地"
+    city_of_day = assign_cities(days, facts.cities)
     plans: List[DayPlan] = []
     for day in range(1, days + 1):
+        here = city_of_day.get(day, place)
         if day == 1:
             items = [
-                ItineraryItem(time="10:00", activity=f"到达{place}并安顿", duration_min=120, cost=0),
+                ItineraryItem(time="10:00", activity=f"到达{here}并安顿", duration_min=120, cost=0),
                 ItineraryItem(time="12:00", activity="午餐", duration_min=60, cost=60),
-                ItineraryItem(time="14:00", activity=f"{place}周边活动", duration_min=180, cost=100),
+                ItineraryItem(time="14:00", activity=f"{here}周边活动", duration_min=180, cost=100),
                 ItineraryItem(time="18:00", activity="晚餐", duration_min=90, cost=80),
             ]
         elif day == days:
             items = [
                 ItineraryItem(time="08:30", activity="早餐", duration_min=45, cost=30),
-                ItineraryItem(time="09:30", activity=f"{place}上午活动", duration_min=150, cost=80),
+                ItineraryItem(time="09:30", activity=f"{here}上午活动", duration_min=150, cost=80),
                 ItineraryItem(time="12:00", activity="午餐", duration_min=60, cost=60),
                 ItineraryItem(time="13:30", activity="返程", duration_min=120, cost=0),
             ]
         else:
             items = [
                 ItineraryItem(time="08:30", activity="早餐", duration_min=45, cost=30),
-                ItineraryItem(time="09:30", activity=f"{place}上午活动", duration_min=180, cost=100),
+                ItineraryItem(time="09:30", activity=f"{here}上午活动", duration_min=180, cost=100),
                 ItineraryItem(time="12:30", activity="午餐", duration_min=60, cost=60),
-                ItineraryItem(time="14:00", activity=f"{place}下午活动", duration_min=180, cost=100),
+                ItineraryItem(time="14:00", activity=f"{here}下午活动", duration_min=180, cost=100),
                 ItineraryItem(time="18:00", activity="晚餐", duration_min=90, cost=80),
             ]
+        previous = city_of_day.get(day - 1, "")
+        if day > 1 and previous and previous != here:
+            # 换城那天上午在路上：早餐和上午安排都让位
+            items = [
+                item for item in items
+                if item.activity != "早餐" and "上午活动" not in item.activity
+            ]
+            items.insert(0, ItineraryItem(
+                time="08:30",
+                activity=f"从{previous}前往{here}（城际交通）",
+                duration_min=120,
+                cost=100,
+            ))
         plans.append(
             DayPlan(
                 day=day,
+                city=city_of_day.get(day, ""),
                 items=items,
                 lodging=facts.lodging,
                 lodging_cost=lodging_cost_for(facts.lodging, facts.effective_people),

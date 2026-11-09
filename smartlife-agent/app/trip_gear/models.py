@@ -36,6 +36,8 @@ class ItineraryItem(BaseModel):
 
 class DayPlan(BaseModel):
     day: int
+    # 多城市行程里这一天在哪个城市；单城市行程留空
+    city: str = ""
     items: List[ItineraryItem] = Field(default_factory=list)
     weather: str = ""
     lodging: str = ""
@@ -138,12 +140,14 @@ class Issue(BaseModel):
 class FixedEvent(BaseModel):
     """用户点名要参加的固定活动（演出、课程、展会）。
 
-    这是行程唯一会被"外部约束钉死"的来源。``status`` 分两档：
+    这是行程唯一会被"外部约束钉死"的来源。``status`` 分三档：
 
     - ``booked``：已订票/已预约，必须排进对应那天，其它安排让路；
+    - ``appointment``：约好见人（"有一天去浦东找朋友"），地点和事由固定，
+      日期可调——哪天排由排程决定，但不许不排；
     - ``planned``：只是想去，排得下就排，不挤掉别人的安排。
 
-    分两档是照着 `docs/关键决策总表.md` 里"硬度"的口径来的——用户说"已买票"
+    分档是照着 `docs/关键决策总表.md` 里"硬度"的口径来的——用户说"已买票"
     和"想去看看"的约束力完全不同，混成一档会让系统擅自删掉别的日程。
     """
 
@@ -154,7 +158,7 @@ class FixedEvent(BaseModel):
     duration_min: int = 120
     cost: float = 0.0
     venue: str = ""
-    status: str = "planned"  # booked / planned
+    status: str = "planned"  # booked / appointment / planned
     source: str = "用户原话"
 
 
@@ -165,10 +169,15 @@ class TripFacts(BaseModel):
     但不能把它当成"用户说了 1 人"，展示和追问要区分这两种情况。
     """
 
+    origin: str = ""
     destination: str = ""
+    # 多城市串联（"广州、深圳、珠海"）：按顺序均分到各天
+    cities: List[str] = Field(default_factory=list)
     days: Optional[int] = None
     people: Optional[int] = None
     budget: Optional[float] = None
+    # 每晚住宿预算（用户说"酒店一晚不超400"时才有值），与整趟预算分开记
+    lodging_budget: Optional[float] = None
     gear_budget: Optional[float] = None
     budget_scope: str = "all_in"  # all_in / trip_only
     start_date: Optional[str] = None
@@ -177,6 +186,8 @@ class TripFacts(BaseModel):
     with_kids: bool = False
     min_temp_c: Optional[float] = None
     rain_probability: Optional[float] = None
+    uv_index_max: Optional[float] = None
+    aqi_max: Optional[float] = None
     weather_summary: str = ""
     # 用户点名的固定活动；booked 会钉进行程，planned 只是偏好
     fixed_events: List[FixedEvent] = Field(default_factory=list)

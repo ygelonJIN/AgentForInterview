@@ -10,6 +10,7 @@ from app.trip_gear.itinerary import (
     DAY_WINDOW_MIN,
     apply_fixed_events,
     fallback_itinerary,
+    validate,
 )
 from app.trip_gear.models import DayPlan, FixedEvent, Itinerary, ItineraryItem, TripFacts
 
@@ -129,3 +130,49 @@ def test_planned_event_is_not_pinned():
     assert not any(
         "音乐会" in item.activity for day in itinerary.days for item in day.items
     )
+
+
+def test_appointment_without_day_takes_the_middle_day():
+    """约朋友没说哪天：中间那天——第一天赶路、最后一天返程，都不合适。"""
+    facts = TripFacts(
+        destination="上海",
+        days=3,
+        fixed_events=[FixedEvent(title="找朋友", venue="浦东", status="appointment", duration_min=180)],
+    )
+    itinerary = fallback_itinerary(facts)
+
+    day2 = itinerary.days[1]
+    assert any("找朋友" in item.activity and "浦东" in item.activity for item in day2.items)
+    assert not any(
+        "找朋友" in item.activity
+        for day in (itinerary.days[0], itinerary.days[2])
+        for item in day.items
+    )
+    # 半天占掉之后不能再和别的安排撞时段
+    assert not validate(itinerary)
+
+
+def test_appointment_day_is_respected_when_given():
+    facts = TripFacts(
+        destination="上海",
+        days=3,
+        fixed_events=[FixedEvent(title="见同学", venue="静安", day=3, status="appointment")],
+    )
+    itinerary = fallback_itinerary(facts)
+
+    assert any("见同学" in item.activity for item in itinerary.days[2].items)
+
+
+def test_origin_and_appointment_in_one_sentence():
+    """"我在广东，我要去上海，有一天去找浦东的朋友"：起点、终点、那天都得对。"""
+    facts, constraints = derive_constraints(
+        "我在广东，我要去上海玩三天，有一天去找一个我在浦东的朋友"
+    )
+
+    assert (facts.origin, facts.destination) == ("广东", "上海")
+    by_key = {item.key: item for item in constraints}
+    assert by_key["origin"].text == "出发地：广东"
+    assert by_key["destination"].text == "目的地：上海"
+    # 约见只锁"哪天要有"，哪天排由排程决定，所以是软约束
+    assert by_key["appointment"].hard is False
+    assert "浦东" in by_key["appointment"].text

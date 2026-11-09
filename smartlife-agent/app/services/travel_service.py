@@ -115,7 +115,11 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
         return ""
 
     async def get_weather_context(self, user_input: str) -> str:
-        """获取真实天气证据；没有真实数据时返回禁止猜测的明确状态。"""
+        """获取真实天气证据；没有真实数据时返回禁止猜测的明确状态。
+
+        行程有几天就查几天：只查出发那天，等于把第 2、3 天的天气留成空白，
+        而大纲里又不会说"这几天没查过"。
+        """
         from app.graphs.subgraphs.travel import extract_requirements
 
         requirements = extract_requirements(user_input)
@@ -124,6 +128,32 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
             return ""
         raw_date = str(requirements.get("start_date") or "").strip()
         travel_date = date.fromisoformat(raw_date) if raw_date else date.today()
+        try:
+            span = max(1, min(16, int(requirements.get("days") or 1)))
+        except (TypeError, ValueError):
+            span = 1
+
+        if span > 1:
+            forecast = await self.travel_tool_executor.get_weather_forecast(
+                destination, travel_date, span
+            )
+            rows = forecast.get("days") if forecast.get("accepted") else None
+            if rows:
+                fetched_at = forecast.get("fetched_at")
+                source = forecast.get("source", "外部天气 provider")
+                lines = ["【真实工具证据】"]
+                for index, row in enumerate(rows, start=1):
+                    rain = row.get("precipitation_probability")
+                    rain_text = f"，降水 {rain:g}%" if rain is not None else ""
+                    lines.append(
+                        f"- 第{index}天 {row.get('date', '')} {destination}天气："
+                        f"{row.get('temperature', '')} {row.get('condition', '')}{rain_text}"
+                    )
+                lines.append(f"- 来源：{source}")
+                if fetched_at:
+                    lines[-1] += f"，获取时间戳：{fetched_at}"
+                return "\n".join(lines)
+
         weather = await self.travel_tool_executor.get_weather_evidence(
             destination,
             travel_date,

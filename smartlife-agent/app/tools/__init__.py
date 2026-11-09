@@ -4,7 +4,7 @@
 （那些 shim 无人调用，注册统一走 ``app.tools.registry``）。
 """
 
-from .weather import get_weather
+from .weather import get_weather, get_weather_forecast
 from .map import get_route
 from .time import get_current_time
 
@@ -33,6 +33,7 @@ __all__ = [
     "get_all_tools",
     "get_safe_tools",
     "get_weather",
+    "get_weather_forecast",
     "get_route",
     "get_current_time",
 ]
