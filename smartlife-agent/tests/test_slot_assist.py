@@ -122,7 +122,7 @@ def test_trip_gear_graph_uses_assist_before_asking():
         slot_assist=slot_assist,
     )
     result = asyncio.run(build_trip_gear_graph().ainvoke(
-        {"user_message": "去石塘待几天，帮我看看带什么", "user_id": "u1", "thread_id": "t1"},
+        {"user_message": "我一个人去石塘待几天，2026-11-10 出发，帮我看看带什么", "user_id": "u1", "thread_id": "t1"},
         context=ctx,
     ))
 

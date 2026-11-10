@@ -232,7 +232,10 @@ class TripGearService:
         days = [
             DayPlan(
                 day=day.day,
-                city=(day.city or assignment.get(day.day, "")),
+                # 城市以事实里的分配为准：模型写别的城市（最常见的是把出发地
+                # 当成第一站）一律改回 assign_cities 的分法，否则面板标题写广东、
+                # 行程前半段却在上海。
+                city=(assignment.get(day.day) or day.city or ""),
                 items=[
                     ItineraryItem(
                         time=item.time,

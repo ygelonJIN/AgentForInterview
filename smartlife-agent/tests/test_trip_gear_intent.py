@@ -115,14 +115,14 @@ def test_classify_turn_marks_gear_request_as_travel_gear_plan():
 
 class _HistoryStore:
     def get_langchain_messages(self, thread_id, last_n=10):
-        return [{"role": "user", "content": "周末去莫干山露营两天，我有帐篷和睡袋"}]
+        return [{"role": "user", "content": "周末一个人去莫干山露营两天，2026-11-10 出发，我有帐篷和睡袋"}]
 
 
 def test_trip_gear_subgraph_inherits_previous_user_turns():
     """上一轮用户说过的话必须进入装备子图，助手建议不能算作用户已有。"""
     history = _HistoryStore().get_langchain_messages("thread-1")
 
-    assert history_text(history) == "周末去莫干山露营两天，我有帐篷和睡袋"
+    assert history_text(history) == "周末一个人去莫干山露营两天，2026-11-10 出发，我有帐篷和睡袋"
 
     class _Services:
         def get_chat_history(self, thread_id):

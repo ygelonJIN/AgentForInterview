@@ -146,11 +146,16 @@ section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] > div > [d
   margin-top: auto;
 }}
 section[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {{ gap: var(--space-2); }}
-section[data-testid="stSidebar"] .stButton > button {{
+/* 侧栏按钮一律用后代选择器：带 help 的按钮会被 tooltip 的 span 包一层，
+   写成直接子选择器就匹配不到，样式会整段落空（新建对话、每一条会话都带 help）。 */
+section[data-testid="stSidebar"] .stButton button {{
   width: 100%;
   min-height: 38px;
   justify-content: flex-start;
   text-align: left;
+  /* 按钮是"控件"不是"文字行"：左对齐看的是按钮框（36.1），框内仍留 13px，
+     不然「＋新建对话」的加号会贴着自己的左边框。纯文字（品牌/分区标题/
+     会话行）另走 2px 竖线槽，两条边界各管各的。 */
   padding: var(--space-2) var(--space-3) !important;
   border: var(--border-w) solid transparent !important;
   border-radius: var(--radius-sm) !important;
@@ -161,14 +166,14 @@ section[data-testid="stSidebar"] .stButton > button {{
   box-shadow: none !important;
   transform: none !important;
 }}
-section[data-testid="stSidebar"] .stButton > button:hover {{
+section[data-testid="stSidebar"] .stButton button:hover {{
   background: var(--c-nav-hover-bg) !important;
   color: var(--c-nav-active-text) !important;
 }}
-section[data-testid="stSidebar"] .stButton > button > div {{ width: 100%; justify-content: flex-start !important; gap: var(--space-2) !important; }}
-section[data-testid="stSidebar"] .stButton > button p {{ white-space: nowrap; }}
-section[data-testid="stSidebar"] .stButton > button[kind="primary"],
-section[data-testid="stSidebar"] .stButton > button[kind="primary"]:hover {{
+section[data-testid="stSidebar"] .stButton button > div {{ width: 100%; justify-content: flex-start !important; gap: var(--space-2) !important; }}
+section[data-testid="stSidebar"] .stButton button p {{ white-space: nowrap; }}
+section[data-testid="stSidebar"] .stButton button[kind="primary"],
+section[data-testid="stSidebar"] .stButton button[kind="primary"]:hover {{
   background: var(--c-nav-active-bg) !important;
   border-color: var(--c-nav-active-line) !important;
   color: var(--c-nav-active-text) !important;
@@ -179,7 +184,7 @@ section[data-testid="stSidebar"] [data-testid="stAlert"] {{ border-radius: var(-
 
 /* 「新建对话」用 type="primary"，跟工作台选中项共用同一条规则，这里只留间距。 */
 .st-key-new_thread {{ margin: var(--space-1) 0 var(--space-2); }}
-section[data-testid="stSidebar"] .st-key-new_thread .stButton > button p {{ white-space: nowrap; }}
+section[data-testid="stSidebar"] .st-key-new_thread .stButton button p {{ white-space: nowrap; }}
 
 .st-key-nav_menu > [data-testid="stElementContainer"]:nth-child(1) .stButton button::before {{ content: "◈"; }}
 .st-key-nav_menu > [data-testid="stElementContainer"]:nth-child(2) .stButton button::before {{ content: "▤"; }}
@@ -193,14 +198,17 @@ section[data-testid="stSidebar"] .st-key-new_thread .stButton > button p {{ whit
 }}
 .st-key-nav_menu .stButton button[kind="primary"]::before {{ color: var(--c-nav-active-text); }}
 
-.sl-brand {{ display: flex; align-items: center; gap: var(--space-3); padding: 0 var(--space-1) var(--space-4); }}
+/* 左导轨：侧栏里所有文字（品牌、分区标题、导航、会话行）共用同一条左边界。
+   会话行用 2px 透明左边框给"当前"竖线留槽，所以文字从 2px 处起步，
+   这里统一补同一个 2px，整列才不会一处一个缩进。 */
+.sl-brand {{ display: flex; align-items: center; gap: var(--space-3); padding: 0 var(--space-1) var(--space-4) 2px; }}
 .sl-brand-name {{ font-family: var(--font-display); font-size: var(--fs-md); font-weight: var(--fw-bold); color: var(--c-nav-text); }}
 .sl-brand-sub {{
   font-size: var(--fs-2xs); color: var(--c-nav-muted);
   letter-spacing: var(--tracking-caps); text-transform: uppercase;
 }}
 .sl-nav-label {{
-  padding: var(--space-3) var(--space-3) var(--space-1);
+  padding: var(--space-3) 2px var(--space-1) 2px;
   font-size: var(--fs-2xs); font-weight: var(--fw-bold);
   letter-spacing: var(--tracking-caps); text-transform: uppercase;
   color: var(--c-nav-muted);
@@ -235,18 +243,20 @@ section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] > div > [d
 
 .st-key-recent_threads {{
   flex: 1 1 auto; min-height: 0; max-height: 52vh;
-  overflow-y: auto; overflow-x: hidden; padding-right: 2px;
+  /* 不留右侧内缩：会话行和分区标题共用 36.1→198.9 这同一个左右边界 */
+  overflow-y: auto; overflow-x: hidden;
   overscroll-behavior: contain;
 }}
 .st-key-recent_threads [data-testid="stVerticalBlockBorderWrapper"] {{ border: none !important; box-shadow: none !important; background: transparent !important; }}
 .st-key-recent_threads > [data-testid="stVerticalBlock"] {{ gap: 0; }}
-section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton > button {{
+section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton button {{
   justify-content: flex-start !important;
   width: 100% !important;
   max-width: 100% !important;
   min-height: 0 !important;
   height: auto !important;
-  padding: var(--space-1) 0 var(--space-1) var(--space-3) !important;
+  /* 左边 2px 由下面的透明左边框占着，文字与分区标题同一条左导轨 */
+  padding: var(--space-1) 0 var(--space-1) 0 !important;
   font-size: var(--fs-xs) !important;
   font-weight: var(--fw-body) !important;
   color: var(--c-nav-muted) !important;
@@ -256,7 +266,7 @@ section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton > bu
   border-radius: 0 !important;
   box-shadow: none !important;
 }}
-section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton > button > div {{
+section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton button > div {{
   justify-content: flex-start !important;
   min-width: 0 !important;
 }}
@@ -273,19 +283,21 @@ section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton butt
 section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton button p {{
   width: 100%; text-align: left; display: block;
 }}
-section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton > button:hover {{
+section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton button:hover {{
   background: transparent !important;
   color: var(--c-nav-active-text) !important;
   border-left-color: var(--c-line-strong) !important;
 }}
-section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton > button[kind="primary"],
-section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton > button[kind="primary"]:hover {{
+section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton button[kind="primary"],
+section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton button[kind="primary"]:hover {{
   background: transparent !important;
+  /* 仍是 2px，只把颜色换成强调色：换宽度会让这行文字比别的行挪位 */
   border: 0 !important;
   border-left: 2px solid var(--c-accent) !important;
   border-radius: 0 !important;
   color: var(--c-nav-active-text) !important;
   font-weight: var(--fw-semibold) !important;
+  box-shadow: none !important;
 }}
 .sl-user {{
   display: flex; align-items: center; gap: var(--space-3);
@@ -641,7 +653,15 @@ section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton > bu
 }}
 [data-testid="stBottomBlockContainer"] [data-testid="stChatInput"] textarea::placeholder {{ color: var(--c-text-faint) !important; }}
 [data-testid="stBottomBlockContainer"] [data-testid="stChatInput"] button {{ color: var(--c-accent); }}
-[data-testid="stBottomBlockContainer"] [data-testid="stChatInput"] button:hover {{ background: var(--c-accent-soft) !important; }}
+/* 输入框有内容时按钮会变成实心强调色：图标还跟着用强调色就是同色，看不见了。
+   反白只在这种"可用"状态下生效，空输入（禁用态）保持浅底强调色。 */
+[data-testid="stBottomBlockContainer"] [data-testid="stChatInput"] button:not([disabled]) {{
+  color: var(--c-accent-ink) !important;
+  background: var(--c-accent) !important;
+}}
+[data-testid="stBottomBlockContainer"] [data-testid="stChatInput"] button:not([disabled]):hover {{
+  background: var(--c-accent-strong) !important;
+}}
 [data-testid="stBottomBlockContainer"] [data-testid="stChatInput"] button svg {{ fill: currentColor; }}
 
 /* ---------- 原生控件重绘 ---------- */
@@ -1075,17 +1095,32 @@ def _day_html(day: Dict[str, Any]) -> str:
     )
 
 
+def _budget_blocked(item: Dict[str, Any]) -> bool:
+    """预算内没挑到款的那一项：清单里不占行，只在脚注交代。"""
+    return "预算不足" in str(item.get("reason") or "")
+
+
 def _gear_counts(gear: Sequence[Dict[str, Any]]) -> tuple[int, int]:
-    """清单只由商品库决定：库里没有的条目在 shop 阶段就已被移除。"""
+    """清单只由商品库决定：库里没有的条目在 shop 阶段就已被移除。
+
+    买不起的不算"待购"：它不是这次要买的东西，列进清单等于给用户看一份
+    他买不到的计划。数量仍在脚注里如实交代。
+    """
     owned = sum(1 for item in gear if item.get("status") == "owned")
-    need = sum(1 for item in gear if item.get("status") == "need_buy")
+    need = sum(
+        1 for item in gear
+        if item.get("status") == "need_buy" and not _budget_blocked(item)
+    )
     return owned, need
 
 
 def _gear_columns(gear: Sequence[Dict[str, Any]], products: Dict[str, Any]) -> tuple[str, str]:
     """已有 / 待购两组横排；条目少时不占空列，条目多时自动换行。"""
     owned = [item for item in gear if item.get("status") == "owned"]
-    need = [item for item in gear if item.get("status") == "need_buy"]
+    need_all = [item for item in gear if item.get("status") == "need_buy"]
+    # 买不起的不进清单，但要在脚注里点名，否则等于悄悄砍需求
+    budget_blocked = [item for item in need_all if _budget_blocked(item)]
+    need = [item for item in need_all if not _budget_blocked(item)]
     skipped = [item for item in gear if item.get("status") == "skipped"]
 
     lines = []
@@ -1119,11 +1154,9 @@ def _gear_columns(gear: Sequence[Dict[str, Any]], products: Dict[str, Any]) -> t
     html = f'<div class="sl-gear">{"".join(lines)}</div>' if lines else ""
 
     foot_lines = []
-    budget_blocked = [item for item in need if "预算不足" in (item.get("reason") or "")]
     if budget_blocked:
-        foot_lines.append(
-            "预算不足，未选款：" + "、".join(str(item.get("name", "")) for item in budget_blocked)
-        )
+        names = "、".join(str(item.get("name", "")) for item in budget_blocked)
+        foot_lines.append(f"预算内没选到：{names}（共 {len(budget_blocked)} 项，未计入预算）")
     if skipped:
         foot_lines.append("已按预算省略：" + "、".join(str(item.get("name", "")) for item in skipped))
     foot = "".join(f'<div class="sl-gear-foot">{_e(line)}</div>' for line in foot_lines)
@@ -1238,17 +1271,20 @@ def plan_panels_html(payload: Dict[str, Any]) -> str:
 
     # 商品库未覆盖的装备不是约束冲突，单独并成一条提示，避免刷屏。
     unmatched = [item for item in issues if "未匹配" in str(item.get("hint") or "")]
-    violations = [item for item in issues if item not in unmatched]
+    # 只留"改了结论"的硬冲突（时间重叠、温标不够、天数不符、无货）。
+    # "预算内没选到款"是 minor，03 的脚注已经点名，再在 05 说一遍就是同一件事
+    # 讲两次；全通过时也不再摆一块"未发现约束冲突"占位。
+    hard = [
+        item for item in issues
+        if item not in unmatched and item.get("severity") != "minor"
+    ]
 
     alerts = []
-    if not violations:
-        alerts.append(alert_html("ok", "未发现约束冲突", "预算、时间重叠、天数一致性与必备装备均已通过确定性校验。"))
-    else:
-        for issue in violations[:4]:
-            detail = issue.get("hint") or ""
-            if issue.get("actual") is not None and issue.get("limit") is not None:
-                detail = f"实际 {issue.get('actual')}，上限 {issue.get('limit')}。{detail}"
-            alerts.append(alert_html("warn", issue.get("constraint", "未满足约束"), detail))
+    for issue in hard[:4]:
+        detail = issue.get("hint") or ""
+        if issue.get("actual") is not None and issue.get("limit") is not None:
+            detail = f"实际 {issue.get('actual')}，上限 {issue.get('limit')}。{detail}"
+        alerts.append(alert_html("warn", issue.get("constraint", "未满足约束"), detail))
     if unmatched:
         names = "、".join(str(item.get("constraint", "")).replace("装备：", "") for item in unmatched[:6])
         more = f" 等 {len(unmatched)} 项" if len(unmatched) > 6 else ""

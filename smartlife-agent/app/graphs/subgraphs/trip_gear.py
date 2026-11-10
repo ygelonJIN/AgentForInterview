@@ -31,6 +31,7 @@ from app.trip_gear.constraints import (
     enrich_holidays,
     enrich_weather,
     merge_inferred,
+    merge_province_cities,
 )
 from app.trip_gear.gear import derive_gear, merge_suggestions
 from app.trip_gear.itinerary import apply_fixed_events, fallback_itinerary, total_cost
@@ -411,11 +412,7 @@ async def derive(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[st
             ),
         }
 
-    missing = []
-    if not facts.destination:
-        missing.append("目的地")
-    if not facts.days:
-        missing.append("天数")
+    missing = _blocking_gaps(facts)
     if missing:
         await _notify(runtime, "derive", "缺少核心信息，先澄清")
         return {
@@ -996,6 +993,27 @@ def _apply_specs_from_text(gear: List[GearItem], text: str) -> None:
             item.specs.setdefault(key, value)
 
 
+def _blocking_gaps(facts: TripFacts) -> List[str]:
+    """能不能开始规划：缺一样就先问，不许拿默认值顶上去当用户说的。
+
+    人数和出发日期以前是"可见默认值"（按 1 人 / 按今天），结果是用户看着
+    一份按 1 人算的预算和一份按今天算的天气，还得自己发现哪里被假设了。
+    现在四项一起问，点选项就能补，补完照旧重写清单。
+    """
+    gaps: List[str] = []
+    if not facts.destination:
+        gaps.append("目的地")
+    elif facts.destination in lexicon.PROVINCES and len(facts.cities) < 2:
+        gaps.append("具体城市")
+    if not facts.days:
+        gaps.append("天数")
+    if facts.people is None:
+        gaps.append("人数")
+    if not facts.start_date:
+        gaps.append("出发日期")
+    return gaps
+
+
 def after_derive(state: TripGearState) -> str:
     return "clarify" if state.get("status") == "needs_info" else "plan"
 
@@ -1008,17 +1026,7 @@ async def clarify(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[s
     """
     facts = TripFacts.model_validate(state["facts"])
 
-    def _missing(target: TripFacts) -> List[str]:
-        gaps: List[str] = []
-        if not target.destination:
-            gaps.append("目的地")
-        elif target.destination in lexicon.PROVINCES and len(target.cities) < 2:
-            gaps.append("具体城市")
-        if not target.days:
-            gaps.append("天数")
-        return gaps
-
-    gaps = _missing(facts)
+    gaps = _blocking_gaps(facts)
     if not gaps:
         return {"status": "clarified"}
 
@@ -1057,28 +1065,44 @@ async def clarify(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[s
         if constraint.key and constraint.key in known_keys:
             continue
         constraints.append(constraint)
-    # "广东的很多城市"是授权我们挑，不是缺信息：按省份常用城市先排
+    # "广东的很多城市"是授权我们挑，不是缺信息：点名城市保留，其余用常用城市补
     if (
         merged.destination in lexicon.PROVINCES
         and len(merged.cities) < 2
         and _vague_city_request(text)
     ):
-        defaults = list(lexicon.PROVINCE_CITIES.get(merged.destination) or ())
-        if defaults:
-            merged.cities = defaults
-            if "cities" not in known_keys:
-                constraints.append(Constraint(
-                    text=f"串联城市：{' → '.join(defaults)}",
-                    source="规则推导（省份常用城市）",
-                    key="cities",
-                ))
+        merged.cities = merge_province_cities(
+            merged.destination, merged.cities, merged.days
+        )
+        if merged.cities and "cities" not in known_keys:
+            constraints.append(Constraint(
+                text=f"串联城市：{' → '.join(merged.cities)}",
+                source="规则推导（省份常用城市）",
+                key="cities",
+            ))
 
-    # 目的地可能从省份换成具体城市，日期可能从占位换成真实值：都要重写，不能并存
-    constraints = ensure_destination(merged, constraints, source="追问补充")
-    constraints = ensure_people(merged, constraints, source="追问补充")
-    constraints = ensure_start_date(merged, constraints, source="追问补充")
+    # 目的地可能从省份换成具体城市，日期可能从占位换成真实值：都要重写，不能并存。
+    # 来源只在值真的变了时才写"追问补充"——用户这轮只回了人数，不该把目的地和
+    # 日期一起记成追问得来的，面板上的"可回溯"会失真。
+    def _source_of(key: str, changed: bool, default: str = "用户原话") -> str:
+        if changed:
+            return "追问补充"
+        return next((item.source for item in constraints if item.key == key), default)
 
-    remaining = _missing(merged)
+    constraints = ensure_destination(
+        merged, constraints,
+        source=_source_of("destination", merged.destination != facts.destination),
+    )
+    constraints = ensure_people(
+        merged, constraints,
+        source=_source_of("people", merged.people != facts.people),
+    )
+    constraints = ensure_start_date(
+        merged, constraints,
+        source=_source_of("start_date", merged.start_date != facts.start_date),
+    )
+
+    remaining = _blocking_gaps(merged)
     if remaining:
         await _notify(runtime, "clarify", f"仍缺 {'、'.join(remaining)}")
         return {

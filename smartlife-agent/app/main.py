@@ -384,40 +384,41 @@ def render_clarify_card() -> None:
             "</div>",
             unsafe_allow_html=True,
         )
-        with st.form("clarify_form", clear_on_submit=False):
-            answers = []
-            for question in questions:
-                key = str(question.get("key") or "")
-                labels = [option["label"] for option in question.get("options") or []]
-                st.markdown(
-                    f'<div class="sl-ask-q">{_esc(question.get("title") or "")}</div>',
-                    unsafe_allow_html=True,
+        # 不用 st.form：表单里的控件在点提交前不会触发重跑，"D 自己填"选完
+        # 也不会出现输入框。拆成普通控件后，选中即重跑，输入框当场出现。
+        answers = []
+        for question in questions:
+            key = str(question.get("key") or "")
+            labels = [option["label"] for option in question.get("options") or []]
+            st.markdown(
+                f'<div class="sl-ask-q">{_esc(question.get("title") or "")}</div>',
+                unsafe_allow_html=True,
+            )
+            choice = ""
+            if labels:
+                choice = st.radio(
+                    question.get("title") or key,
+                    labels + [CUSTOM_OPTION_LABEL],
+                    index=None,
+                    key=f"clarify_{key}",
+                    label_visibility="collapsed",
+                    horizontal=True,
                 )
-                choice = ""
-                if labels:
-                    choice = st.radio(
-                        question.get("title") or key,
-                        labels + [CUSTOM_OPTION_LABEL],
-                        index=None,
-                        key=f"clarify_{key}",
-                        label_visibility="collapsed",
-                        horizontal=True,
-                    )
-                value = ""
-                if not labels or choice == CUSTOM_OPTION_LABEL:
-                    value = st.text_input(
-                        "自己填",
-                        key=f"clarify_custom_{key}",
-                        label_visibility="collapsed",
-                        placeholder="例如：3 天 / 每周二出发",
-                    )
-                elif choice:
-                    value = choice
-                answers.append({
-                    "prefix": question.get("answer_prefix") or "",
-                    "value": value,
-                })
-            submitted = st.form_submit_button("就这样，继续", use_container_width=True)
+            value = ""
+            if not labels or choice == CUSTOM_OPTION_LABEL:
+                value = st.text_input(
+                    "自己填",
+                    key=f"clarify_custom_{key}",
+                    label_visibility="collapsed",
+                    placeholder="例如：3 天 / 每周二出发",
+                )
+            elif choice:
+                value = choice
+            answers.append({
+                "prefix": question.get("answer_prefix") or "",
+                "value": value,
+            })
+        submitted = st.button("就这样，继续", key="clarify_submit", use_container_width=True)
         if submitted:
             text = compose_answer(answers)
             if text:
@@ -1406,11 +1407,13 @@ def render_app_sidebar():
                     for index, thread in enumerate(threads):
                         is_active = thread["thread_id"] == active_thread_id
                         if st.button(
-                            f"{'▍' if is_active else ''}{thread['time']}  {thread['title']}".strip(),
+                            f"{thread['time']}  {thread['title']}".strip(),
                             key=f"recent_thread_{index}",
                             use_container_width=True,
-                            # tertiary = 纯文字，没有边框和底色，天然不是卡片
-                            type="tertiary",
+                            # tertiary = 纯文字，没有边框和底色，天然不是卡片；
+                            # 当前会话用 primary 只为点亮那条 2px 左竖线，底色仍被 CSS 改回透明。
+                            # 以前是把「▍」拼进文案，会把这行的文字整体顶右一格，破坏左边界。
+                            type="primary" if is_active else "tertiary",
                             help=_thread_help(thread),
                         ):
                             _activate_thread(thread["thread_id"])
@@ -1464,12 +1467,16 @@ def render_assistant_page():
                 with st.chat_message("assistant"):
                     render_assistant_message(msg)
 
-        if persist_error := st.session_state.get("turn_persist_error"):
-            st.caption(f"本轮的步骤记录没有写进会话库，切回来只会看到正文：{persist_error}")
+        # 追问还没答完时，这一屏只该有追问卡片：记忆入口和"事件未入库"这类
+        # 内部提示都是噪声，而且追问轮本来就没有助手正文可挂事件。
+        clarifying = bool(st.session_state.get("pending_clarify"))
+        if not clarifying:
+            if persist_error := st.session_state.get("turn_persist_error"):
+                st.caption(f"本轮的步骤记录没有写进会话库，切回来只会看到正文：{persist_error}")
 
-        # 记忆入口就在对话里：一个按需按钮 + 上次结果 + 候选清单，不必跳到记忆中心。
-        render_memory_entry("general", "assistant")
-        render_memory_extraction_panel("general", "assistant")
+            # 记忆入口就在对话里：一个按需按钮 + 上次结果 + 候选清单，不必跳到记忆中心。
+            render_memory_entry("general", "assistant")
+            render_memory_extraction_panel("general", "assistant")
         render_clarify_card()
 
         if pending_message:
@@ -1501,6 +1508,7 @@ def render_assistant_page():
                         ):
                             yield line
 
+                clarify = None
                 if orch:
                     # 记忆不再在回答后自动判断：提取由对话区的按钮按需触发。
                     response, events = run_streaming_realtime(_gen)
@@ -1523,7 +1531,11 @@ def render_assistant_page():
                     response = "请先在个人中心配置主模型后开始对话。"
                     events = []
                     st.warning(response)
-            _persist_turn_events(events)
+            if clarify:
+                # 追问轮没有助手正文入库，挂事件只会报"没有找到本轮助手消息"
+                st.session_state.pop("turn_persist_error", None)
+            else:
+                _persist_turn_events(events)
             st.session_state["assistant_msgs"].append({
                 "role": "assistant",
                 "response": response,

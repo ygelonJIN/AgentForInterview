@@ -9,11 +9,14 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable, List
 
+from app.nlu import lexicon
 from app.trip_gear.models import GearItem, OwnedItem
 from app.trip_gear.spec_match import parse_specs
 
+# "要有汕头"不是"我拥有汕头"：要/想/需 后面跟的"有"是打算，不是现状。
+# 这几个字以前没排除，一句"想去很多城市，要有汕头"就凭空多出一件"已有装备"。
 _OWNED_RE = re.compile(
-    r"(?:带了|带的有|买了|买过|购入了|准备了|(?<![没不缺少无])有)\s*([^，。；;！？\n]{1,40})"
+    r"(?:带了|带的有|买了|买过|购入了|准备了|(?<![没不缺少无要想需])有)\s*([^，。；;！？\n]{1,40})"
 )
 _SPLIT_RE = re.compile(r"[、,，和及与]|还有|以及")
 _QTY_RE = re.compile(
@@ -49,6 +52,20 @@ def _parse_item(raw: str) -> tuple[str, int, dict]:
     return name, qty, parse_specs(text, name)
 
 
+def _looks_like_place(name: str) -> bool:
+    """地名不是装备："有汕头朋友"里的"汕头朋友"不能算一件已有物品。
+
+    用现成的地名表判断，不另起一张"装备词白名单"——那种表迟早要跟着
+    商品库一起维护。
+    """
+    text = str(name or "")
+    if not text:
+        return False
+    if text in lexicon.PLACES or text in lexicon.PROVINCES:
+        return True
+    return any(text.startswith(place) for place in lexicon.PLACES)
+
+
 def extract_owned(text: str, source: str = "对话") -> List[OwnedItem]:
     """从一段文字中抽取明确拥有的物品。"""
     found: List[OwnedItem] = []
@@ -57,6 +74,8 @@ def extract_owned(text: str, source: str = "对话") -> List[OwnedItem]:
         for part in _SPLIT_RE.split(captured):
             name, qty, specs = _parse_item(part)
             if len(name) < 2 or name in _GENERIC:
+                continue
+            if _looks_like_place(name):
                 continue
             # "有一天去找一个我在浦东的朋友"：这里的"有"是"存在某一天"，不是"我拥有"。
             # 装备名里不会出现人称、虚词和这些动词，带一个就说明抓的是半截句子。

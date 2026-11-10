@@ -32,6 +32,29 @@ def _vague_city_request(text: str) -> bool:
     return any(word in str(text or "") for word in _VAGUE_CITY_WORDS)
 
 
+def merge_province_cities(
+    province: str,
+    named: Iterable[str],
+    days: Optional[int] = None,
+) -> List[str]:
+    """省份目的地：用户点名的城市原样保留，缺的用省份常用城市补，按天数封顶。
+
+    以前是"整体替换成常用城市"——用户明明说了「要有汕头」，一句「很多城市」
+    就把汕头挤掉了。补进来的城市只填空位，绝不删用户点过的。
+    """
+    kept = [str(city) for city in named if city]
+    defaults = [
+        city for city in (lexicon.PROVINCE_CITIES.get(province) or ())
+        if city not in kept
+    ]
+    if not defaults:
+        return kept
+    # 7 天 3 城、5 天 2 城：城市数超过天数一半，每天就只剩赶路了
+    cap = max(2, int(days or 0) // 2) if days else 3
+    room = max(0, cap - len(kept))
+    return kept + defaults[:room]
+
+
 def _float(value) -> Optional[float]:
     try:
         return float(value)
@@ -119,12 +142,17 @@ def derive_constraints(
     budget = slots.budget if slots.budget is not None else (shared.budget if shared else None)
     budget_source = slots.source("budget") if slots.budget is not None else "共享约束"
 
-    cities = list(slots.cities or [])
+    # 出发地不是行程城市："上海出发去广东"里的上海只出现在第一天早上
+    cities = [city for city in (slots.cities or []) if city != slots.origin]
     cities_source = "用户原话"
-    if destination in lexicon.PROVINCES and len(cities) < 2 and _vague_city_request(text):
-        defaults = list(lexicon.PROVINCE_CITIES.get(destination) or ())
-        if defaults:
-            cities, cities_source = defaults, "规则推导（省份常用城市）"
+    if destination in lexicon.PROVINCES and _vague_city_request(text):
+        merged = merge_province_cities(destination, cities, days)
+        if merged != cities:
+            cities_source = (
+                "规则推导（点名城市 + 省份常用城市）" if cities
+                else "规则推导（省份常用城市）"
+            )
+            cities = merged
 
     facts = TripFacts(
         origin=slots.origin,

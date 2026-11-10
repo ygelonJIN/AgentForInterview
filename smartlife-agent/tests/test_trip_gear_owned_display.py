@@ -173,7 +173,7 @@ def test_graph_records_suit_jacket_as_owned_and_drops_duplicate_constraint():
     )
     result = asyncio.run(build_trip_gear_graph().ainvoke(
         {
-            "user_message": "下周三去上海出差两天，我有一件西装外套，帮我看看带什么",
+            "user_message": "下周三我一个人去上海出差两天，我有一件西装外套，帮我看看带什么",
             "user_id": "u1",
             "thread_id": "t1",
         },
@@ -190,3 +190,21 @@ def test_graph_records_suit_jacket_as_owned_and_drops_duplicate_constraint():
     for item in result["gear"]:
         if item["status"] == "need_buy":
             assert item["name"] in result["products"]
+
+
+def test_destination_city_is_not_an_owned_item():
+    """「要有汕头」是打算去，不是已经有一件叫汕头的东西。"""
+    from app.trip_gear.owned import extract_owned
+
+    found = extract_owned(
+        "5000块钱，上海出发去广东玩一周，想去很多城市，要有汕头，后天出发，我有一台pocket"
+    )
+
+    assert [item.name for item in found] == ["pocket"]
+
+
+def test_place_names_are_never_owned_items():
+    """「我有汕头朋友」抽到的是地名开头的一段话，不能当成装备。"""
+    from app.trip_gear.owned import extract_owned
+
+    assert extract_owned("我有汕头朋友，可以住他家") == []

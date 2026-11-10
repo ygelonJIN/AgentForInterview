@@ -62,13 +62,29 @@ def test_sidebar_new_thread_uses_the_same_button_type_as_nav_selection():
 
 
 def test_recent_threads_use_plain_text_buttons_not_cards():
-    """最近会话是纯文字行：type="tertiary"，不用 secondary 的卡片底。"""
+    """最近会话是纯文字行：平时 tertiary；当前那条用 primary 只为点亮 2px 左竖线，
+    底色会不会变卡片由 theme 里 recent 的 primary 规则兜住。"""
     main = (Path(__file__).parents[1] / "app" / "main.py").read_text(encoding="utf-8")
 
     block = main[main.index('key=f"recent_thread_{index}"'):]
     block = block[: block.index("):")]
-    assert 'type="tertiary"' in block
+    assert 'type="primary" if is_active else "tertiary"' in block
     assert 'type="secondary"' not in block
+
+
+def test_sidebar_button_styles_survive_the_tooltip_wrapper():
+    """带 help 的按钮外面会多包一层 tooltip span，写 ``.stButton > button`` 就命中不了。
+
+    侧栏的「新建对话」和每一条会话都带 help，必须用后代选择器，否则样式整段落空。
+    """
+    theme = (Path(__file__).parents[1] / "app" / "ui" / "theme.py").read_text(encoding="utf-8")
+    css = theme[theme.index("/* ---------- 左导航 ---------- */"):theme.index(".sl-user {{")]
+
+    assert ".stButton > button" not in css
+    assert '.stButton button' in css
+    for rule in ('[class*="st-key-recent_thread_"] .stButton button',
+                 '.st-key-new_thread .stButton button'):
+        assert rule in css
 
 
 def _css_rule(theme: str, selector: str) -> str:
@@ -107,3 +123,63 @@ def test_plan_panel_keeps_cost_markup():
 
     assert 'class="sl-tl-cost"' in html
     assert "¥340" in html
+
+
+def _clarify_state():
+    return {
+        "thread_id": "t1",
+        "missing": ["人数"],
+        "questions": [{
+            "key": "people",
+            "title": "几个人？",
+            "answer_prefix": "人数",
+            "options": [{"label": "1 人", "value": "1 人"}, {"label": "2 人", "value": "2 人"}],
+            "allow_custom": True,
+        }],
+    }
+
+
+def test_clarify_custom_option_reveals_a_text_input():
+    """选「D 自己填」要当场出现输入框。
+
+    以前追问卡片包在 st.form 里：表单控件在点提交前不会重跑，选了「自己填」
+    也不会冒出输入框，等于这个选项点不动。
+    """
+    from app.main import CUSTOM_OPTION_LABEL
+
+    app = _run()
+    app.session_state["pending_clarify"] = _clarify_state()
+    app.run()
+
+    assert app.radio, "追问卡片应渲染可点选项"
+    assert not [item for item in app.text_input if item.key == "clarify_custom_people"]
+
+    app.radio[0].set_value(CUSTOM_OPTION_LABEL).run()
+    assert [item for item in app.text_input if item.key == "clarify_custom_people"], \
+        "选了「自己填」必须出现输入框"
+
+
+def test_clarify_hides_memory_entry_and_persist_error():
+    """追问期间这一屏只留卡片：记忆入口和「事件未入库」都是噪声。"""
+    error = "没有找到本轮助手消息，事件未入库"
+    history = [{"role": "user", "content": "帮我规划个行程"}]
+
+    # 反证：没有追问时提示和记忆入口都在，不是测试环境里根本不渲染
+    plain = _run()
+    plain.session_state["assistant_msgs"] = history
+    plain.session_state["turn_persist_error"] = error
+    plain.run()
+    assert any("本轮的步骤记录" in str(item.value) for item in plain.caption)
+    assert [item for item in plain.button if item.key == "extract_memory_assistant"]
+
+    app = _run()
+    app.session_state["assistant_msgs"] = history
+    app.session_state["turn_persist_error"] = error
+    app.session_state["pending_clarify"] = _clarify_state()
+    app.run()
+
+    bodies = " ".join(str(item.value) for item in app.markdown)
+    captions = " ".join(str(item.value) for item in app.caption)
+    assert "本轮的步骤记录" not in bodies + captions
+    assert "还差几个信息" in bodies
+    assert not [item for item in app.button if item.key == "extract_memory_assistant"]

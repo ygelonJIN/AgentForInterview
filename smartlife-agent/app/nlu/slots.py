@@ -31,11 +31,15 @@ _CJK_RUN = re.compile(r"[\u4e00-\u9fa5]{2,8}")
 # 出发地：``我在广东`` / ``从广州出发``。必须和目的地分开抽——
 # 合成一个槽位就是二选一，选错整趟行程的方向都反了。
 _ORIGIN_IN = re.compile(
-    r"(?:我|我们|本人|咱|俺)\s*(?:现在|目前|人)?\s*(?:在|住在|住|来自)\s*([\u4e00-\u9fa5]{2,6})"
+    r"(?:我|我们|本人|咱|俺)\s*(?:现在|目前|一个人|两个人|人|自己)?\s*(?:在|住在|住|来自)\s*([\u4e00-\u9fa5]{2,6})"
 )
 _ORIGIN_FROM = re.compile(r"从\s*([\u4e00-\u9fa5]{2,6}?)\s*(?:出发|飞|坐|开车|过去|到|去|来)")
 # "在上海出发去广东"：出发地不一定是"我"开头的句子
 _ORIGIN_DEPART = re.compile(r"(?:在|从)\s*([\u4e00-\u9fa5]{2,6}?)\s*出发")
+# 裸的"上海出发"：口语里最常见的写法，反而没有"从/在"。
+# 这条不能只靠 _valid_destination——"后天出发"也是 2 个汉字 + 出发，
+# 所以只认地名表里真有、或省份表里真有的词。
+_ORIGIN_BARE_DEPART = re.compile(r"([\u4e00-\u9fa5]{2,6}?)\s*出发")
 # "上海到广州"：没有"从"也要认出起点
 _ORIGIN_TO = re.compile(r"(?:^|[，。；;、\s])\s*([\u4e00-\u9fa5]{2,6}?)\s*(?:到|至)\s*[\u4e00-\u9fa5]{2,6}")
 _ORIGIN_SUBJECTS = ("我", "我们", "本人", "咱", "俺", "他", "她", "住", "住在")
@@ -345,6 +349,12 @@ def parse_origin(text: str) -> str:
             candidate = _trim_destination(match.group(1))
             if _valid_destination(candidate):
                 return candidate
+    # 裸"X出发"放在最后：前面几条带"从/在/到"的先说话，
+    # 剩下没有介词的才用地名表兜底（"上海出发去广东"）。
+    for match in _ORIGIN_BARE_DEPART.finditer(source):
+        candidate = _trim_destination(match.group(1))
+        if candidate in lexicon.PLACES or candidate in lexicon.PROVINCES:
+            return candidate
     return ""
 
 

@@ -92,3 +92,27 @@ def test_weather_failure_is_a_soft_degradation_not_a_guess():
     assert len(degraded) == 1
     assert degraded[0].hard is False
     assert facts.min_temp_c is None
+
+
+def test_province_keeps_the_city_the_user_named():
+    """「去广东，要有汕头」：点名城市要留下，缺的用常用城市补，不许整体替换。"""
+    facts, constraints = derive_constraints(
+        "5000块钱，上海出发去广东玩一周，想去很多城市，要有汕头，后天出发",
+        today="2026-11-10",
+    )
+
+    assert facts.origin == "上海"
+    assert facts.cities[0] == "汕头"
+    assert "上海" not in facts.cities
+    # 7 天最多 3 城，补进来的不能盖过用户点名的那个
+    assert len(facts.cities) == 3
+    cities_row = next(item for item in constraints if item.key == "cities")
+    assert cities_row.text.startswith("串联城市：汕头")
+    assert "规则推导" in cities_row.source
+
+
+def test_province_cities_never_drop_named_cities_when_they_outnumber_the_cap():
+    from app.trip_gear.constraints import merge_province_cities
+
+    named = ["汕头", "潮州", "揭阳", "梅州"]
+    assert merge_province_cities("广东", named, 7) == named

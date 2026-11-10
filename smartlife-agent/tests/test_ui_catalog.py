@@ -61,7 +61,7 @@ def test_theme_uses_only_registered_design_tokens():
 
     for selector in (
         '[data-testid="stMainBlockContainer"]',
-        'section[data-testid="stSidebar"] .stButton > button',
+        'section[data-testid="stSidebar"] .stButton button',
         'button[kind="primary"]',
         '[data-testid="stBottom"] > div',
         '[data-testid="stChatInput"]',
@@ -97,11 +97,12 @@ def test_plan_panels_render_five_sections_and_escape_html():
         "issues": [],
     }
     html = plan_panels_html(payload)
-    for index in ("01", "02", "03", "04", "05"):
+    # 没有硬冲突就不摆 05：全通过时那块"未发现约束冲突"只是占位。
+    for index in ("01", "02", "03", "04"):
         assert f'<span class="sl-panel-idx">{index}</span>' in html
+    assert '<span class="sl-panel-idx">05</span>' not in html
     assert "<b>莫干山</b>" not in html
     assert "&lt;b&gt;莫干山" in html
-    assert "未发现约束冲突" in html
     # 约束清单只留内容与来源：硬度和状态是内部口径，不再占两列。
     assert "硬度" not in html
     assert ">硬<" not in html and ">软<" not in html
