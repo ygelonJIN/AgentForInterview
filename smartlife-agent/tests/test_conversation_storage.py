@@ -89,3 +89,35 @@ def test_legacy_in_memory_messages_migrate_idempotently(tmp_path):
         "推荐轻量双人帐篷",
     ]
     assert rows[0]["metadata"]["migrated_from"] == "in_memory"
+
+
+def test_migration_does_not_rewrite_the_turn_when_the_answer_lands_after_the_reply(tmp_path):
+    """追问补答由 resume 直接写库，会排在 finish_turn 写的回复之后。
+
+    内存里是 user → assistant(追问) → user(补答) → assistant(回复)，
+    库里是 user → assistant(追问) → assistant(回复)。旧实现按连续前缀去重，
+    在第一个错位处停下，于是每次重跑都把后面两条再写一遍。
+    """
+    store = ConversationStore(tmp_path / "conversations.db")
+    store.append_message("t", "user", "上海出发去广东")
+    store.append_message("t", "assistant", "请先补充：人数、出发日期")
+    store.append_message("t", "assistant", "## 约束清单")
+
+    memory = [
+        {"role": "user", "content": "上海出发去广东"},
+        {"role": "assistant", "content": "请先补充：人数、出发日期"},
+        {"role": "user", "content": "人数：1 人；出发日期：明天"},
+        {"role": "assistant", "content": "## 约束清单"},
+    ]
+
+    first = store.migrate_messages("t", memory)
+    after_first = store.list_messages("t")
+    second = store.migrate_messages("t", memory)
+    after_second = store.list_messages("t")
+
+    # 错位的历史最多补一次；再重跑不能继续增长。
+    assert first["imported"] >= 1
+    assert second == {"imported": 0, "skipped": 4}
+    assert len(after_second) == len(after_first)
+    assert [item["role"] for item in after_second[:2]] == ["user", "assistant"]
+    assert "人数：1 人；出发日期：明天" in [item["content"] for item in after_second]

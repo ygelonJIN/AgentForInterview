@@ -124,28 +124,20 @@ class ConversationStore:
             self.message_fingerprint(item["role"], item["content"])
             for item in existing
         ]
-        normalized_fingerprints = [
-            self.message_fingerprint(role, content)
-            for role, content, _metadata, _created_at in normalized
-        ]
 
-        # 已有完整、连续的同序列消息时全部跳过；否则只跳过可证明已经导入的前缀。
-        # 这样既不会在重跑时重复写入，也不会吞掉合法的完全重复消息。
-        max_prefix = 0
-        for start in range(len(fingerprints)):
-            length = 0
-            while (
-                length < len(normalized_fingerprints)
-                and start + length < len(fingerprints)
-                and normalized_fingerprints[length] == fingerprints[start + length]
-            ):
-                length += 1
-            max_prefix = max(max_prefix, length)
-
+        # 内存列表只会追加，但库里可能由图上/下游在中间补写过消息（比如追问的补答、
+        # 中断轮的追问本身），顺序一旦错开，前缀比较会在第一个错位处把后面全部
+        # 重写一遍，且每次重跑都重写。这里改成按顺序双指针：已按序出现过的跳过，
+        # 剩下的一律追加——顺序一致时全跳过，错位时也只补真正缺的几条。
+        cursor = 0
         imported = 0
         skipped = 0
-        for index, (role, content, item_metadata, created_at) in enumerate(normalized):
-            if index < max_prefix:
+        for role, content, item_metadata, created_at in normalized:
+            fingerprint = self.message_fingerprint(role, content)
+            while cursor < len(fingerprints) and fingerprints[cursor] != fingerprint:
+                cursor += 1
+            if cursor < len(fingerprints):
+                cursor += 1
                 skipped += 1
                 continue
             self.append_message(

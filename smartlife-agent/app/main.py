@@ -108,9 +108,18 @@ if "active_thread_id" not in st.session_state:
 
 
 def _migrate_legacy_in_memory_conversations():
-    """当前会话启动时幂等迁移旧内存消息，避免升级后丢历史。"""
+    """只在本会话第一次渲染时补一次旧内存消息，避免升级后丢历史。
+
+    这个函数挂在模块顶层，每次 rerun 都会执行；不设一次性开关的话，
+    内存顺序和库里顺序只要错开一条，去重就会从错位处把后面的消息
+    反复写进库（追问补答那一轮曾因此每刷新一次就多一份）。
+    """
     from app.memory.conversation_store import ConversationStore
     from app.session import build_thread_id
+
+    if st.session_state.get("legacy_memory_migrated"):
+        return []
+    st.session_state["legacy_memory_migrated"] = True
 
     store = ConversationStore()
     migrations = []
@@ -1299,6 +1308,25 @@ def _annotate_last_assistant(thread_id: str, metadata: dict) -> bool:
     return True
 
 
+def _persist_clarify_question(thread_id: str, text: str) -> None:
+    """追问轮没有 finalize，助手那条提问得由界面补进会话库。
+
+    补一次就够：同一条问题已经是最新助手消息时直接跳过，重跑不会写第二份。
+    """
+    if not thread_id or not text.strip():
+        return
+    try:
+        from app.memory.conversation_store import ConversationStore
+
+        store = ConversationStore()
+        rows = store.list_messages(thread_id, last_n=1)
+        if rows and rows[-1].get("content") == text:
+            return
+        store.append_message(thread_id, "assistant", text)
+    except Exception as exc:
+        log_exception("ui.persist_clarify_question", exc)
+
+
 def _persist_turn_events(events) -> None:
     """把本轮事件补进助手消息：切回该会话时结构化面板才在。"""
     if not events:
@@ -1526,6 +1554,11 @@ def render_assistant_page():
                         response = (
                             data.get("question")
                             or "还需要补充一些信息才能继续，请直接回复缺失的内容。"
+                        )
+                        # 追问轮被 interrupt 截住，finalize 不跑，图不会写这条助手
+                        # 消息；旧消息迁移现在只补一次，不在这里补就会丢问题本身。
+                        _persist_clarify_question(
+                            str(data.get("thread_id") or ""), response
                         )
                 else:
                     response = "请先在个人中心配置主模型后开始对话。"

@@ -203,3 +203,32 @@ def _async_return(value):
         return value
 
     return run
+
+
+def test_resume_records_the_clarify_answer_as_a_user_message():
+    """补答也是用户消息：resume 从 interrupt 处继续，prepare 不重跑。
+
+    不在进图之前补记一笔，库里就缺这句，内存顺序和库顺序会错位，
+    旧消息迁移随后每次重跑都会把那一轮再写一遍。
+    """
+    from app.session import build_thread_id
+
+    services = _FakeServices()
+    graph = TurnGraph.__new__(TurnGraph)
+    graph.services = services
+    graph.checkpointer = None
+
+    async def _stub_stream(graph_input, config, context, trace_id):
+        yield 'data: {"event": "done"}\n\n'
+
+    graph._stream_graph = _stub_stream
+
+    async def run():
+        return [line async for line in graph.resume_streaming("人数：1 人", "u1", "s1")]
+
+    lines = asyncio.run(run())
+
+    assert len(lines) == 1
+    assert services.short_term_memory.messages == [
+        (build_thread_id("u1", "general", "s1"), "user", "人数：1 人"),
+    ]

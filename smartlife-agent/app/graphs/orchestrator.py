@@ -134,6 +134,11 @@ class TurnGraph:
         context = build_turn_context(self.services, trace_id).with_extra(
             actor_id=user_id, agent_id=_agent_id_for_scene(scene)
         )
+        # 补答本身也是用户消息：图从 interrupt 处继续，prepare 不会重跑，
+        # 不在这里补记一笔，库里就永远缺这句，内存顺序和库顺序会对不上，
+        # 随后每次重跑都会被"旧消息迁移"当成新消息再写一遍。
+        if isinstance(answer, str) and answer.strip():
+            await self.services.begin_turn(answer, thread_id)
         config = {"configurable": {"thread_id": thread_id}}
         async for chunk in self._stream_graph(Command(resume=answer), config, context, trace_id):
             yield chunk
