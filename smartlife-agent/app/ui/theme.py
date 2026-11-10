@@ -105,6 +105,14 @@ p {{ line-height: var(--lh-normal); }}
 }}
 [data-testid="stSidebarCollapseButton"] button:hover,
 [data-testid="stExpandSidebarButton"] button:hover {{ background: var(--c-nav-hover-bg) !important; }}
+/* 运行状态指示器（Run/Stop 那颗跑步小人）：它按 header 高度垂直居中，
+   头部归零后整颗图标有一半跑到容器顶边外面被裁掉。脱离头部自己钉在右上角。 */
+[data-testid="stStatusWidget"] {{
+  position: fixed !important;
+  top: 10px !important;
+  right: 14px !important;
+  z-index: 140;
+}}
 
 /* ---------- 页面骨架 ---------- */
 /* 只有右栏（stMain）滚动：body 不滚，滚轮在对话区也只滚对话区 */
@@ -243,9 +251,12 @@ section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] > div > [d
 
 .st-key-recent_threads {{
   flex: 1 1 auto; min-height: 0; max-height: 52vh;
-  /* 不留右侧内缩：会话行和分区标题共用 36.1→198.9 这同一个左右边界 */
   overflow-y: auto; overflow-x: hidden;
   overscroll-behavior: contain;
+  /* 右留 14px 给滚动条：macOS 是悬浮滚动条，不占布局，会直接压在行尾的 ✕ 上 */
+  padding-right: 14px;
+  /* 有经典滚动条的浏览器从布局里就把这条让出来，行尾不会随滚动跳动 */
+  scrollbar-gutter: stable;
 }}
 .st-key-recent_threads [data-testid="stVerticalBlockBorderWrapper"] {{ border: none !important; box-shadow: none !important; background: transparent !important; }}
 .st-key-recent_threads > [data-testid="stVerticalBlock"] {{ gap: 0; }}
@@ -255,15 +266,14 @@ section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton butt
   max-width: 100% !important;
   min-height: 0 !important;
   height: auto !important;
-  /* 左边 2px 由下面的透明左边框占着，文字与分区标题同一条左导轨 */
-  padding: var(--space-1) 0 var(--space-1) 0 !important;
+  /* 选中靠整行浅底，不再靠左边一条竖线；左右留 8px 让底色和文字都收在轨道内 */
+  padding: 3px 8px !important;
   font-size: var(--fs-xs) !important;
   font-weight: var(--fw-body) !important;
   color: var(--c-nav-muted) !important;
   background: transparent !important;
   border: 0 !important;
-  border-left: 2px solid transparent !important;
-  border-radius: 0 !important;
+  border-radius: var(--radius-sm) !important;
   box-shadow: none !important;
 }}
 section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton button > div {{
@@ -284,21 +294,111 @@ section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton butt
   width: 100%; text-align: left; display: block;
 }}
 section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton button:hover {{
-  background: transparent !important;
-  color: var(--c-nav-active-text) !important;
-  border-left-color: var(--c-line-strong) !important;
+  background: var(--c-nav-hover-bg) !important;
+  color: var(--c-nav-text) !important;
 }}
 section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton button[kind="primary"],
 section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton button[kind="primary"]:hover {{
-  background: transparent !important;
-  /* 仍是 2px，只把颜色换成强调色：换宽度会让这行文字比别的行挪位 */
+  /* 当前会话：整行浅底 + 强调字色；不摆左侧竖条，也不套导航那种描边卡片 */
+  background: var(--c-nav-hover-bg) !important;
   border: 0 !important;
-  border-left: 2px solid var(--c-accent) !important;
-  border-radius: 0 !important;
+  border-radius: var(--radius-sm) !important;
   color: var(--c-nav-active-text) !important;
   font-weight: var(--fw-semibold) !important;
   box-shadow: none !important;
 }}
+/* 会话行悬停详情：钉在这一行的右边（侧栏之外），不用原生 tooltip 以免盖住上一行 */
+.sl-thread-tip {{
+  position: fixed;
+  left: calc(var(--nav-w) + 12px);
+  top: auto; right: auto; bottom: auto;
+  z-index: 150;
+  max-width: 280px;
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-w) solid var(--c-line);
+  border-radius: var(--radius-sm);
+  background: var(--c-surface);
+  box-shadow: var(--shadow-3);
+  font-size: var(--fs-xs);
+  color: var(--c-text-muted);
+  opacity: 0;
+  pointer-events: none;
+}}
+/* 不做过渡：鼠标一进这一行就出现，别让人等 */
+[class*="st-key-recent_row_"]:hover .sl-thread-tip,
+[class*="st-key-recent_thread_"]:hover .sl-thread-tip,
+[class*="st-key-recent_delete_"]:hover .sl-thread-tip {{ opacity: 1; }}
+.sl-thread-tip b {{
+  display: block;
+  color: var(--c-text);
+  font-weight: var(--fw-medium);
+  margin-bottom: 2px;
+  white-space: normal;
+}}
+.sl-thread-tip span {{ display: block; white-space: nowrap; }}
+
+/* 会话行右侧的删除按钮。
+   注意特异性：侧栏通用规则 `section[data-testid="stSidebar"] .stButton button`
+   是 (0,2,2)，这里必须再加一层侧栏前缀压过去，否则它的
+   `padding: 8px 12px !important` 会把 18px 的小按钮内宽挤成 0，✕ 直接看不见。 */
+section[data-testid="stSidebar"] [class*="st-key-recent_row_"] [class*="st-key-recent_delete_"] button {{
+  box-sizing: border-box !important;
+  width: 20px !important; min-width: 20px !important; max-width: 20px !important;
+  height: 20px !important; min-height: 20px !important;
+  padding: 0 !important;
+  margin: 0 0 0 auto !important;
+  display: inline-flex !important; align-items: center !important; justify-content: center !important;
+  border: var(--border-w) solid transparent !important;
+  border-radius: var(--radius-sm) !important;
+  background: transparent !important; box-shadow: none !important;
+  color: var(--c-nav-text) !important;
+  font-size: 11px !important; line-height: 1 !important;
+  /* 常驻可见：删的是哪一条要一眼能找到，不能等悬停才露头 */
+  opacity: 0.6;
+}}
+section[data-testid="stSidebar"] [class*="st-key-recent_row_"] [class*="st-key-recent_delete_"] button div {{
+  width: auto !important; min-width: 0 !important;
+  gap: 0 !important; justify-content: center !important;
+}}
+section[data-testid="stSidebar"] [class*="st-key-recent_row_"] [class*="st-key-recent_delete_"] button p {{
+  white-space: nowrap !important; overflow: visible !important;
+}}
+[class*="st-key-recent_row_"]:hover [class*="st-key-recent_delete_"] button,
+[class*="st-key-recent_row_"] [class*="st-key-recent_delete_"] button:focus-visible {{ opacity: 0.95; }}
+[class*="st-key-recent_row_"] [class*="st-key-recent_delete_"] button:hover {{
+  opacity: 1;
+  color: var(--c-danger) !important;
+  border-color: var(--c-line) !important;
+}}
+.st-key-thread_delete_confirm {{
+  padding: var(--space-2);
+  border: var(--border-w) solid var(--c-line);
+  border-radius: var(--radius-sm);
+  background: var(--c-surface);
+  margin: 2px 0 var(--space-2);
+}}
+.sl-confirm-line {{
+  font-size: var(--fs-2xs); color: var(--c-text);
+  line-height: var(--lh-tight); margin-bottom: var(--space-2);
+}}
+/* 确认块里的两个按钮：侧栏通用按钮 38px 高、8/12 内边距，在这里太高太胖 */
+section[data-testid="stSidebar"] .st-key-thread_delete_confirm .stButton button {{
+  min-height: 24px !important;
+  height: 24px !important;
+  padding: 0 var(--space-2) !important;
+  font-size: var(--fs-2xs) !important;
+  font-weight: var(--fw-medium) !important;
+  border-radius: var(--radius-xs) !important;
+  box-shadow: none !important;
+}}
+section[data-testid="stSidebar"] .st-key-thread_delete_confirm .stButton button[kind="primary"],
+section[data-testid="stSidebar"] .st-key-thread_delete_confirm .stButton button[kind="primary"]:hover {{
+  background: var(--c-accent) !important;
+  border-color: var(--c-accent) !important;
+  color: var(--c-surface) !important;
+  box-shadow: none !important;
+}}
+section[data-testid="stSidebar"] .st-key-thread_delete_confirm [data-testid="stHorizontalBlock"] {{ gap: var(--space-2); }}
 .sl-user {{
   display: flex; align-items: center; gap: var(--space-3);
   margin-top: var(--space-4); padding-top: var(--space-4);
@@ -746,6 +846,17 @@ section[data-testid="stSidebar"] [class*="st-key-recent_thread_"] .stButton butt
 [data-testid="stAlert"] [data-testid^="stAlertContent"] {{ color: var(--c-text) !important; }}
 [data-testid="stAlert"] p, [data-testid="stAlert"] span {{ color: var(--c-text) !important; font-size: var(--fs-sm) !important; }}
 [data-testid="stAlert"] svg {{ color: var(--c-accent) !important; fill: var(--c-accent) !important; }}
+/* 个人中心的可信 Actor：一行说明，不要 st.info 那条左侧强调竖条 */
+.sl-actor {{
+  display: flex; align-items: baseline; gap: var(--space-2);
+  padding: var(--space-1) 0 var(--space-2);
+  font-size: var(--fs-sm); color: var(--c-text-muted);
+}}
+.sl-actor-kicker {{
+  font-family: var(--font-mono); font-size: var(--fs-2xs);
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--c-text-faint);
+}}
+.sl-actor b {{ color: var(--c-text); font-weight: var(--fw-medium); }}
 
 /* 上传区与下拉 */
 [data-testid="stFileUploaderDropzone"] {{

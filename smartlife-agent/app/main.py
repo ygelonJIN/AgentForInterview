@@ -1236,13 +1236,47 @@ def _recent_threads(limit: int | None = 4):
     return output
 
 
-def _thread_help(thread) -> str | None:
-    """会话行的悬浮提示：完整问题 + 更新时间。"""
-    meta = str(thread.get("updated_at") or thread.get("last_at") or "")[:16]
-    full = str(thread.get("full_title") or thread.get("title") or "").strip()
-    if not meta:
-        return full or None
-    return f"{full}\n\n最后更新 {meta}" if full else f"最后更新 {meta}"
+def _render_delete_confirm(thread) -> None:
+    """会话行的删除确认：就地长在那一行下面，删完/取消即收。"""
+    with st.container(key="thread_delete_confirm"):
+        st.markdown(
+            f'<div class="sl-confirm-line">删除「'
+            f'{_esc(thread.get("full_title") or thread.get("title") or "")}」？删了就找不回来。</div>',
+            unsafe_allow_html=True,
+        )
+        confirm_col, cancel_col = st.columns(2, gap="small")
+        if confirm_col.button(
+            "删除", key="confirm_delete_thread", type="primary", use_container_width=True
+        ):
+            from app.memory.conversation_store import ConversationStore
+
+            thread_id = str(thread.get("thread_id") or "")
+            ConversationStore().delete_thread(thread_id)
+            current = st.session_state.get("active_thread_id") or _current_thread_id()
+            if thread_id == str(current):
+                _start_new_thread()
+            st.session_state.pop("pending_thread_delete", None)
+            st.rerun()
+        if cancel_col.button("取消", key="cancel_delete_thread", use_container_width=True):
+            st.session_state.pop("pending_thread_delete", None)
+            st.rerun()
+
+
+def _thread_tip_html(thread) -> str:
+    """会话行的悬停详情：画在侧栏右边，不盖住上面的会话。
+
+    Streamlit 原生 ``help`` tooltip 位置写死在上方（前端 ``placement || TOP``），
+    Python 层没有参数可调；这里用 ``position: fixed`` + 自动 top 贴着这一行往右摆。
+    """
+    title = str(thread.get("full_title") or thread.get("title") or "").strip()
+    updated = str(thread.get("updated_at") or thread.get("last_at") or "")[:16]
+    meta = f"最后更新 {updated}" if updated else ""
+    return (
+        '<div class="sl-thread-tip">'
+        f'<b>{_esc(title)}</b>'
+        f'<span>{_esc(meta)}</span>'
+        "</div>"
+    )
 
 
 def _start_new_thread() -> None:
@@ -1430,22 +1464,48 @@ def render_app_sidebar():
         active_thread_id = st.session_state.get("active_thread_id") or _current_thread_id()
         st.markdown(nav_label_html("最近会话"), unsafe_allow_html=True)
         with st.container(key="recent_threads"):
+            pending_delete = st.session_state.get("pending_thread_delete") or {}
+            # 目标会话已经不在列表里（别处删掉了）：清掉待删状态，免得多出一个空确认
+            if pending_delete and not any(
+                str(thread["thread_id"]) == str(pending_delete.get("thread_id") or "")
+                for thread in threads
+            ):
+                st.session_state.pop("pending_thread_delete", None)
+                pending_delete = {}
             if threads:
                 with st.container():
                     for index, thread in enumerate(threads):
                         is_active = thread["thread_id"] == active_thread_id
-                        if st.button(
-                            f"{thread['time']}  {thread['title']}".strip(),
-                            key=f"recent_thread_{index}",
-                            use_container_width=True,
-                            # tertiary = 纯文字，没有边框和底色，天然不是卡片；
-                            # 当前会话用 primary 只为点亮那条 2px 左竖线，底色仍被 CSS 改回透明。
-                            # 以前是把「▍」拼进文案，会把这行的文字整体顶右一格，破坏左边界。
-                            type="primary" if is_active else "tertiary",
-                            help=_thread_help(thread),
-                        ):
-                            _activate_thread(thread["thread_id"])
-                            st.rerun()
+                        with st.container(key=f"recent_row_{index}"):
+                            # 先摆详情再摆按钮：fixed 元素没有 top 时用静态位置，
+                            # 放在行首才能让浮层和这一行对齐。
+                            st.markdown(_thread_tip_html(thread), unsafe_allow_html=True)
+                            title_col, delete_col = st.columns(
+                                [0.86, 0.14], gap="small", vertical_alignment="center"
+                            )
+                            with title_col:
+                                if st.button(
+                                    f"{thread['time']}  {thread['title']}".strip(),
+                                    key=f"recent_thread_{index}",
+                                    use_container_width=True,
+                                    # tertiary = 纯文字，没有边框和底色，天然不是卡片；
+                                    # 当前会话用 primary 只为让 CSS 换成整行浅底+强调色。
+                                    # 不用 help：原生 tooltip 只会弹在正上方，把上一行盖住；
+                                    # 详情改由行内 .sl-thread-tip 画在侧栏右边。
+                                    type="primary" if is_active else "tertiary",
+                                ):
+                                    _activate_thread(thread["thread_id"])
+                                    st.rerun()
+                            with delete_col:
+                                if st.button("✕", key=f"recent_delete_{index}"):
+                                    st.session_state["pending_thread_delete"] = {
+                                        "thread_id": thread["thread_id"],
+                                        "title": thread.get("full_title") or thread.get("title") or "",
+                                    }
+                                    st.rerun()
+                            # 确认块就长在这一行下面：删哪条弹哪条，不跑到列表顶部
+                            if str(pending_delete.get("thread_id") or "") == str(thread["thread_id"]):
+                                _render_delete_confirm(thread)
             else:
                 st.markdown(
                     '<div class="sl-thread"><div class="sl-thread-title">还没有会话</div>'
@@ -2334,7 +2394,11 @@ def render_profile_page():
         "Profile & Settings",
     )
     actor = st.session_state["actor_context"]
-    st.info(f"当前可信 Actor：{actor.user_id}")
+    st.markdown(
+        '<div class="sl-actor"><span class="sl-actor-kicker">Actor</span>'
+        f'<span>当前可信 Actor：<b>{_esc(actor.user_id)}</b></span></div>',
+        unsafe_allow_html=True,
+    )
     st.caption("Actor 由服务端启动环境确定；页面和模型工具均不能切换到其他用户。")
 
     user = load_user(st.session_state["user_id"])

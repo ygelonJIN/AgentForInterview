@@ -43,13 +43,44 @@ def test_pending_alert_sits_in_the_sidebar_above_the_nav():
     assert alert_index < nav_label_index < recent_index
 
 
-def test_recent_thread_rows_are_not_styled_like_nav_selection():
-    """最近会话用左竖线标记，导航用整块强调底色；两者不能共用同一套选中样式。"""
+def test_recent_thread_rows_mark_selection_with_a_fill_not_a_bar():
+    """当前会话用整行浅底 + 强调字色，不再画左侧竖条；也不套导航那种描边卡片。"""
     theme = (Path(__file__).parents[1] / "app" / "ui" / "theme.py").read_text(encoding="utf-8")
 
     recent_block = theme[theme.index('[class*="st-key-recent_thread_"]'):theme.index(".sl-user {{")]
-    assert "border-left: 2px solid var(--c-accent)" in recent_block
+    assert "border-left: 2px solid var(--c-accent)" not in recent_block
     assert "var(--c-nav-active-bg)" not in recent_block
+    selected_rule = recent_block[recent_block.index('button[kind="primary"]'):]
+    assert "background: var(--c-nav-hover-bg)" in selected_rule
+    assert "color: var(--c-nav-active-text)" in selected_rule
+
+
+def test_recent_thread_rows_carry_a_delete_control():
+    """会话行要能删：每行右侧一个删除按钮，删之前出确认块。"""
+    main = (Path(__file__).parents[1] / "app" / "main.py").read_text(encoding="utf-8")
+
+    assert 'key=f"recent_delete_{index}"' in main
+    assert "confirm_delete_thread" in main
+    assert "delete_thread" in main
+
+    theme = (Path(__file__).parents[1] / "app" / "ui" / "theme.py").read_text(encoding="utf-8")
+    # 侧栏通用按钮规则是 (0,2,2)；删除按钮必须带侧栏前缀压过它，否则会被
+    # padding 8px/12px 挤成 0 内宽，✕ 看不见。
+    delete_rule = theme[theme.index(
+        'section[data-testid="stSidebar"] [class*="st-key-recent_row_"] [class*="st-key-recent_delete_"] button {'
+    ):]
+    delete_rule = delete_rule[: delete_rule.index("}}")]
+    assert "width: 20px" in delete_rule
+    assert "padding: 0" in delete_rule
+
+
+def test_profile_actor_line_has_no_alert_bar():
+    """「当前可信 Actor」是一行说明，不再用 st.info（那条 3px 左竖条）。"""
+    main = (Path(__file__).parents[1] / "app" / "main.py").read_text(encoding="utf-8")
+
+    block = main[main.index("def render_profile_page():"):main.index("def render_import_page():")]
+    assert 'st.info(f"当前可信 Actor' not in block
+    assert "sl-actor" in block
 
 
 def test_sidebar_new_thread_uses_the_same_button_type_as_nav_selection():
@@ -183,3 +214,85 @@ def test_clarify_hides_memory_entry_and_persist_error():
     assert "本轮的步骤记录" not in bodies + captions
     assert "还差几个信息" in bodies
     assert not [item for item in app.button if item.key == "extract_memory_assistant"]
+
+
+def test_confirm_delete_removes_the_thread_from_the_store():
+    """侧栏删除走"点 ✕ → 确认块 → 真删"，确认后该 thread 的消息一条不剩。"""
+    from app.memory.conversation_store import ConversationStore
+
+    store = ConversationStore()
+    thread_id = "user_001:general:delete-me"
+    store.append_message(thread_id, "user", "这条会话要删掉")
+    store.append_message(thread_id, "assistant", "好的")
+
+    app = _run()
+    app.session_state["pending_thread_delete"] = {"thread_id": thread_id, "title": "这条会话要删掉"}
+    app.run()
+    assert not app.exception
+    app.sidebar.button(key="confirm_delete_thread").click().run()
+
+    assert not app.exception
+    assert store.list_messages(thread_id) == []
+    assert "pending_thread_delete" not in app.session_state
+
+
+def test_clarify_question_is_persisted_without_a_finalize_node():
+    """追问轮被 interrupt 截住，图不写助手消息；界面得自己补，否则切回会话丢问题。"""
+    import json
+
+    from app.memory.conversation_store import ConversationStore
+    from app.session import build_thread_id
+
+    class _ClarifyOrch:
+        async def process_streaming(self, message, user_id, session_id, scene="general"):
+            payload = {
+                "event": "clarify",
+                "data": {
+                    "thread_id": build_thread_id(user_id, scene, session_id),
+                    "missing": ["people"],
+                    "question": "还需要补充：人数。",
+                    "questions": [
+                        {"key": "people", "title": "几个人？", "options": [], "answer_prefix": "人数："}
+                    ],
+                },
+            }
+            yield "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+
+    app = _run()
+    app.session_state["turn_graph"] = _ClarifyOrch()
+    app.chat_input[0].set_value("去莫干山露营").run()
+    assert not app.exception
+
+    thread_id = build_thread_id(
+        app.session_state["user_id"], "general", app.session_state["browser_session_id"]
+    )
+    contents = [row["content"] for row in ConversationStore().list_messages(thread_id)]
+    assert "还需要补充：人数。" in contents
+
+
+def test_recent_thread_hover_detail_sits_to_the_right_of_the_sidebar():
+    """会话详情的浮层要贴在侧栏右边，不能再用会在上方弹出的原生 tooltip。"""
+    main = (Path(__file__).parents[1] / "app" / "main.py").read_text(encoding="utf-8")
+    theme = (Path(__file__).parents[1] / "app" / "ui" / "theme.py").read_text(encoding="utf-8")
+
+    assert "help=_thread_help" not in main
+    assert 'help=f"删除会话' not in main
+
+    tip_rule = _css_rule(theme, ".sl-thread-tip {{")
+    assert "position: fixed" in tip_rule
+    assert "left: calc(var(--nav-w) + 12px)" in tip_rule
+    assert '[class*="st-key-recent_row_"]:hover .sl-thread-tip' in theme
+
+
+def test_recent_thread_tip_renders_for_each_row():
+    from app.memory.conversation_store import ConversationStore
+
+    store = ConversationStore()
+    thread_id = "user_001:general:tip-check"
+    store.append_message(thread_id, "user", "这条会话要显示详情")
+
+    app = _run()
+    assert not app.exception
+    tips = [item.value for item in app.sidebar.markdown if "sl-thread-tip" in item.value]
+    assert tips
+    assert "sl-thread-tip" in tips[0]
