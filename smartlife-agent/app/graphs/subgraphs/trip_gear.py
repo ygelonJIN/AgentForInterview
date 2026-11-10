@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from functools import partial
 from datetime import date, timedelta
 from typing import Any, Callable, Dict, List, Optional, TypedDict
 
@@ -29,6 +30,7 @@ from app.trip_gear.constraints import (
     enrich_air_quality,
     enrich_exchange_rate,
     enrich_holidays,
+    enrich_timezone,
     enrich_weather,
     merge_inferred,
     merge_province_cities,
@@ -87,6 +89,8 @@ class TripGearState(TypedDict, total=False):
     chat_history: List[Any]
     history_text: str
     max_repairs: int
+    # travel 用同一张图，只是不走装备段（gear/owned/shop）。
+    with_gear: bool
 
     # 中间结果
     facts: Dict[str, Any]
@@ -259,6 +263,34 @@ async def _load_exchange_rate(
         return None, currency
 
 
+async def _load_time_offset(
+    runtime: Runtime[TurnContext],
+    destination: str,
+    start_date: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """时差是纯本地计算（zoneinfo），不联网；境外才写进约束。"""
+    if not destination:
+        return None
+    from app.tools.time_offset import time_difference
+
+    override = _dep(runtime, "time_offset", "_time_offset")
+    if override is not None:
+        try:
+            return await resolve(override(destination))
+        except Exception:
+            return None
+    target = None
+    if start_date:
+        try:
+            target = date.fromisoformat(str(start_date))
+        except ValueError:
+            target = None
+    try:
+        return await asyncio.to_thread(time_difference, destination, target)
+    except Exception:
+        return None
+
+
 async def _load_holidays(
     runtime: Runtime[TurnContext],
     destination: str,
@@ -320,6 +352,9 @@ async def _load_facts(
         "exchange_rate": _load_exchange_rate(runtime, facts.destination),
         "holidays": _load_holidays(
             runtime, facts.destination, facts.start_date, facts.days
+        ),
+        "timezone": _load_time_offset(
+            runtime, facts.destination, facts.start_date
         ),
     }
     values = await asyncio.gather(*[_guard_fact(job) for job in jobs.values()])
@@ -431,6 +466,7 @@ async def derive(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[st
     rate, currency = facts_bag.get("exchange_rate") or (None, None)
     constraints = enrich_exchange_rate(facts, constraints, rate, currency)
     constraints = enrich_holidays(facts, constraints, facts_bag.get("holidays"))
+    constraints = enrich_timezone(facts, constraints, facts_bag.get("timezone"))
 
     # 规则优先、模型补充：只补规则漏掉的语义约束（带老人、不吃海鲜、要宽松行程等）。
     infer = _dep(runtime, "constraint_infer", "_infer_constraints")
@@ -565,6 +601,25 @@ def _remaining_budget(facts: TripFacts, itinerary: Itinerary) -> Optional[float]
     return max(0.0, float(facts.budget) - total_cost(itinerary))
 
 
+def _review_stats(product_id: str) -> Dict[str, Any]:
+    """只读评价统计：返回 {rating, count}；拿不到就返回空，不猜。"""
+    try:
+        from app.retrieval.repositories import ReviewRepository
+
+        rows = ReviewRepository().get_reviews(product_id, limit=20)
+    except Exception:
+        return {}
+    ratings = []
+    for row in rows or []:
+        try:
+            ratings.append(float(row.get("rating")))
+        except (TypeError, ValueError, AttributeError):
+            continue
+    if not ratings:
+        return {}
+    return {"rating": sum(ratings) / len(ratings), "count": len(rows or [])}
+
+
 async def shop(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
     facts = TripFacts.model_validate(state["facts"])
     itinerary = Itinerary.model_validate(state["itinerary"])
@@ -573,7 +628,13 @@ async def shop(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str,
     product_search = _dep(runtime, "product_search", "_search")
     if product_search:
         preferred = (state.get("preferences") or {}).get("brands") or []
-        shopper = GearShopper(product_search, preferred_brands=preferred, facts=facts)
+        review_lookup = _dep(runtime, "product_reviews", "_reviews") or _review_stats
+        shopper = GearShopper(
+            product_search,
+            preferred_brands=preferred,
+            facts=facts,
+            review_lookup=review_lookup,
+        )
         remaining = _remaining_budget(facts, itinerary)
 
         # 先让模型在已经打分裁剪过的候选里挑；没得挑、超时、选错都由打分兜底
@@ -651,6 +712,7 @@ async def verify_node(state: TripGearState, runtime: Runtime[TurnContext]) -> Di
     )
     issues = verify(
         facts, constraints, itinerary, items, state.get("products") or {},
+        with_gear=bool(state.get("with_gear", True)),
         find_alternatives=find_alternatives,
     )
     repair_options: List[Dict[str, Any]] = []
@@ -890,6 +952,7 @@ async def repair(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[st
 
 
 async def finalize(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
+    with_gear = bool(state.get("with_gear", True))
     text = render(
         TripFacts.model_validate(state["facts"]),
         [Constraint.model_validate(item) for item in state["constraints"]],
@@ -899,6 +962,7 @@ async def finalize(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[
         [Issue.model_validate(item) for item in state.get("issues", [])],
         list(state.get("owned_ambiguous") or []),
         spend=state.get("spend") or {},
+        with_gear=with_gear,
     )
     await _notify(runtime, "finalize", "完成")
     sink = runtime.context.sink_for(runtime)
@@ -915,6 +979,8 @@ async def finalize(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[
             "owned_ambiguous": list(state.get("owned_ambiguous") or []),
             "verdict": state.get("verdict") or {},
             "revision": int(state.get("revision", 0)),
+            # travel 复用同一份面板数据：前端据此隐藏装备相关分区。
+            "with_gear": with_gear,
         }, step="finalize")
     except Exception:
         pass
@@ -1121,6 +1187,7 @@ async def clarify(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[s
     rate, currency = facts_bag.get("exchange_rate") or (None, None)
     constraints = enrich_exchange_rate(merged, constraints, rate, currency)
     constraints = enrich_holidays(merged, constraints, facts_bag.get("holidays"))
+    constraints = enrich_timezone(merged, constraints, facts_bag.get("timezone"))
 
     await _notify(runtime, "clarify", f"已补齐 {'、'.join(gaps)}，继续生成方案")
     return {
@@ -1136,24 +1203,32 @@ def after_clarify(state: TripGearState) -> str:
     return "plan" if state.get("status") == "clarified" else "end"
 
 
-def build_trip_gear_plan_graph(checkpointer: Optional[Any] = None):
+def build_trip_gear_plan_graph(checkpointer: Optional[Any] = None, *, with_gear: bool = True):
+    """组装行程链路。
+
+    ``with_gear=True`` 是 trip_gear（行程 + 装备协同）；
+    ``with_gear=False`` 是 travel（同一张图，剥掉 gear/owned/shop 三段）。
+    """
     graph = StateGraph(TripGearState, context_schema=TurnContext)
     graph.add_node("derive", derive, timeout=30)
     graph.add_node("clarify", clarify, timeout=5)
     graph.add_node("plan", plan, timeout=120)
-    graph.add_node("gear", gear, timeout=30)
-    graph.add_node("owned", owned, timeout=30)
-    graph.add_node("shop", shop, timeout=60)
     graph.add_node("verify", verify_node, timeout=30)
     graph.add_node("repair", repair, timeout=30)
     graph.add_node("finalize", finalize, timeout=30)
     graph.add_edge(START, "derive")
     graph.add_conditional_edges("derive", after_derive, {"clarify": "clarify", "plan": "plan"})
     graph.add_conditional_edges("clarify", after_clarify, {"plan": "plan", "end": END})
-    graph.add_edge("plan", "gear")
-    graph.add_edge("gear", "owned")
-    graph.add_edge("owned", "shop")
-    graph.add_edge("shop", "verify")
+    if with_gear:
+        graph.add_node("gear", gear, timeout=30)
+        graph.add_node("owned", owned, timeout=30)
+        graph.add_node("shop", shop, timeout=60)
+        graph.add_edge("plan", "gear")
+        graph.add_edge("gear", "owned")
+        graph.add_edge("owned", "shop")
+        graph.add_edge("shop", "verify")
+    else:
+        graph.add_edge("plan", "verify")
     graph.add_node("verify_clarify", verify_clarify, timeout=5)
     graph.add_node("repair_confirm", repair_confirm, timeout=5)
     graph.add_conditional_edges(
@@ -1177,8 +1252,10 @@ def build_trip_gear_plan_graph(checkpointer: Optional[Any] = None):
     return graph.compile(checkpointer=checkpointer)
 
 
-async def prepare(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
-    """把父图的 user_message / chat_history 映射成装备子图需要的输入。"""
+async def prepare(
+    state: TripGearState, runtime: Runtime[TurnContext], *, with_gear: bool = True
+) -> Dict[str, Any]:
+    """把父图的 user_message / chat_history 映射成行程子图需要的输入。"""
     ctx = runtime.context
     chat_history = state.get("chat_history")
     if chat_history is None:
@@ -1191,20 +1268,25 @@ async def prepare(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[s
         "history_text": resolved_history,
         "max_repairs": int(state.get("max_repairs") or 2),
         "revision": int(state.get("revision") or 0),
+        "with_gear": with_gear,
         "status": "started",
     }
 
 
-def build_trip_gear_graph(checkpointer: Optional[Any] = None):
-    """顶层挂载点：先映射输入，再跑装备协同子图。"""
-    plan_graph = build_trip_gear_plan_graph()
+def build_trip_gear_graph(checkpointer: Optional[Any] = None, *, with_gear: bool = True):
+    """顶层挂载点：先映射输入，再跑行程子图。
+
+    ``with_gear=False`` 时挂给 travel 节点：同一套链路、同一套面板，
+    只是没有装备推导与商品检索。
+    """
+    plan_graph = build_trip_gear_plan_graph(with_gear=with_gear)
 
     graph = StateGraph(TripGearState, context_schema=TurnContext)
-    graph.add_node("prepare", prepare, timeout=5)
-    graph.add_node("trip_gear", plan_graph)
+    graph.add_node("prepare", partial(prepare, with_gear=with_gear), timeout=5)
+    graph.add_node("trip", plan_graph)
     graph.add_edge(START, "prepare")
-    graph.add_edge("prepare", "trip_gear")
-    graph.add_edge("trip_gear", END)
+    graph.add_edge("prepare", "trip")
+    graph.add_edge("trip", END)
     return graph.compile(checkpointer=checkpointer)
 
 

@@ -49,12 +49,12 @@ def test_route(message, expected):
 @pytest.mark.parametrize(
     "message,expected",
     [
-        # 以前这里只判成 shopping，丢了旅游那一半
-        ("买一个帐篷和睡袋，再去莫干山露营两天", "composite"),
-        ("推荐跑鞋，再制定杭州两天计划", "composite"),
+        # 购物 + 旅行 + 装备场景 → trip_gear（它本来就含商品检索）
+        ("买一个帐篷和睡袋，再去莫干山露营两天", "trip_gear"),
+        ("推荐跑鞋，再制定杭州两天计划", "trip_gear"),
         ("推荐一双跑鞋", "shopping"),
-        # 多天行程规划收敛到 trip_gear，否则同样的请求在 travel 里没有结构化面板
-        ("去莫干山玩三天", "trip_gear"),
+        # 纯旅行规划走 travel：同一张图剥掉装备段，面板一致
+        ("去莫干山玩三天", "travel"),
         ("退一下订单", "customer_service"),
     ],
 )
@@ -63,7 +63,7 @@ def test_keyword_route_targets(message, expected):
 
     result = _keyword_classify(message)
     assert result is not None, message
-    assert route({"classification": result}) == expected
+    assert route({"classification": result, "user_message": message}) == expected
 
 
 def test_keyword_layer_returns_none_when_evidence_is_weak():

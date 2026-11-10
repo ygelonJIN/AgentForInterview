@@ -89,11 +89,14 @@ def build_tool_registry(
 
     - ``shopping``：只注册电商工具；
     - ``travel``：只注册旅游、天气、路线和时间工具；
+    - ``trip_gear``：行程事实（天气/空气/汇率/假日/路线/时差）；
+    - ``customer_service``：只注册订单工具；
     - ``general``：只注册通用天气、路线和时间工具；
     - 省略：保留旧的统一 MCP Registry 行为。
     """
     from app.tools.map import get_route
     from app.tools.time import get_current_time
+    from app.tools.time_offset import get_time_offset
     from app.tools.travel_facts import get_exchange_rate, get_public_holidays
     from app.tools.weather import get_air_quality, get_weather, get_weather_forecast
     from app.tools.memory_tools import MemoryToolProvider
@@ -119,6 +122,7 @@ def build_tool_registry(
         get_public_holidays,
         get_route,
         get_current_time,
+        get_time_offset,
     ):
         add(item)
 
@@ -129,6 +133,15 @@ def build_tool_registry(
 
     for item in TravelToolProvider().get_tools():
         add(item)
+
+    # 用户自己加的全局工具：只有被该 Agent 白名单选中才会注册进来。
+    try:
+        from app.tools.custom import register_custom_tools
+
+        register_custom_tools(add)
+    except Exception:
+        pass
+
 
     if actor and (policy is None or policy.agent_id != "travel"):
         safe_memory_names = {"get_user_profile", "get_cross_scene_memories", "get_user_context"}

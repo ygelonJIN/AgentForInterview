@@ -111,4 +111,35 @@ def build_mcp_server(
             description=tool.description or tool.name,
             structured_output=False,
         )
+
+    if policy is not None:
+        # L2：把 Agent 本身作为一个工具暴露。外部系统不必自己拼天气 + 商品，
+        # 直接把一句需求交给它；返回正文 + 结构化方案。
+        async def run(request: str, user_id: str = "", session_id: str = "mcp") -> str:
+            """以自然语言调用本 Agent，返回正文与结构化结果。"""
+            from app.agents.runner import run_agent
+
+            actor = (user_id or actor_id or "").strip()
+            if not actor:
+                return json.dumps({"error": "缺少用户身份：run 需要 user_id 或服务端绑定 actor"}, ensure_ascii=False)
+            try:
+                payload = await run_agent(
+                    policy.agent_id, request, user_id=actor, session_id=session_id
+                )
+            except Exception as exc:  # 不把内部异常栈透给调用方
+                return json.dumps(
+                    {"error": f"{type(exc).__name__}: {exc}"[:300]}, ensure_ascii=False
+                )
+            return json.dumps(payload, ensure_ascii=False, default=str)
+
+        try:
+            server.add_tool(
+                run,
+                name="run",
+                description=f"以自然语言调用 {policy.display_name}，返回该 Agent 的完整结果",
+                structured_output=False,
+            )
+        except Exception:
+            # 运行时不支持异步工具时，L1 工具面照常可用，不因 L2 起不来。
+            pass
     return server

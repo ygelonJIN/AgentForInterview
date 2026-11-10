@@ -709,6 +709,46 @@ def enrich_holidays(
     return constraints
 
 
+def enrich_timezone(
+    facts: TripFacts,
+    constraints: List[Constraint],
+    payload: Optional[dict],
+) -> List[Constraint]:
+    """境外行程给一条时差；与北京同时区的不写，拿不到也不写。"""
+    constraints = [item for item in constraints if item.key != "timezone"]
+    if not payload or not payload.get("available"):
+        # 拿不到就清掉之后可能残留的空值，避免追问轮里旧值还在
+        facts.timezone = ""
+        facts.utc_offset = None
+        facts.time_diff_hours = None
+        return constraints
+    diff = payload.get("beijing_diff_hours")
+    if diff is None:
+        return constraints
+    facts.timezone = str(payload.get("timezone") or "")
+    facts.utc_offset = _float(payload.get("utc_offset"))
+    facts.time_diff_hours = float(diff)
+    if abs(float(diff)) < 1e-6:
+        return constraints
+    sign = "早" if diff > 0 else "晚"
+    hours = abs(float(diff))
+    hours_text = f"{hours:g} 小时"
+    precision = str(payload.get("precision") or "")
+    tail = "（按国家主时区推算）" if precision == "country" else ""
+    constraints.append(
+        Constraint(
+            text=(
+                f"时差：目的地比北京时间{sign} {hours_text}"
+                f"（{payload.get('utc_offset_text') or ''}，当地 {payload.get('timezone') or ''}）{tail}"
+            ),
+            source="时差工具",
+            hard=False,
+            key="timezone",
+        )
+    )
+    return constraints
+
+
 def _temp_text(min_temp: Optional[float], max_temp: Optional[float]) -> str:
     if min_temp is not None and max_temp is not None:
         return f"{min_temp:.0f}~{max_temp:.0f}℃"

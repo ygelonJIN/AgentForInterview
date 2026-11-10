@@ -59,11 +59,14 @@ class GearShopper:
         search: Optional[Callable[..., List[dict]]] = None,
         preferred_brands: Optional[List[str]] = None,
         facts: Any = None,
+        review_lookup: Optional[Callable[[str], Dict[str, Any]]] = None,
     ):
         self.search = search
         self.preferred_brands = list(preferred_brands or [])
         # 给了 facts 就走打分选品（参数+口碑+预算），否则退回按价格挑。
         self.facts = facts
+        # 只在打分平局时被调用：用真实评价裁决，不参与打分。
+        self.review_lookup = review_lookup
 
     # ---------------------------------------------------------------- 对外
 
@@ -168,6 +171,7 @@ class GearShopper:
                 remaining=remaining_budget,
                 qty=item.qty,
                 preferred_brands=self.preferred_brands,
+                review_lookup=self.review_lookup,
             )
             if best is not None:
                 product = dict(best.product)

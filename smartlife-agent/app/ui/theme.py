@@ -19,12 +19,14 @@ import streamlit as st
 from app.ui.tokens import css_variables
 
 # 导航：图标、文案、页面 key。与前端原型保持一致。
+# 导航只有文字，没有图标：图标只能靠 nth-child 对位，加一项就会串位。
 NAV_ITEMS = (
-    ("◈", "智能助手", "assistant"),
-    ("▤", "生活目录", "catalog"),
-    ("◇", "记忆中心", "memory"),
-    ("⇪", "数据导入", "import"),
-    ("☰", "个人中心", "profile"),
+    ("智能助手", "assistant"),
+    ("生活目录", "catalog"),
+    ("记忆中心", "memory"),
+    ("数据导入", "import"),
+    ("Agent 配置", "agents"),
+    ("个人中心", "profile"),
 )
 
 GEAR_STATUS_LABEL = {
@@ -193,18 +195,9 @@ section[data-testid="stSidebar"] [data-testid="stAlert"] {{ border-radius: var(-
 /* 「新建对话」用 type="primary"，跟工作台选中项共用同一条规则，这里只留间距。 */
 .st-key-new_thread {{ margin: var(--space-1) 0 var(--space-2); }}
 section[data-testid="stSidebar"] .st-key-new_thread .stButton button p {{ white-space: nowrap; }}
+/* 导航只有文字：不再有图标占位，标签统一左对齐。 */
+.st-key-nav_menu .stButton button {{ justify-content: flex-start; padding-left: var(--space-3); }}
 
-.st-key-nav_menu > [data-testid="stElementContainer"]:nth-child(1) .stButton button::before {{ content: "◈"; }}
-.st-key-nav_menu > [data-testid="stElementContainer"]:nth-child(2) .stButton button::before {{ content: "▤"; }}
-.st-key-nav_menu > [data-testid="stElementContainer"]:nth-child(3) .stButton button::before {{ content: "◇"; }}
-.st-key-nav_menu > [data-testid="stElementContainer"]:nth-child(4) .stButton button::before {{ content: "⇪"; }}
-.st-key-nav_menu > [data-testid="stElementContainer"]:nth-child(5) .stButton button::before {{ content: "☰"; }}
-.st-key-nav_menu .stButton button::before {{
-  display: inline-block; width: 18px; margin-right: var(--space-2);
-  text-align: center; color: var(--c-nav-muted); font-family: var(--font-sans);
-  font-size: var(--fs-sm); font-weight: 400;
-}}
-.st-key-nav_menu .stButton button[kind="primary"]::before {{ color: var(--c-nav-active-text); }}
 
 /* 左导轨：侧栏里所有文字（品牌、分区标题、导航、会话行）共用同一条左边界。
    会话行用 2px 透明左边框给"当前"竖线留槽，所以文字从 2px 处起步，
@@ -984,6 +977,81 @@ section[data-testid="stSidebar"] .st-key-thread_delete_confirm [data-testid="stH
   border-radius: var(--radius-pill);
 }}
 
+/* ---------- 回答块（answer_blocks）：所有回答共用一套纸面 ---------- */
+.sl-answer {{ display: flex; flex-direction: column; gap: var(--space-3); }}
+.sl-answer > .sl-panel + .sl-panel {{ margin-top: 0; }}
+.sl-answer .sl-lead {{ margin-bottom: 0; }}
+
+.sl-stats {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: var(--space-3); }}
+.sl-stat {{
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-w) solid var(--c-line); border-radius: var(--radius-md);
+  background: var(--c-surface);
+}}
+.sl-stat-label {{ font-size: var(--fs-2xs); letter-spacing: var(--tracking-caps); text-transform: uppercase; color: var(--c-text-faint); }}
+.sl-stat-value {{ margin-top: 2px; font-family: var(--font-mono); font-size: var(--fs-lg); font-weight: var(--fw-bold); font-variant-numeric: tabular-nums; white-space: nowrap; }}
+.sl-stat-note {{ font-size: var(--fs-2xs); color: var(--c-text-muted); }}
+
+.sl-goods {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(228px, 1fr)); gap: var(--space-3); }}
+.sl-good {{
+  display: flex; flex-direction: column; gap: var(--space-2);
+  padding: var(--space-4); border: var(--border-w) solid var(--c-line);
+  border-radius: var(--radius-md); background: var(--c-surface); box-shadow: var(--shadow-2);
+}}
+.sl-good-head {{ display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); }}
+.sl-good-kicker {{ font-size: var(--fs-2xs); letter-spacing: var(--tracking-caps); text-transform: uppercase; color: var(--c-text-faint); }}
+.sl-good-price {{ margin-left: auto; font-family: var(--font-mono); font-size: var(--fs-md); font-weight: var(--fw-bold); white-space: nowrap; font-variant-numeric: tabular-nums; }}
+.sl-good-name {{ font-family: var(--font-display); font-size: var(--fs-md); font-weight: var(--fw-bold); line-height: 1.35; }}
+.sl-good-note {{ font-size: var(--fs-xs); color: var(--c-text-muted); }}
+.sl-good-tags {{ display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: auto; padding-top: var(--space-2); }}
+
+.sl-tbl {{ width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }}
+.sl-tbl th {{
+  padding: 0 0 var(--space-2); border-bottom: var(--panel-rule-w) solid var(--c-line-strong);
+  font-size: var(--fs-2xs); font-weight: var(--fw-bold); letter-spacing: var(--tracking-caps);
+  text-transform: uppercase; color: var(--c-text-faint); text-align: left; white-space: nowrap;
+}}
+.sl-tbl td {{ padding: var(--space-2) 0; border-bottom: var(--panel-rule-w) solid var(--c-line); overflow-wrap: anywhere; }}
+.sl-tbl tr:last-child td {{ border-bottom: 0; }}
+.sl-tbl .num {{ text-align: right; }}
+.sl-tbl td.num {{ font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }}
+
+/* 正文块：没有结构化数据的回答也不能裸奔 */
+[class*="st-key-answer_text_"] {{
+  padding: var(--space-4) var(--space-5);
+  border: var(--border-w) solid var(--c-line); border-radius: var(--radius-md);
+  background: var(--c-surface);
+}}
+.sl-prose {{ font-size: var(--fs-md); line-height: var(--lh-normal); }}
+.sl-prose > :first-child {{ margin-top: 0 !important; }}
+.sl-prose > :last-child {{ margin-bottom: 0 !important; }}
+.sl-prose h2, [class*="st-key-answer_text_"] h2 {{
+  margin: var(--space-4) 0 var(--space-2); padding-top: var(--space-3);
+  border-top: var(--panel-rule-w) solid var(--c-line);
+  font-family: var(--font-display); font-size: var(--fs-lg);
+}}
+.sl-prose h3, [class*="st-key-answer_text_"] h3 {{ margin: var(--space-3) 0 var(--space-1); font-size: var(--fs-md); }}
+.sl-prose p, [class*="st-key-answer_text_"] p {{ margin: var(--space-2) 0; }}
+.sl-prose ul, .sl-prose ol, [class*="st-key-answer_text_"] ul, [class*="st-key-answer_text_"] ol {{ margin: var(--space-2) 0; padding-left: 1.2rem; }}
+.sl-prose li, [class*="st-key-answer_text_"] li {{ margin: 2px 0; font-size: var(--fs-sm); }}
+.sl-prose blockquote, [class*="st-key-answer_text_"] blockquote {{
+  margin: var(--space-3) 0; padding: var(--space-2) var(--space-4);
+  border-left: 2px solid var(--c-accent-line); background: var(--c-surface-2); color: var(--c-text-muted);
+}}
+.sl-prose code, [class*="st-key-answer_text_"] code {{
+  font-family: var(--font-mono); font-size: var(--fs-xs);
+  padding: 1px var(--space-1); border-radius: var(--radius-xs); background: var(--c-chip-bg);
+}}
+.sl-prose hr, [class*="st-key-answer_text_"] hr {{ border: 0; border-top: var(--panel-rule-w) solid var(--c-line); margin: var(--space-4) 0; }}
+.sl-prose table, [class*="st-key-answer_text_"] table {{ width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }}
+.sl-prose th, [class*="st-key-answer_text_"] th {{
+  padding: 0 0 var(--space-2); border-bottom: var(--panel-rule-w) solid var(--c-line-strong);
+  font-size: var(--fs-2xs); letter-spacing: var(--tracking-caps); text-transform: uppercase;
+  color: var(--c-text-faint); text-align: left;
+}}
+.sl-prose td, [class*="st-key-answer_text_"] td {{ padding: var(--space-2) 0; border-bottom: var(--panel-rule-w) solid var(--c-line); }}
+.sl-prose tr:last-child td, [class*="st-key-answer_text_"] tr:last-child td {{ border-bottom: 0; }}
+
 /* ---------- 响应式 ---------- */
 @media (max-width: 900px) {{
   [data-testid="stMainBlockContainer"] {{ padding-left: var(--space-4); padding-right: var(--space-4); }}
@@ -1427,3 +1495,194 @@ def _defaults_note_html(facts: Dict[str, Any]) -> str:
         f"默认值：{'、'.join(bits)}。如果和实际不符，回一句我重排。"
         "</div>"
     )
+
+
+# ============================================================
+# 回答块（answer_blocks）
+# 所有回答共用一套纸面：有结构化数据就画对应的块，没有就画正文块。
+# 块类型：lead / stats / panel / timeline / cards / table / text
+# ============================================================
+
+def _rows_html(rows: Iterable[Dict[str, Any]]) -> str:
+    out = []
+    for row in rows or []:
+        sub = f'<small>{_e(row.get("sub"))}</small>' if row.get("sub") else ""
+        out.append(
+            '<div class="sl-tl-item">'
+            f'<span class="sl-tl-time">{_e(row.get("time") or "")}</span>'
+            f'<span class="sl-tl-act">{_e(row.get("main") or "")}{sub}</span>'
+            f'<span class="sl-tl-cost">{_e(row.get("right") or "—")}</span>'
+            "</div>"
+        )
+    if not out:
+        out.append(
+            '<div class="sl-tl-item"><span class="sl-tl-time">—</span>'
+            '<span class="sl-tl-act">暂无安排</span><span class="sl-tl-cost">—</span></div>'
+        )
+    return "".join(out)
+
+
+def _wrapped_panel(block: Dict[str, Any], body: str) -> str:
+    """有标题就套 01–05 那种面板壳，没有就裸块。"""
+    if not block.get("title"):
+        return body
+    return panel_html(
+        str(block.get("index") or ""),
+        str(block.get("title") or ""),
+        str(block.get("meta") or ""),
+        body,
+        flush=bool(block.get("flush")),
+    )
+
+
+def _lead_block_html(block: Dict[str, Any]) -> str:
+    em = f"<em>{_e(block['em'])}</em>" if block.get("em") else ""
+    note = f"<span>{_e(block['note'])}</span>" if block.get("note") else ""
+    return f'<div class="sl-lead">{_e(block.get("text") or "")}{em}{note}</div>'
+
+
+def _stats_block_html(block: Dict[str, Any]) -> str:
+    items = block.get("items") or []
+    if not items:
+        return ""
+    cells = []
+    for item in items:
+        note = f'<div class="sl-stat-note">{_e(item["note"])}</div>' if item.get("note") else ""
+        cells.append(
+            '<div class="sl-stat">'
+            f'<div class="sl-stat-label">{_e(item.get("label") or "")}</div>'
+            f'<div class="sl-stat-value">{_e(item.get("value") or "")}</div>{note}</div>'
+        )
+    return f'<div class="sl-stats">{"".join(cells)}</div>'
+
+
+def _timeline_block_html(block: Dict[str, Any]) -> str:
+    cards = []
+    for item in block.get("items") or []:
+        cards.append(
+            '<div class="sl-day">'
+            f'<div class="sl-day-head"><span class="sl-day-no">{_e(item.get("no") or "")}</span>'
+            f'<span class="sl-day-name">{_e(item.get("title") or "")}</span>'
+            f'<span class="sl-day-sum">{_e(item.get("meta") or "")}</span></div>'
+            f'<div class="sl-tl">{_rows_html(item.get("rows") or [])}</div></div>'
+        )
+    if not cards:
+        return ""
+    return _wrapped_panel(block, f'<div class="sl-days">{"".join(cards)}</div>')
+
+
+def _cards_block_html(block: Dict[str, Any]) -> str:
+    cards = []
+    for item in block.get("items") or []:
+        tags = "".join(
+            f'<span class="sl-tag sl-tag--pill">{_e(tag)}</span>'
+            for tag in item.get("tags") or []
+        )
+        note = f'<div class="sl-good-note">{_e(item["note"])}</div>' if item.get("note") else ""
+        cards.append(
+            '<div class="sl-good">'
+            '<div class="sl-good-head">'
+            f'<span class="sl-good-kicker">{_e(item.get("kicker") or "")}</span>'
+            f'<span class="sl-good-price">{_e(item.get("price") or "")}</span></div>'
+            f'<div class="sl-good-name">{_e(item.get("name") or "")}</div>'
+            f"{note}"
+            f'<div class="sl-good-tags">{tags}</div></div>'
+        )
+    if not cards:
+        return ""
+    return _wrapped_panel(block, f'<div class="sl-goods">{"".join(cards)}</div>')
+
+
+def num_class(numeric: bool) -> str:
+    return ' class="num"' if numeric else ""
+
+
+def _table_block_html(block: Dict[str, Any]) -> str:
+    columns = block.get("columns") or []
+    if not columns:
+        return ""
+    numeric = [bool(col.get("num")) for col in columns]
+    head = "".join(
+        f"<th{num_class(numeric[index])}>{_e(col.get('label') or '')}</th>"
+        for index, col in enumerate(columns)
+    )
+    rows = []
+    for row in block.get("rows") or []:
+        cells = []
+        for index, cell in enumerate(row):
+            num = numeric[index] if index < len(numeric) else False
+            cells.append(f"<td{num_class(num)}>{_e(cell)}</td>")
+        rows.append(f"<tr>{''.join(cells)}</tr>")
+    body = (
+        '<table class="sl-tbl"><thead><tr>'
+        + head
+        + "</tr></thead><tbody>"
+        + "".join(rows)
+        + "</tbody></table>"
+    )
+    return _wrapped_panel(block, body)
+
+
+def answer_block_html(block: Dict[str, Any]) -> str:
+    """单个块 → HTML。text 块不经这里（它是 Markdown，交给 Streamlit）。"""
+    kind = str(block.get("type") or "")
+    if kind == "lead":
+        return _lead_block_html(block)
+    if kind == "stats":
+        return _stats_block_html(block)
+    if kind == "timeline":
+        return _timeline_block_html(block)
+    if kind == "cards":
+        return _cards_block_html(block)
+    if kind == "table":
+        return _table_block_html(block)
+    if kind == "panel":
+        return panel_html(
+            str(block.get("index") or ""),
+            str(block.get("title") or ""),
+            str(block.get("meta") or ""),
+            str(block.get("body") or ""),
+            flush=bool(block.get("flush")),
+        )
+    return ""
+
+
+def answer_blocks_html(blocks: Sequence[Dict[str, Any]]) -> str:
+    parts = [
+        answer_block_html(block)
+        for block in blocks or []
+        if str(block.get("type") or "") != "text"
+    ]
+    parts = [part for part in parts if part]
+    if not parts:
+        return ""
+    return f'<div class="sl-answer">{"".join(parts)}</div>'
+
+
+def render_answer_blocks(blocks: Sequence[Dict[str, Any]], *, key: str = "answer") -> None:
+    """按顺序渲染：HTML 块合并成一次 markdown，正文块进 keyed 容器吃同一张纸面。"""
+    html_buffer: List[str] = []
+    text_index = 0
+
+    def _flush() -> None:
+        nonlocal html_buffer
+        if html_buffer:
+            st.markdown(
+                f'<div class="sl-answer">{"".join(html_buffer)}</div>',
+                unsafe_allow_html=True,
+            )
+            html_buffer = []
+
+    for block in blocks or []:
+        if str(block.get("type") or "") == "text":
+            _flush()
+            with st.container(key=f"{key}_text_{text_index}"):
+                text_index += 1
+                if block.get("title"):
+                    st.markdown(f"#### {block['title']}")
+                st.markdown(str(block.get("text") or ""))
+        else:
+            piece = answer_block_html(block)
+            if piece:
+                html_buffer.append(piece)
+    _flush()

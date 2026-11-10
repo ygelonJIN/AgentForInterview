@@ -21,6 +21,10 @@ smartlife-agent/data/conversations.db
 smartlife-agent/data/import_history.db
 smartlife-agent/data/imports/
 smartlife-agent/data/*.backup-*
+# Agent 启停配置（运行时状态，不进版本库）
+smartlife-agent/data/agent_config.json
+# 用户自己加的工具与服务端生成物
+smartlife-agent/data/tools/
 smartlife-agent/chroma_db.backup*/
 smartlife-agent/chroma_db.rebuild-*/
 smartlife-agent/data/evaluation/ab_events.db

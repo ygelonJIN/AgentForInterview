@@ -1,4 +1,4 @@
-"""ReAct 工具循环子图（纯 LangGraph）。
+"""通用 Agent 子图：ReAct 工具循环（纯 LangGraph）。
 
 相比旧实现：不再由外部注入 ``on_event`` 回调、不再每轮 new 一个图实例。
 模型与工具从 ``runtime.context.services`` 取，事件直接写 custom stream。
@@ -17,7 +17,7 @@ from langgraph.types import RetryPolicy
 
 from app.execution_log import build_execution_log
 from app.graphs.context import TurnContext
-from app.graphs.state import ReactState
+from app.graphs.state import GeneralState
 from app.observability import extract_model_usage, record_trace, timed_span
 from app.reliability import RetryableError
 from app.tools.agent_capabilities import validate_agent_tools
@@ -38,11 +38,11 @@ def _tool_calls(message: Any) -> List[Dict[str, Any]]:
 
 async def _log(sink, node: str, kind: str, message: str, **kwargs: Any) -> None:
     payload = build_execution_log(
-        graph="react",
+        graph="general",
         node=node,
         kind=kind,
         message=message,
-        step="react",
+        step="general",
         **kwargs,
     )
     await sink.emit_execution_log(payload)
@@ -75,7 +75,7 @@ def _policy_for(runtime: Runtime[TurnContext], tools):
     return validate_agent_tools(agent_id, tools) if agent_id else None
 
 
-async def agent(state: ReactState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
+async def agent(state: GeneralState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
     sink = runtime.context.sink_for(runtime)
     max_steps = state.get("max_steps") or DEFAULT_MAX_STEPS
     tools = _tools_for(runtime)
@@ -83,7 +83,7 @@ async def agent(state: ReactState, runtime: Runtime[TurnContext]) -> Dict[str, A
     model_with_tools = model.bind_tools(tools) if hasattr(model, "bind_tools") else model
     messages = _with_tool_rules(state["messages"], tools)
 
-    await sink.emit("agent_started", {"step": state.get("step_count", 0) + 1}, step="react")
+    await sink.emit("agent_started", {"step": state.get("step_count", 0) + 1}, step="general")
     with timed_span(
         "model.react_agent",
         trace_id=state.get("trace_id", ""),
@@ -120,7 +120,7 @@ async def agent(state: ReactState, runtime: Runtime[TurnContext]) -> Dict[str, A
     }
 
 
-def should_continue(state: ReactState) -> str:
+def should_continue(state: GeneralState) -> str:
     calls = _tool_calls(state["messages"][-1])
     if not calls:
         return "finalize"
@@ -183,7 +183,7 @@ async def call_tool(
         }
 
 
-async def tools_node(state: ReactState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
+async def tools_node(state: GeneralState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
     sink = runtime.context.sink_for(runtime)
     max_steps = state.get("max_steps") or DEFAULT_MAX_STEPS
     tool_timeout = state.get("tool_timeout") or DEFAULT_TOOL_TIMEOUT
@@ -203,7 +203,7 @@ async def tools_node(state: ReactState, runtime: Runtime[TurnContext]) -> Dict[s
             max_iterations=max_steps,
             details={"tool": call.get("name", "")},
         )
-        await sink.emit_tool_call(call.get("name", ""), call.get("args", {}), step="react")
+        await sink.emit_tool_call(call.get("name", ""), call.get("args", {}), step="general")
         outcome = await call_tool(
             runtime, tools_by_name, policy, call, state.get("trace_id", ""), tool_timeout
         )
@@ -222,11 +222,11 @@ async def tools_node(state: ReactState, runtime: Runtime[TurnContext]) -> Dict[s
         )
         results.append(outcome)
         if outcome.get("ok"):
-            await sink.emit_tool_result(outcome["tool"], str(outcome["result"]), step="react")
+            await sink.emit_tool_result(outcome["tool"], str(outcome["result"]), step="general")
         else:
             await sink.emit_error(
                 f"工具 {outcome.get('tool', '')} 执行失败: {outcome.get('error', '')}",
-                step="react",
+                step="general",
             )
         content = outcome["result"] if outcome["ok"] else {
             "error": outcome["error"], "tool": outcome["tool"],
@@ -239,7 +239,7 @@ async def tools_node(state: ReactState, runtime: Runtime[TurnContext]) -> Dict[s
     return {"messages": messages, "tool_results": results, "status": "tools_completed"}
 
 
-async def finalize(state: ReactState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
+async def finalize(state: GeneralState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
     sink = runtime.context.sink_for(runtime)
     max_steps = state.get("max_steps") or DEFAULT_MAX_STEPS
     calls = _tool_calls(state["messages"][-1])
@@ -248,7 +248,7 @@ async def finalize(state: ReactState, runtime: Runtime[TurnContext]) -> Dict[str
         error = f"达到最大工具调用步数 {max_steps}"
     else:
         status, error = "completed", ""
-    await sink.emit("finalized", {"status": status, "step_count": state.get("step_count", 0)}, step="react")
+    await sink.emit("finalized", {"status": status, "step_count": state.get("step_count", 0)}, step="general")
     await _log(
         sink, "finalize",
         "limit_reached" if status == "max_steps_reached" else "completed",
@@ -264,11 +264,20 @@ async def finalize(state: ReactState, runtime: Runtime[TurnContext]) -> Dict[str
         if isinstance(message, AIMessage) and not _tool_calls(message):
             response = message.content
             break
+    try:
+        from app.ui.blocks import text_only
+
+        await sink.emit("answer_blocks", {
+            "agent": "general",
+            "blocks": text_only(str(response or "")),
+        }, step="general")
+    except Exception:
+        pass
     return {"status": status, "error": error, "response": response}
 
 
-def build_react_graph(checkpointer: Optional[Any] = None):
-    graph = StateGraph(ReactState, context_schema=TurnContext)
+def build_general_graph(checkpointer: Optional[Any] = None):
+    graph = StateGraph(GeneralState, context_schema=TurnContext)
     graph.add_node("agent", agent, retry_policy=AGENT_RETRY, timeout=60)
     graph.add_node("tools", tools_node, timeout=DEFAULT_MAX_STEPS * DEFAULT_TOOL_TIMEOUT + 5)
     graph.add_node("finalize", finalize, timeout=5)
@@ -279,9 +288,9 @@ def build_react_graph(checkpointer: Optional[Any] = None):
     return graph.compile(checkpointer=checkpointer)
 
 
-def initial_react_state(
+def initial_general_state(
     messages: List[Any],
-    trace_id: str = "react",
+    trace_id: str = "general",
     max_steps: int = DEFAULT_MAX_STEPS,
     tool_timeout: float = DEFAULT_TOOL_TIMEOUT,
 ) -> Dict[str, Any]:

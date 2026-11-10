@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Sequence
 
 
@@ -56,7 +56,6 @@ AGENT_TOOL_POLICIES: dict[str, AgentToolPolicy] = {
         tool_names=frozenset({
             "search_destinations",
             "get_local_activities",
-            "plan_itinerary",
             "get_weather",
             "get_weather_forecast",
             "get_air_quality",
@@ -66,6 +65,29 @@ AGENT_TOOL_POLICIES: dict[str, AgentToolPolicy] = {
             "get_current_time",
         }),
         mcp_server_name="smartlife-travel-agent",
+    ),
+    "trip_gear": AgentToolPolicy(
+        agent_id="trip_gear",
+        display_name="行程装备协同 Agent",
+        description="行程事实（天气/空气/汇率/假日/路线/时差）与装备协同",
+        tool_names=frozenset({
+            "get_weather_forecast",
+            "get_air_quality",
+            "get_exchange_rate",
+            "get_public_holidays",
+            "get_route",
+            "get_time_offset",
+            "search_products",
+            "get_product_reviews",
+        }),
+        mcp_server_name="smartlife-trip-gear-agent",
+    ),
+    "customer_service": AgentToolPolicy(
+        agent_id="customer_service",
+        display_name="订单客服 Agent",
+        description="只读当前用户的订单状态",
+        tool_names=frozenset({"get_order_status"}),
+        mcp_server_name="smartlife-customer-service-agent",
     ),
     "general": AgentToolPolicy(
         agent_id="general",
@@ -87,6 +109,12 @@ _AGENT_ALIASES = {
     "travel_agent": "travel",
     "general-agent": "general",
     "general_agent": "general",
+    "trip-gear": "trip_gear",
+    "trip_gear_agent": "trip_gear",
+    "tripgear": "trip_gear",
+    "customer-service": "customer_service",
+    "customer_service_agent": "customer_service",
+    "service": "customer_service",
 }
 
 
@@ -99,8 +127,26 @@ def normalize_agent_id(agent_id: str) -> str:
     return value
 
 
+def default_tool_names(agent_id: str) -> frozenset[str]:
+    return AGENT_TOOL_POLICIES[normalize_agent_id(agent_id)].tool_names
+
+
 def get_agent_tool_policy(agent_id: str) -> AgentToolPolicy:
-    return AGENT_TOOL_POLICIES[normalize_agent_id(agent_id)]
+    """默认白名单 + 用户在配置页选过的工具。
+
+    没配过就用默认；配过就完全以配置为准（可加也可减），
+    这样"每个 Agent 用哪些工具"是数据，不是代码。
+    """
+    policy = AGENT_TOOL_POLICIES[normalize_agent_id(agent_id)]
+    try:
+        from app.agents.config import tools_for
+
+        chosen = tools_for(policy.agent_id)
+    except Exception:
+        chosen = None
+    if chosen is None:
+        return policy
+    return replace(policy, tool_names=frozenset(chosen))
 
 
 def validate_agent_tools(

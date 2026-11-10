@@ -18,7 +18,7 @@
 {"id": "composite-plan", "message": "推荐跑鞋，再制定杭州两天计划", "today": "2026-11-06", "expect": {"intent": "composite", "route": "plan_and_execute", "destination": "杭州", "days": 2}}
 {"id": "composite-explicit-buy", "message": "去上海玩5天，顺便买一件冲锋衣", "today": "2026-11-06", "expect": {"intent": "composite", "destination": "上海", "days": 5}}
 {"id": "service-refund", "message": "退一下订单", "today": "2026-11-06", "expect": {"intent": "customer_service", "route": "react", "gear": false}}
-{"id": "service-single-word", "message": "我的快递到哪了", "today": "2026-11-06", "expect": {"intent": null}, "note": "单个客服词证据不够，交小模型"}
+{"id": "service-single-word", "message": "客服在吗", "today": "2026-11-06", "expect": {"intent": null}, "note": "单个弱客服词（客服 1.0）证据不够，交小模型"}
 {"id": "gear-list", "message": "准备去露营三天，帮我列一份装备清单", "today": "2026-11-06", "expect": {"intent": "travel", "route": "plan_and_execute", "days": 3, "gear": true}}
 {"id": "gear-business", "message": "出差三天带什么", "today": "2026-11-06", "expect": {"intent": "travel", "days": 3, "gear": true}}
 {"id": "gear-with-purchase", "message": "我想买个帐篷，预算600", "today": "2026-11-06", "expect": {"intent": "shopping", "budget": 600.0, "gear": false}}
@@ -40,3 +40,4 @@
 {"id": "misc-weather", "message": "明天杭州下雨吗", "today": "2026-11-06", "expect": {"intent": null, "destination": "杭州"}}
 {"id": "misc-weekend-advice", "message": "周末有什么推荐", "today": "2026-11-06", "expect": {"intent": null}}
 {"id": "misc-budget-only", "message": "预算3000", "today": "2026-11-06", "expect": {"intent": null, "budget": 3000.0}, "note": "只有钱数，不能判购物"}
+{"id": "service-express-tracking", "message": "我的快递到哪了", "today": "2026-11-06", "expect": {"intent": "customer_service", "route": "react"}, "note": "快递 + 到哪了 = 1.6，够两个证据"}

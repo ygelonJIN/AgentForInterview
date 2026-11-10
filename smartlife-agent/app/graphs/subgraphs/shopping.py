@@ -172,6 +172,20 @@ async def validate(state: ShoppingState, runtime: Runtime[TurnContext]) -> Dict[
             max_iterations=1,
             message="回答一次校验通过",
         )
+    # 结构化回答块：前端据此渲染 stats/cards/table，不必解析 Markdown。
+    try:
+        from app.ui.blocks import shopping_blocks
+
+        await sink.emit("answer_blocks", {
+            "agent": "shopping",
+            "blocks": shopping_blocks(
+                state.get("retrieval") or {},
+                response,
+                query=state["user_message"],
+            ),
+        }, step="generate")
+    except Exception:
+        pass
     return {"response": response, "status": "validated"}
 
 

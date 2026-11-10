@@ -44,6 +44,7 @@ from app.ui.theme import (
     metric_columns,
     nav_label_html,
     plan_panels_html,
+    render_answer_blocks,
     render_card,
     render_empty,
     render_metric,
@@ -929,6 +930,16 @@ def render_process_events(events, include_transient=False, collapsed=False):
         st.markdown(cards, unsafe_allow_html=True)
 
 
+def _answer_blocks(events):
+    """取本轮最后一份回答块（各 Agent 的 answer_blocks 事件）。"""
+    for evt in reversed(events or []):
+        if evt.get("event") == "answer_blocks":
+            data = evt.get("data")
+            if isinstance(data, dict) and data.get("blocks"):
+                return data["blocks"]
+    return None
+
+
 def _plan_payload(events):
     """取本轮最后一份结构化方案（trip_gear 的 plan_result 事件）。"""
     for evt in reversed(events or []):
@@ -966,8 +977,8 @@ def _plan_lead_html(payload):
     )
 
 
-def render_assistant_message(msg):
-    """渲染一条助手消息：结构化面板优先，Markdown 原文收进折叠区。"""
+def render_assistant_message(msg, key: str = "assistant"):
+    """渲染一条助手消息：面板 > 回答块 > Markdown 原文，三层兜底。"""
     if isinstance(msg.get("process_events"), list) or "response" in msg:
         events = msg.get("process_events", [])
         render_process_events(events, include_transient=False, collapsed=True)
@@ -976,6 +987,12 @@ def render_assistant_message(msg):
         if payload:
             st.markdown(_plan_lead_html(payload), unsafe_allow_html=True)
             st.markdown(plan_panels_html(payload), unsafe_allow_html=True)
+            if resp:
+                with st.expander("查看 Markdown 原文"):
+                    st.markdown(resp)
+        elif blocks := _answer_blocks(events):
+            # 五个 Agent 共用一套纸面：lead / stats / cards / table / timeline / text。
+            render_answer_blocks(blocks, key=key)
             if resp:
                 with st.expander("查看 Markdown 原文"):
                     st.markdown(resp)
@@ -1151,7 +1168,7 @@ def _run_streaming_impl(async_gen_factory, *, postprocess=None):
 
 
 # ========== 导航与页面组件 ==========
-PAGE_BY_LABEL = {label: key for _icon, label, key in NAV_ITEMS}
+PAGE_BY_LABEL = {label: key for label, key in NAV_ITEMS}
 # 目录一页渲染多少件：太多会卡，太少翻页累
 CATALOG_PAGE_SIZE = 24
 
@@ -1450,7 +1467,7 @@ def render_app_sidebar():
         st.markdown(nav_label_html("工作台"), unsafe_allow_html=True)
         current = st.session_state.get("active_page", "assistant")
         with st.container(key="nav_menu"):
-            for _icon, label, page_key in NAV_ITEMS:
+            for label, page_key in NAV_ITEMS:
                 if st.button(
                     label,
                     key=f"nav_{page_key}",
@@ -1548,12 +1565,12 @@ def render_assistant_page():
         if not st.session_state["assistant_msgs"] and not pending_message:
             st.markdown(EMPTY_STATE_HTML, unsafe_allow_html=True)
 
-        for msg in st.session_state["assistant_msgs"]:
+        for index, msg in enumerate(st.session_state["assistant_msgs"]):
             if msg.get("role") == "user":
                 st.markdown(user_bubble_html(msg.get("content", "")), unsafe_allow_html=True)
             else:
                 with st.chat_message("assistant"):
-                    render_assistant_message(msg)
+                    render_assistant_message(msg, key=f"answer_{index}")
 
         # 追问还没答完时，这一屏只该有追问卡片：记忆入口和"事件未入库"这类
         # 内部提示都是噪声，而且追问轮本来就没有助手正文可挂事件。
@@ -2451,12 +2468,19 @@ def render_import_page():
     render_import_center()
 
 
+def render_agents_page():
+    from app.ui.agents_page import render_agents_page as _render
+
+    _render()
+
+
 def render_page(page_key: str):
     pages = {
         "assistant": render_assistant_page,
         "catalog": render_catalog_page,
         "memory": render_memory_page,
         "import": render_import_page,
+        "agents": render_agents_page,
         "profile": render_profile_page,
     }
     pages.get(page_key, render_assistant_page)()

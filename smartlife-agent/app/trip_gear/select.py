@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 from app.trip_gear.spec_match import (
     STATUS_INSUFFICIENT,
@@ -162,6 +162,29 @@ def rank(
     return scored
 
 
+# 平局阈值：分数差小于它就算"打分分不出高下"，才值得花钱查一次评价。
+TIE_EPSILON = 0.02
+# 平局时最多查三件的评价，避免一次规划打出几十次查询。
+TIE_CANDIDATES = 3
+
+
+def _review_of(review_lookup: Optional[Callable[[str], Dict[str, Any]]], product: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    product_id = product.get("id")
+    if not product_id:
+        return None
+    try:
+        stats = review_lookup(str(product_id))
+    except Exception:
+        return None
+    if not isinstance(stats, dict):
+        return None
+    rating = stats.get("rating")
+    count = int(stats.get("count") or 0)
+    if rating is None or count <= 0:
+        return None
+    return {"rating": float(rating), "count": count}
+
+
 def pick(
     candidates: Iterable[Dict[str, Any]],
     category: str,
@@ -170,6 +193,39 @@ def pick(
     remaining: Optional[float] = None,
     qty: int = 1,
     preferred_brands: Optional[Sequence[str]] = None,
+    review_lookup: Optional[Callable[[str], Dict[str, Any]]] = None,
 ) -> Optional[Scored]:
+    """打分选一件；只有打分分不出高下时，才用真实评价做平局裁决。
+
+    评价不是第二个打分器：分数差够大时一次都不查，避免"口碑分"把
+    参数匹配的结果稀释掉，也避免每件装备都多打一次库。
+    """
     ranked = rank(candidates, category, gear_name, facts, remaining, qty, preferred_brands)
-    return ranked[0] if ranked else None
+    if not ranked:
+        return None
+    best = ranked[0]
+    if review_lookup is None or len(ranked) < 2:
+        return best
+    if abs(best.score - ranked[1].score) > TIE_EPSILON:
+        return best
+
+    tied = [
+        item for item in ranked[:TIE_CANDIDATES]
+        if abs(item.score - best.score) <= TIE_EPSILON
+    ]
+    reviewed = []
+    for item in tied:
+        stats = _review_of(review_lookup, item.product)
+        if stats:
+            reviewed.append((stats["rating"], stats["count"], item))
+    if not reviewed:
+        return best
+    # 评分高者胜；同分看评价条数（样本多的更可信），再同就看原排序。
+    reviewed.sort(key=lambda row: (-row[0], -row[1]))
+    rating, count, chosen = reviewed[0]
+    if chosen is not best and chosen.score >= best.score - TIE_EPSILON:
+        chosen.reason = (
+            f"{chosen.reason or '打分接近'}；口碑平局裁决：{rating:.1f} 分 / {count} 条评价"
+        ).strip("；")
+        return chosen
+    return best

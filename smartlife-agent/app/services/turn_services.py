@@ -20,7 +20,6 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from app.config import create_llm
 from app.services.travel_service import TravelService
 from app.classifier import ClassificationResult, get_classifier
-from app.services.task_models import SharedConstraints
 from app.memory.short_term import ShortTermMemory
 
 # 记忆提取窗口：只取游标之后的用户消息，按条数和字数双重封顶。
@@ -79,9 +78,6 @@ class TurnServices:
             else None
         )
         self._memory_approval_graph = None
-        self._customer_service_graph = None
-        self._general_plan_graph = None
-        self._shopping_graph = None
         self._memory_repository = None
         self._last_classifications = {}
 
@@ -306,61 +302,6 @@ class TurnServices:
 
     def get_chat_history(self, thread_id: str) -> List[Any]:
         return self.short_term_memory.get_langchain_messages(thread_id, last_n=10)
-
-    async def synthesize_composite_response(
-        self,
-        user_message: str,
-        shopping: Dict[str, Any],
-        travel: Dict[str, Any],
-        constraints: SharedConstraints,
-        queue: EventSink,
-    ) -> str:
-        """合并并约束校验双意图结果；单分支失败仍保留可验证的另一分支。"""
-        def fallback() -> str:
-            parts = []
-            if shopping.get("status") == "ok":
-                parts.append("【购物推荐】\n" + str(shopping.get("response") or "").strip())
-            else:
-                parts.append("【购物推荐】\n未能完成：" + str(shopping.get("error") or "未知错误"))
-            if travel.get("status") == "ok":
-                parts.append("【旅行计划】\n" + str(travel.get("response") or "").strip())
-            else:
-                parts.append("【旅行计划】\n未能完成：" + str(travel.get("error") or "未知错误"))
-            return "\n\n".join(parts).strip()
-
-        if shopping.get("status") != "ok" or travel.get("status") != "ok":
-            return fallback()
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", """把购物建议与旅行计划综合成一份一致的最终回答。
-必须保留真实商品名和行程事实，不得新增未经检索的数据。
-统一检查预算、日期、人数和装备/活动是否冲突；失败时保留原分支正文并明确说明。"""),
-            ("user", """原始请求：{request}
-
-共享约束：
-{constraints}
-
-购物分支：
-{shopping}
-
-旅行分支：
-{travel}
-
-请输出最终中文回答。"""),
-        ])
-        chain = prompt | self.llm
-        try:
-            result = await chain.ainvoke({
-                "request": user_message,
-                "constraints": constraints.prompt_context(),
-                "shopping": shopping.get("response") or "",
-                "travel": travel.get("response") or "",
-            })
-            synthesized = str(result.content or "").strip()
-            return synthesized or fallback()
-        except Exception as exc:
-            log_exception("composite.synthesis", exc)
-            await queue.emit_error(f"跨场景综合失败，已保留两个分支结果：{type(exc).__name__}", step="generate")
-            return fallback()
 
     async def plan_shopping_retrieval(
         self,

@@ -34,14 +34,6 @@ class GetLocalActivitiesInput(BaseModel):
         return value
 
 
-class PlanItineraryInput(BaseModel):
-    destination: str = Field(min_length=1, description="目的地")
-    days: int = Field(gt=0, le=30, description="旅行天数")
-    budget: float = Field(gt=0, description="预算（元）")
-    interests: List[str] = Field(description="兴趣标签")
-    travel_style: Optional[str] = Field(default="休闲", description="旅行风格：休闲、冒险、文化")
-
-
 # 示例目录，不是全量目的地库：`base_daily_budget` 是人均每日粗略估算（人民币），
 # 只用于"这个预算够不够去"的粗筛，不当作可下单的价格。
 # 城市名必须能在 `app/tools/geo.py` 的别名表里解析，否则天气和活动都拿不到。
@@ -254,62 +246,7 @@ class TravelToolProvider(ToolBundle):
                 "warnings": list(dict.fromkeys(warnings)),
             }]
 
-        @tool("plan_itinerary", args_schema=PlanItineraryInput)
-        def plan_itinerary(
-            destination: str,
-            days: int,
-            budget: float,
-            interests: List[str],
-            travel_style: Optional[str] = "休闲",
-        ) -> Dict[str, Any]:
-            """按目的地生成初始行程草案：本地资料优先，否则用在线真实场所。"""
-            items = activity_items(read_activities(destination))
-            plan_source = "local_activity_planner"
-            if not items:
-                # 本地没有该城市资料时不是"市区自由活动"了事，去拿真实场所
-                try:
-                    from app.tools import geo
-                    from app.tools.providers import get_activities_provider
-
-                    location = geo.resolve_location(destination)
-                    payload = get_activities_provider().fetch_with_meta({
-                        "city": destination,
-                        "english": geo.resolve_city_english(destination),
-                        "latitude": location.latitude,
-                        "longitude": location.longitude,
-                        "country_code": location.country_code,
-                    }).payload
-                    items = [
-                        str(item.get("title") or "")
-                        for item in (payload.get("items") or [])
-                        if item.get("title")
-                    ]
-                    if items:
-                        plan_source = f"{payload.get('source', 'online')}_planner"
-                except Exception:
-                    items = []
-            selected = [
-                item for item in items
-                if not interests or any(tag in item.lower() for tag in interests)
-            ] or items
-            itinerary = []
-            for index in range(days):
-                candidates = selected[index * 2:index * 2 + 2]
-                itinerary.append({
-                    "day": index + 1,
-                    "activities": candidates or [f"{destination}市区自由活动"],
-                })
-            return {
-                "destination": destination,
-                "days": days,
-                "budget": budget,
-                "travel_style": travel_style or "休闲",
-                "itinerary": itinerary,
-                "source": plan_source,
-            }
-
         self.tools = [
             search_destinations,
             get_local_activities,
-            plan_itinerary,
         ]

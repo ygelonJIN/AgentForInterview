@@ -35,6 +35,7 @@ _W_DURATION = 1.0
 _W_BARE_DURATION = 0.6
 _W_CONTEXT = 0.4
 _W_SERVICE = 1.0
+_W_SERVICE_STRONG = 1.3
 
 
 @dataclass
@@ -116,9 +117,18 @@ def score_intents(message: str) -> IntentScores:
     result.scores["travel"] = round(score, 2)
 
     # ---- 客服 ----
-    service = _alive_terms(text, lexicon.CUSTOMER_SERVICE)
+    # 强词与普通词合并匹配再按权重累加：matched_terms 会按跨度去重，
+    # 所以"退款"不会同时算成"退款 + 退"两条。
+    service_terms = list(dict.fromkeys(lexicon.STRONG_SERVICE + lexicon.CUSTOMER_SERVICE))
+    service = _alive_terms(text, service_terms)
     result.hits["customer_service"] = service
-    result.scores["customer_service"] = round(_W_SERVICE * len(service), 2)
+    result.scores["customer_service"] = round(
+        sum(
+            _W_SERVICE_STRONG if term in lexicon.STRONG_SERVICE else _W_SERVICE
+            for term in service
+        ),
+        2,
+    )
 
     result.route = decide_route(text)
     return result

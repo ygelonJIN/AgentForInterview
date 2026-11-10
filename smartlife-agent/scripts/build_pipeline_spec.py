@@ -36,6 +36,7 @@ SCAN_PATTERNS = [
     "app/llm_json.py",
     "app/graphs/*.py",
     "app/graphs/subgraphs/*.py",
+    "app/agents/*.py",
     "app/services/*.py",
     "app/memory/*.py",
     "app/retrieval/*.py",
@@ -57,10 +58,7 @@ GRAPH_TITLES = {
     "travel_plan": "旅行规划",
     "trip_gear": "装备挂载",
     "trip_gear_plan": "行程 + 装备协同",
-    "composite": "复合意图",
-    "general_plan": "通用规划",
-    "react": "ReAct",
-    "general_chat": "通用对话",
+    "general": "通用 Agent",
     "customer_service": "客服",
 }
 
@@ -72,11 +70,8 @@ NODE_LABELS = {
     "shopping": "购物",
     "travel": "旅行",
     "trip_gear": "装备",
-    "composite": "购物 + 旅行",
+    "general": "通用",
     "customer_service": "客服",
-    "general_plan": "通用规划",
-    "react": "ReAct",
-    "general_chat": "通用对话",
     "finalize": "收束",
     "extract_memory": "记忆提取",
     "plan_retrieval": "检索规划",
@@ -701,6 +696,37 @@ def resolve_iterable(node: ast.AST, module: Dict[str, Any]) -> List[str]:
     return []
 
 
+def parse_agent_specs(modules: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
+    """从 app/agents/specs.py 的 AST 读 agent_id → 子图 id。
+
+    只读 AST、不 import 业务模块；AgentSpec 的 builder 是
+    ``"模块:函数"`` 字符串，所以能静态拿到节点名。
+    """
+    for module in modules.values():
+        path = str(module.get("path") or "")
+        if not path.endswith("agents/specs.py"):
+            continue
+        mapping: Dict[str, str] = {}
+        for node in ast.walk(module["tree"]):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "AgentSpec"
+            ):
+                continue
+            kwargs = {
+                kw.arg: literal_value(kw.value)
+                for kw in node.keywords
+                if kw.arg
+            }
+            agent_id = kwargs.get("agent_id")
+            builder = kwargs.get("builder")
+            if isinstance(agent_id, str) and isinstance(builder, str) and ":" in builder:
+                mapping[agent_id] = graph_id_of(str(builder).split(":")[-1])
+        return mapping
+    return {}
+
+
 def parse_graph(fn: ast.AST, module: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     graph_id = graph_id_of(fn.name)
     local_builders: Dict[str, str] = {}
@@ -723,6 +749,10 @@ def parse_graph(fn: ast.AST, module: Dict[str, Any]) -> Optional[Dict[str, Any]]
     def resolve_endpoint(node: ast.AST, env: Dict[str, str]) -> Optional[str]:
         if isinstance(node, ast.Name) and node.id in env:
             return env[node.id]
+        # spec.agent_id 这种属性访问由 Agent 清单注入，不在 AST 里解析，
+        # 返回 None 而不是把 "spec.agent_id" 当成节点名。
+        if isinstance(node, ast.Attribute) or (isinstance(node, ast.Call)):
+            return None
         value = norm_endpoint(node)
         return value
 
@@ -788,6 +818,14 @@ def parse_graph(fn: ast.AST, module: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
     walk(fn.body, {})
 
+    if graph_id == "turn":
+        # 顶层图的 Agent 节点由 specs.py 派生，AST 里看不到 add_node 字面量，
+        # 这里按清单补回节点与两条边（classify → agent → finalize）。
+        for agent_id, subgraph in (module.get("agent_specs") or {}).items():
+            nodes.setdefault(agent_id, {"id": agent_id, "fn": "", "subgraph": subgraph})
+            edges.append({"src": "classify", "dst": agent_id, "label": agent_id, "conditional": True})
+            edges.append({"src": agent_id, "dst": "finalize", "label": "", "conditional": False})
+
     if not nodes:
         return None
     return {
@@ -800,6 +838,9 @@ def parse_graph(fn: ast.AST, module: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
 
 def parse_graphs(modules: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    agent_specs = parse_agent_specs(modules)
+    for module in modules.values():
+        module["agent_specs"] = agent_specs
     graphs: Dict[str, Dict[str, Any]] = {}
     for module in modules.values():
         for fn in module["tree"].body:
@@ -1715,225 +1756,43 @@ JS = """
 
 def render_scenario(modules: Dict[str, Dict[str, Any]], graphs: Dict[str, Dict[str, Any]],
                     fn_index: Dict[str, List[Tuple[str, Dict[str, Any]]]]) -> str:
-    """购物 + 旅行：一屏表格走完一轮。字段可悬停，高亮同一变量的读写位置。"""
+    """路由总览：五个 Agent 怎么分流。
 
-    def chip(key: str, kind: str, where: str) -> str:
-        return (
-            f'<span class="field" data-key="{esc(key)}" data-kind="{esc(kind)}" '
-            f'data-where="{esc(where)}">{esc(key)}</span>'
-        )
-
-    def chips(keys: List[str], kind: str, where: str) -> str:
-        if not keys:
-            return '<span class="muted">—</span>'
-        return " ".join(chip(key, kind, where) for key in keys)
-
-    merge_prompt = ""
-    for prompt in modules.get("app/services/turn_services.py", {}).get("prompts", []):
-        if prompt["owner"] == "synthesize_composite_response":
-            merge_prompt = render_prompt(dict(prompt, module="app/services/turn_services.py"))
-            break
-
-    classification = """{
-  "route": "plan_and_execute",
-  "intent": "shopping",
-  "intents": ["shopping", "travel"],
-  "primary_intent": "shopping",
-  "intent_scores": {"shopping": 0.86, "travel": 0.81},
-  "sub_intent": "search",
-  "retrieval": "mixed",
-  "confidence": 0.86,
-  "reason": "同时包含商品推荐与两天行程两个独立任务"
-}"""
-
-    branch_table = """
-<table class="tbl"><thead><tr><th>字段</th><th>购物分支</th><th>旅行分支</th></tr></thead><tbody>
-<tr><td class="k">intent</td><td><code>shopping</code></td><td><code>travel</code></td></tr>
-<tr><td class="k">intents</td><td><code>["shopping"]</code></td><td><code>["travel"]</code></td></tr>
-<tr><td class="k">sub_intent</td><td><code>search</code></td><td><code>plan_trip</code></td></tr>
-<tr><td class="k">route</td><td>沿用原值（不参与购物子图）</td><td><code>plan_and_execute</code></td></tr>
-<tr><td class="k">retrieval</td><td><code>mixed</code></td><td><code>rag_only</code></td></tr>
-<tr><td class="k">intent_scores</td><td>只留 shopping 分数</td><td>只留 travel 分数</td></tr>
-<tr><td class="k">constraints</td><td colspan="2">两个分支共用 prepare 阶段派生的同一份约束</td></tr>
-</tbody></table>"""
-
-    outcome = """[
-  {"name": "shopping", "status": "ok", "response": "推荐 3 双跑鞋……", "error": ""},
-  {"name": "travel",   "status": "ok", "response": "杭州 2 天行程……", "error": ""}
-]"""
-
-    rules = """
-<p class="muted" style="margin:0 0 6px">这句示例抽出来的是：<code>budget=3000</code>、<code>people=1</code>、<code>days=2</code>、<code>destination=杭州</code>、<code>start_date=空</code>。</p>
-<table class="tbl"><thead><tr><th style="width:96px">字段</th><th>怎么来的</th></tr></thead><tbody>
-<tr><td class="k">预算</td><td>说 1万、1.5万、一万五、3千、3000元 都能识别</td></tr>
-<tr><td class="k">人数</td><td>「N 人」里的数字，没写默认 1</td></tr>
-<tr><td class="k">天数</td><td>7天 / 七天 / 一周 / 两周 / 半个月（=15 天）</td></tr>
-<tr><td class="k">开始日期</td><td>2026-05-01 这种格式</td></tr>
-<tr><td class="k">目的地</td><td>城市词表里第一个命中的</td></tr>
-</tbody></table>
-<p class="muted" style="margin:6px 0 0">都抽不到就留空，后面「需求抽取」会把缺的字段写进 clarifications，由「澄清」去问用户。</p>
-"""
-
-    def branch_rows(graph_id: str, prefix: str) -> List[Dict[str, Any]]:
-        graph = graphs.get(graph_id) or {}
-        layout = compute_layout(graph)
-        items = sorted(
-            graph.get("nodes", {}).items(),
-            key=lambda kv: (layout["positions"].get(kv[0], {}).get("y", 0),
-                            layout["positions"].get(kv[0], {}).get("x", 0)),
-        )
-        rows = []
-        for node_id, node in items:
-            fn = None
-            if not node.get("subgraph"):
-                resolved = resolve_fn(modules, graphs, fn_index, graph_id, node.get("fn", ""))
-                if resolved:
-                    fn = resolved[1]
-            rows.append({
-                "title": f'{prefix}·{NODE_LABELS.get(node_id, node_id)}',
-                "do": NODE_NOTES.get(node_id, ""),
-                "reads": fn["reads"] if fn else [],
-                "writes": fn["writes"] if fn else [],
-                "where": f'{GRAPH_TITLES.get(graph_id, graph_id)} / {NODE_LABELS.get(node_id, node_id)}',
-                "branch": True,
-            })
-        return rows
-
-    rows: List[Dict[str, Any]] = [
-        {"num": "1", "title": "用户输入", "do": "原始请求进入状态",
-         "reads": [], "writes": ["user_message", "user_id", "session_id", "scene"],
-         "where": "用户输入",
-         "detail": ("这句示例写进去的值", """
-<table class="tbl"><thead><tr><th style="width:110px">字段</th><th>写入的值</th><th style="width:150px">实际来源</th></tr></thead><tbody>
-<tr><td class="k">user_message</td><td>推荐一双跑步鞋，再帮我安排杭州两天的行程，预算 3000。</td><td>输入框原文，不截断</td></tr>
-<tr><td class="k">user_id</td><td><code>u_1001</code>（示例）</td><td>登录态</td></tr>
-<tr><td class="k">session_id</td><td><code>s_7f3a</code>（示例）</td><td>当前浏览器会话</td></tr>
-<tr><td class="k">scene</td><td><code>general</code></td><td>场景键，默认 general</td></tr>
-<tr><td class="k">thread_id（第 2 步）</td><td><code>u_1001:general:s_7f3a</code></td><td>user_id、scene、session_id 拼成</td></tr>
-</tbody></table>
-<p class="muted" style="margin:6px 0 0">user_id / session_id 用占位值说明；真实值由登录态和会话传入。</p>
-""")},
-        {"num": "2", "title": "准备", "do": "从原话抽共享约束，播种会话",
-         "reads": ["user_message"], "writes": ["thread_id", "constraints", "messages", "status"],
-         "where": "顶层主图 / 准备", "detail": ("constraints 具体怎么抽", rules)},
-        {"num": "3", "title": "分类", "do": "关键词 → 指代 → 小模型 → 仲裁",
-         "reads": ["user_message", "chat_history"],
-         "writes": ["classification", "agent_used"], "where": "顶层主图 / 分类",
-         "detail": ("分类结果（示例）", f'<pre class="block">{esc(classification)}</pre>')},
-        {"num": "4", "title": "路由", "do": "条件边按 intents 选分支",
-         "reads": ["classification"], "writes": [], "where": "顶层主图 / 分类",
-         "detail": ("路由规则（按代码顺序）",
-                    "<ol class='rules-ol'><li>sub_intent 含 gear/装备 → <code>trip_gear</code></li>"
-                    "<li>intents 同时含 shopping 和 travel → <code>composite</code></li>"
-                    "<li>否则按主意图走单场景</li></ol>"
-                    "<p class='muted'>这句示例命中第 2 条。</p>")},
-        {"num": "5", "title": "拆分支", "do": "复制分类，各自改写意图字段",
-         "reads": ["classification", "constraints"],
-         "writes": ["classification"], "where": "复合意图 / 拆分支",
-         "detail": ("两个分支的状态差异", branch_table)},
-        {"num": "6", "title": "并行", "do": "购物子图与旅行子图同时跑",
-         "reads": [], "writes": ["branch_results"], "where": "复合意图 / 合并",
-         "detail": ("执行方式",
-                    "<p>两条并行边分别调用两个子图；每个分支用 try/except 包住，"
-                    "异常转成 <code>status=failed</code> 的 outcome，不拖垮另一边。</p>")},
+    原来的"复合意图并行"演练已随 composite 一起删掉——购物 + 行程现在由
+    trip_gear 一次算完，不再有两段正文合并的路径。
+    """
+    rows = [
+        ("shopping", "纯购物", "关键词：品类/品牌 + 购买动作", "商品 3 个"),
+        ("travel", "旅行问答 / 纯行程规划", "关键词：地名、旅游词；或 travel + plan_trip", "天气、路线、活动、时间"),
+        ("trip_gear", "行程 + 装备协同", "gear_plan，或复合意图，或出现露营/装备/清单", "天气、空气、汇率、假日、路线、时差（内部检索商品）"),
+        ("general", "通用问答兜底", "既不是购物、旅行也不是客服", "天气、路线、时间"),
+        ("customer_service", "订单客服", "关键词：订单、退款、物流…（命中两个词）", "订单"),
     ]
-
-    branch_items = branch_rows("shopping", "购物") + branch_rows("travel_plan", "旅行")
-    for index, item in enumerate(branch_items, 1):
-        item["num"] = f"6.{index}"
-    rows += branch_items
-
-    rows += [
-        {"num": "7", "title": "分支结果", "do": "两个 outcome 汇总",
-         "reads": ["branch_results"], "writes": [], "where": "复合意图 / 合并",
-         "detail": ("outcome 结构（示例）", f'<pre class="block">{esc(outcome)}</pre>')},
-        {"num": "8", "title": "合并", "do": "两段正文合成一份最终回答",
-         "reads": ["branch_results", "constraints", "user_message"],
-         "writes": ["response", "agent_used", "status"], "where": "复合意图 / 合并",
-         "detail": ("合并规则与降级",
-                    "<ul class='rules-ol'>"
-                    "<li>两个分支都 ok：主模型合成一份，必须保留真实商品名和行程事实，不得新增未经检索的数据</li>"
-                    "<li>任一分支 failed：直接兜底，固定「【购物推荐】/【旅行计划】」两段，原样拼分支正文</li>"
-                    "<li>合成模型异常：同样兜底，并抛一条 error 事件</li></ul>"
-                    + (merge_prompt or ""))},
-        {"num": "9", "title": "收束", "do": "写短期记忆，发 done",
-         "reads": ["response", "classification"], "writes": ["status"],
-         "where": "顶层主图 / 收束",
-         "detail": ("收束做什么",
-                    "<p>短期记忆追加一条 assistant 消息；<code>done</code> 事件里的 response 就是最终答案。"
-                    "并行阶段两个分支各自往流里写过 token，最终以 done 的 response 为准。</p>")},
-        {"num": "10", "title": "记忆", "do": "抽取候选记忆，等审批",
-         "reads": ["user_id", "session_id", "excluded_memories"],
-         "writes": ["memory_extraction"], "where": "顶层主图 / 记忆提取",
-         "detail": ("记忆怎么处理",
-                    "<p>候选列表先展示给用户，审批通过后才写长期记忆；提取失败只记录 diagnostic，"
-                    "不影响已经生成的回答。</p>")},
-    ]
-
-    # 字段来源：先出现的写字段，作为后续读的出处
-    writer: Dict[str, str] = {}
-    for row in rows:
-        row["read_where"] = {}
-        for key in row["reads"]:
-            row["read_where"][key] = writer.get(key, PARENT_SOURCES.get(key, "更早的输入"))
-        for key in row["writes"]:
-            writer.setdefault(key, f'{row["num"]} {row["title"]}')
-
-    body_rows = []
-    for row in rows:
-        num = row["num"]
-        read_html = " ".join(
-            chip(key, "read", row["read_where"].get(key, "")) for key in row["reads"]
-        ) or '<span class="muted">—</span>'
-        write_html = chips(row["writes"], "write", row["where"])
-        detail_id = f"d-{num.replace('.', '-')}"
-        has_detail = "detail" in row
-        cls = "flow-row branch hidden" if row.get("branch") else "flow-row"
-        toggle = (
-            f'<button class="row-toggle" data-target="{detail_id}" aria-label="详情">+</button>'
-            if has_detail else ""
-        )
-        body_rows.append(
-            f'<tr class="{cls}" data-step="{esc(num)}">'
-            f'<td class="num">{esc(num)}</td>'
-            f'<td class="stepname">{toggle}<span>{esc(row["title"])}</span></td>'
-            f'<td class="do">{esc(row["do"])}</td>'
-            f'<td class="reads">{read_html}</td>'
-            f'<td class="writes">{write_html}</td></tr>'
-        )
-        if has_detail:
-            title, content = row["detail"]
-            body_rows.append(
-                f'<tr class="detail-row" data-detail="{detail_id}" hidden>'
-                f'<td colspan="5"><div class="detail-inner"><div class="detail-title">{esc(title)}</div>'
-                f"{content}</div></td></tr>"
-            )
-
-    branch_count = sum(1 for row in rows if row.get("branch"))
+    body = "".join(
+        f"<tr><td class='k'><code>{esc(name)}</code></td><td>{esc(title)}</td>"
+        f"<td>{esc(rule)}</td><td class='muted'>{esc(tools)}</td></tr>"
+        for name, title, rule, tools in rows
+    )
     return (
-        '<section class="graph active scenario" data-graph="scenario">'
-        '<div class="story-intro"><b>购物 + 旅行</b>：一屏看完整条链。'
-        '悬停任意字段，它的写入处和所有读取处会同时高亮；点行首「+」看该步细节。'
-        '标「示例」的是说明用值。节点、边、读写字段、提示词是自动抽取的；字段含义与示例是人工注释，改代码后跑 --check 会报告不同步的地方。</div>'
-        '<div class="table-tools">'
-        f'<button class="btn" id="toggle-branch">展开 {branch_count} 个子图步骤</button>'
-        '<span class="muted">字段含义：悬停可见；点字段可跳到写入处</span>'
-        "</div>"
-        '<table class="flowtbl"><thead><tr>'
-        '<th class="c-num">#</th><th class="c-step">步骤</th><th class="c-do">做什么</th>'
-        '<th class="c-read">读</th><th class="c-write">写</th>'
-        "</tr></thead><tbody>"
-        + "".join(body_rows)
-        + "</tbody></table></section>"
+        "<section>"
+        "<h2>场景 · 五个 Agent 怎么分流</h2>"
+        "<p class='muted' style='margin:0 0 8px'>顶层图只有五个业务节点；"
+        "travel 与 trip_gear 共用同一张行程图，差别只有装备段（<code>with_gear</code>）。</p>"
+        "<table class='tbl'><thead><tr><th style='width:150px'>节点</th>"
+        "<th style='width:190px'>什么时候进</th><th>判据</th><th style='width:300px'>工具面</th>"
+        f"</tr></thead><tbody>{body}</tbody></table>"
+        "<p class='muted' style='margin:10px 0 0'>"
+        "购物 + 旅行同时就绪时：要排行程就进 <code>trip_gear</code>（它本来就含商品检索），"
+        "旅行那半只是顺口一问则按主意图走。</p>"
+        "</section>"
     )
 
 
 def render_html(modules: Dict[str, Dict[str, Any]], graphs: Dict[str, Dict[str, Any]],
                 panels_html: str, fn_index: Dict[str, List[Tuple[str, Dict[str, Any]]]],
                 prompt_index: Dict[str, List[Dict[str, Any]]]) -> str:
-    order = ["turn", "memory", "shopping", "travel", "travel_plan", "trip_gear",
-             "trip_gear_plan", "composite", "general_plan", "react", "general_chat",
-             "customer_service"]
+    order = ["turn", "memory", "shopping", "travel", "trip_gear",
+             "trip_gear_plan", "customer_service"]
     ordered = [graphs[key] for key in order if key in graphs]
     ordered += [graph for key, graph in graphs.items() if graph not in ordered]
 

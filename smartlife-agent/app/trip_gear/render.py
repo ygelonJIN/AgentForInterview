@@ -71,6 +71,8 @@ def render(
     issues: List[Issue],
     ambiguous_owned: Optional[List[str]] = None,
     spend: Optional[Dict[str, Any]] = None,
+    *,
+    with_gear: bool = True,
 ) -> str:
     lines: List[str] = []
 
@@ -102,26 +104,29 @@ def render(
     need = [item for item in gear if item.status == "need_buy"]
     skipped = [item for item in gear if item.status == "skipped"]
 
-    lines.append("")
-    lines.append("## 装备清单")
-    if owned:
-        lines.append("**已有**")
-        lines.extend(_gear_line(item, products) for item in owned)
-    if need:
-        lines.append("**待购**")
-        lines.extend(_gear_line(item, products) for item in need)
-    if skipped:
-        names = "、".join(item.name for item in skipped)
-        lines.append(f"**已按预算省略**：{names}")
-    budget_blocked = [item for item in need if "预算不足" in (item.reason or "")]
-    if budget_blocked:
-        lines.append("**预算不足，未选款**：" + "、".join(item.name for item in budget_blocked))
+    # travel 与 trip_gear 共用这套正文：没有装备段时整节不出现，
+    # 不留一个空标题让用户以为清单被漏掉了。
+    if with_gear:
+        lines.append("")
+        lines.append("## 装备清单")
+        if owned:
+            lines.append("**已有**")
+            lines.extend(_gear_line(item, products) for item in owned)
+        if need:
+            lines.append("**待购**")
+            lines.extend(_gear_line(item, products) for item in need)
+        if skipped:
+            names = "、".join(item.name for item in skipped)
+            lines.append(f"**已按预算省略**：{names}")
+        budget_blocked = [item for item in need if "预算不足" in (item.reason or "")]
+        if budget_blocked:
+            lines.append("**预算不足，未选款**：" + "、".join(item.name for item in budget_blocked))
 
     trip = total_cost(itinerary)
     equipment, _unknown = gear_cost(gear, products)
     equipment_label = _money(equipment)
     total = round(trip + equipment, 2)
-    if ambiguous_owned:
+    if with_gear and ambiguous_owned:
         lines.append("")
         lines.append("## 待确认")
         lines.append(
@@ -134,7 +139,10 @@ def render(
     lines.append("")
     lines.append("## 预算与校验")
     if facts.budget is None:
-        lines.append(f"行程 {_money(trip)} + 装备 {equipment_label} = {_money(total)}（未设置预算）")
+        if with_gear:
+            lines.append(f"行程 {_money(trip)} + 装备 {equipment_label} = {_money(total)}（未设置预算）")
+        else:
+            lines.append(f"行程 {_money(trip)}（未设置预算）")
     elif facts.budget_scope == "trip_only":
         lines.append(
             f"行程 {_money(trip)}（预算 {_money(facts.budget)}，不含装备）"
@@ -152,10 +160,15 @@ def render(
                 tail += f"（预算的 {ratio:.0%}）"
         else:
             tail = f"超出 {_money(-remaining)}"
-        lines.append(
-            f"行程 {_money(trip)} + 装备 {equipment_label} = {_money(total)}"
-            f" / 预算 {_money(facts.budget)}（含装备），{tail}"
-        )
+        if with_gear:
+            lines.append(
+                f"行程 {_money(trip)} + 装备 {equipment_label} = {_money(total)}"
+                f" / 预算 {_money(facts.budget)}（含装备），{tail}"
+            )
+        else:
+            lines.append(
+                f"行程 {_money(trip)} / 预算 {_money(facts.budget)}，{tail}"
+            )
         upgrades = list((spend or {}).get("upgrades") or [])
         if upgrades:
             lines.append(f"为用满预算做了 {len(upgrades)} 处升级：")

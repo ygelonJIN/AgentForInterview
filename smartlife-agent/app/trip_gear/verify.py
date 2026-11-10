@@ -302,12 +302,18 @@ def _check_purchases(
     return issues
 
 
+# 这些约束只有在"有装备清单"时才有判定意义（travel 不带装备段）。
+_GEAR_DEPENDENT_KEYS = {"gear_budget", "with_kids", "sleeping_bag_temp", "rain"}
+
+
 def check_constraints(
     facts: TripFacts,
     constraints: List[Constraint],
     itinerary: Itinerary,
     gear: List[GearItem],
     products: Dict[str, Dict[str, Any]],
+    *,
+    with_gear: bool = True,
 ) -> List[Issue]:
     """按 key 逐条核对约束，回写 status 并返回违规 issue。"""
     issues: List[Issue] = []
@@ -321,6 +327,10 @@ def check_constraints(
         key = constraint.key
         if not key:
             # 没有 key 的是纯展示条目（如自由文本补充），不参与自动判定。
+            continue
+        if not with_gear and key in _GEAR_DEPENDENT_KEYS:
+            # 装备段整体不在这条链路上，相关约束标"未校验"而不是判违规。
+            constraint.status = "unverified"
             continue
 
         if key == "destination":
@@ -413,6 +423,8 @@ def verify(
     products: Dict[str, Dict[str, Any]],
     today: Optional[Any] = None,
     find_alternatives: Optional[Any] = None,
+    *,
+    with_gear: bool = True,
 ) -> List[Issue]:
     """全面校验。
 
@@ -423,7 +435,9 @@ def verify(
         constraint.status = "ok"
 
     # 1. 逐条约束核对
-    issues = check_constraints(facts, constraints, itinerary, gear, products)
+    issues = check_constraints(
+        facts, constraints, itinerary, gear, products, with_gear=with_gear
+    )
 
     # 每晚住宿预算：内部按人均计价，这里也按人均比，避免"两人一间"被算成两倍
     if facts.lodging_budget is not None:
@@ -451,7 +465,7 @@ def verify(
 
     # 2. 没选到商品的装备如实披露；但要分清"库里没有"和"预算不够"，
     #    否则用户会以为商品库缺货，实际是自己给的钱不够。
-    _, unknown = gear_cost(gear, products)
+    _, unknown = gear_cost(gear, products) if with_gear else (0.0, [])
     by_name = {item.name: item for item in gear}
     for name in unknown:
         reason = (by_name.get(name).reason if by_name.get(name) else "") or ""
@@ -488,7 +502,7 @@ def verify(
             )
 
     # 5. 露营必备装备
-    if facts.is_camping:
+    if with_gear and facts.is_camping:
         names = _known_gear_names(gear)
         for required in ("帐篷", "睡袋", "防潮垫"):
             if required not in names:
@@ -499,14 +513,15 @@ def verify(
                     )
                 )
 
-    # 6. 规格核对：有这件东西不等于够用
-    issues.extend(_check_specs(facts, gear, products, constraints))
+    if with_gear:
+        # 6. 规格核对：有这件东西不等于够用
+        issues.extend(_check_specs(facts, gear, products, constraints))
 
-    # 7. 采购可履约：买得到、来得及
-    issues.extend(
-        _check_purchases(
-            facts, gear, products, today=today, find_alternatives=find_alternatives
+        # 7. 采购可履约：买得到、来得及
+        issues.extend(
+            _check_purchases(
+                facts, gear, products, today=today, find_alternatives=find_alternatives
+            )
         )
-    )
 
     return issues

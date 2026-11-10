@@ -58,17 +58,6 @@ class CompositePlan(BaseModel):
     evidence_sources: List[str] = Field(default_factory=list)
 
 
-class BranchOutcome(BaseModel):
-    name: str
-    status: str
-    response: str = ""
-    error: str = ""
-
-    @property
-    def ok(self) -> bool:
-        return self.status == "ok" and not self.error
-
-
 def parse_budget(text: str) -> Optional[float]:
     """兼容旧入口：解析文本里的总预算。"""
     return parse_budget_slot(text)
@@ -126,13 +115,4 @@ def build_composite_plan(message: str, today=None) -> CompositePlan:
             SubTask(intent="travel", instruction=travel_subtask, constraints=constraints),
         ],
         evidence_sources=["sql", "rag", "local_guides", "weather", "route", "memory"],
-    )
-
-
-def branch_outcome(name: str, response: str = "", error: str = "") -> BranchOutcome:
-    return BranchOutcome(
-        name=name,
-        status="ok" if not error else "failed",
-        response=response or "",
-        error=error or "",
     )

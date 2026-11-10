@@ -93,12 +93,7 @@ def _is_gear_plan(classification: Dict[str, Any]) -> bool:
 
 
 def _is_trip_plan(classification: Dict[str, Any]) -> bool:
-    """多天行程规划也交给 trip_gear。
-
-    面板（约束/行程/装备/预算/校验）不是一套可以贴到任何回答上的样式，
-    它需要结构化结果。travel 子图只产出正文，同样的请求在它那里永远没有
-    面板；把规划类请求收敛到 trip_gear，用户看到的格式才一致。
-    """
+    """多天行程规划：travel 与 trip_gear 共用同一套面板，只是装备段不同。"""
     return (
         str(classification.get("intent") or "") == "travel"
         and str(classification.get("sub_intent") or "") == "plan_trip"
@@ -106,32 +101,88 @@ def _is_trip_plan(classification: Dict[str, Any]) -> bool:
     )
 
 
-def route(state: TurnState) -> str:
-    """条件边：把分类结果翻译成下一个节点名。"""
+ROUTE_KEYS = {"shopping", "travel", "trip_gear", "general", "customer_service"}
+
+
+def _all_agent_ids() -> set:
+    try:
+        from app.agents.specs import AGENT_SPECS
+
+        return set(AGENT_SPECS)
+    except Exception:
+        return set()
+
+
+def _installed_agent_for_intent(intent: str) -> str:
+    try:
+        from app.agents.specs import agent_for_intent
+
+        return agent_for_intent(intent)
+    except Exception:
+        return ""
+
+# 出现这些词说明用户要的是"行程 + 装备协同"，不只是排行程。
+# 词表迟早要并进 nlu/lexicon.py；先放在这里，是因为它决定的是路由而不是解析。
+_GEAR_SCENE_HINTS = (
+    "露营", "扎营", "装备", "清单", "带什么", "带啥", "徒步", "穿越", "登山",
+)
+
+
+def _wants_gear(message: str) -> bool:
+    text = str(message or "")
+    return any(term in text for term in _GEAR_SCENE_HINTS)
+
+
+def _route_target(state: TurnState) -> str:
+    """条件边：把分类结果翻译成下一个节点名。
+
+    口径：trip_gear = 行程 + 装备（购物能力在其中），travel = 同一张图剥掉装备段。
+    """
+    forced = str(state.get("forced_agent") or "").strip().lower()
+    if forced in ROUTE_KEYS or forced in _all_agent_ids():
+        # MCP 的 run 工具 / 导入的 Agent：点名优先，分类照跑（留证据）。
+        return forced
+
     classification = state.get("classification") or {}
     intent = classification.get("intent", "general")
     route_name = classification.get("route", "react")
     intents = set(classification.get("intents") or [intent])
-    if _is_gear_plan(classification):
+    message = str(state.get("user_message") or "")
+
+    if _is_gear_plan(classification) or _wants_gear(message):
         return "trip_gear"
-    # 购物 + 旅行是复合请求，先走 composite；只有纯旅行的规划才收敛到 trip_gear。
+    # 购物 + 旅行同时就绪：要排行程就由 trip_gear 一次算完（它本来就含商品检索）；
+    # 旅行那半只是顺口一问（"顺便问下三亚天气"）时按主意图走，不强行拉成行程。
     if {"shopping", "travel"}.issubset(intents):
-        return "composite"
+        if route_name == "plan_and_execute" or _wants_gear(message):
+            return "trip_gear"
+        return "shopping" if intent == "shopping" else "travel"
     if _is_trip_plan(classification) and intents <= {"travel"}:
-        return "trip_gear"
+        return "travel"
     if intent == "shopping":
         return "shopping"
     if intent == "customer_service":
         return "customer_service"
     if intent == "travel":
         return "travel"
-    if intent == "general":
-        if route_name == "react":
-            return "react"
-        if route_name == "plan_and_execute":
-            return "general_plan"
-        return "general_chat"
-    return "general_chat"
+    # 导入的 Agent 可以声明自己的意图入口（AgentSpec.intent）
+    installed = _installed_agent_for_intent(intent)
+    if installed:
+        return installed
+    return "general"
+
+
+def route(state: TurnState) -> str:
+    """入口兜底：被禁用的 Agent 不接客，回退到 general。"""
+    target = _route_target(state)
+    try:
+        from app.agents.config import is_enabled
+
+        if target in ROUTE_KEYS and not is_enabled(target):
+            return "general"
+    except Exception:
+        return target
+    return target
 
 
 async def finalize(state: TurnState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:

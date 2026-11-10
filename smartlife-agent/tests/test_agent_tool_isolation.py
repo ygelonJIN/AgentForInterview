@@ -6,7 +6,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from app.graphs.context import TurnContext
-from app.graphs.subgraphs.react import build_react_graph, initial_react_state
+from app.graphs.subgraphs.general import build_general_graph, initial_general_state
 from app.mcp_servers.protocol_server import build_mcp_server
 from app.tools.agent_capabilities import (
     AGENT_TOOL_POLICIES,
@@ -28,7 +28,9 @@ def test_shopping_and_travel_tool_policies_are_disjoint_and_complete():
     assert get_agent_tool_policy("shopping").tool_names.isdisjoint(
         get_agent_tool_policy("travel").tool_names
     )
-    assert set(AGENT_TOOL_POLICIES) == {"shopping", "travel", "general"}
+    assert set(AGENT_TOOL_POLICIES) == {
+        "shopping", "travel", "trip_gear", "general", "customer_service"
+    }
 
 
 def test_agent_registry_plug_in_exposes_only_its_tools():
@@ -42,7 +44,6 @@ def test_agent_registry_plug_in_exposes_only_its_tools():
     assert travel_names == {
         "search_destinations",
         "get_local_activities",
-        "plan_itinerary",
         "get_weather",
         "get_weather_forecast",
         "get_air_quality",
@@ -118,8 +119,8 @@ def test_model_tool_call_cannot_cross_agent_boundary():
     ctx = TurnContext(services=_Services(), trace_id="isolation").with_extra(
         agent_id="shopping", actor_id="user_001"
     )
-    result = asyncio.run(build_react_graph().ainvoke(
-        initial_react_state([HumanMessage(content="越权调用")], max_steps=3, tool_timeout=1.0),
+    result = asyncio.run(build_general_graph().ainvoke(
+        initial_general_state([HumanMessage(content="越权调用")], max_steps=3, tool_timeout=1.0),
         context=ctx,
     ))
 

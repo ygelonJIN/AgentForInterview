@@ -5,12 +5,9 @@ from types import SimpleNamespace
 
 from langchain_core.runnables import RunnableLambda
 
-from app.graphs.plan_models import GeneralPlanStep, GeneralTaskPlan
 from app.graphs.subgraphs.customer_service import build_customer_service_graph
-from app.graphs.subgraphs.general_plan import build_general_plan_graph
 from app.services.task_models import build_composite_plan, extract_shared_constraints
 from app.graphs.context import TurnContext
-from app.graphs.subgraphs.travel import build_travel_plan_graph
 from app.tools.shopping_tools import GetOrderStatusInput, ShoppingToolProvider
 
 
@@ -64,154 +61,6 @@ def test_customer_service_graph_reads_only_actor_orders():
     assert "订单已完成" in result["response"]
 
 
-def test_general_plan_graph_executes_tools_and_synthesizes():
-    calls = []
-
-    async def planner(request, context, previous_plan=None, feedback=None):
-        return GeneralTaskPlan(
-            summary="任务计划",
-            steps=[
-                GeneralPlanStep(title="查时间", instruction="获取当前时间", tool_name="get_current_time", arguments={}),
-                GeneralPlanStep(title="整理", instruction="整理结果"),
-            ],
-        )
-
-    async def executor(step):
-        calls.append(step.tool_name)
-        return {"status": "completed", "result": "2026-10-08" if step.tool_name else "done"}
-
-    llm = RunnableLambda(lambda _: SimpleNamespace(content="最终任务结果"))
-
-    class Services:
-        def __init__(self):
-            self.llm = llm
-
-        def tools_for(self, actor_id, agent_id="general"):
-            return []
-
-    ctx = TurnContext(services=Services(), trace_id="plan").with_extra(
-        planner=planner, executor=executor
-    )
-    result = asyncio.run(build_general_plan_graph().ainvoke(
-        {"user_message": "制定今天的任务安排", "user_id": "user-001", "status": "started"},
-        context=ctx,
-    ))
-
-    assert calls == ["get_current_time", None]
-    assert result["response"] == "最终任务结果"
-
-
-def test_travel_plan_uses_tool_evidence_before_first_plan():
-    planner_contexts = []
-
-    async def planner(request, context, previous_plan=None, feedback=None, on_token=None):
-        planner_contexts.append(context)
-        return "第1天：A"
-
-    async def reflector(request, plan):
-        return {"is_satisfactory": True}
-
-    async def executor(step, state):
-        return {"status": "completed", "result": f"真实证据:{step['id']}"}
-
-    class _TravelService:
-        def _build_plan_context(self, *_args, **_kwargs):
-            return "上下文"
-
-        @staticmethod
-        def _remove_revision_notes(plan):
-            return plan
-
-    class _Services:
-        travel_service = _TravelService()
-        llm = None
-
-        def get_chat_history(self, thread_id):
-            return []
-
-    ctx = TurnContext(services=_Services(), trace_id="travel:evidence").with_extra(
-        planner=planner, reflector=reflector, executor=executor, max_revisions=0,
-    )
-    asyncio.run(build_travel_plan_graph().ainvoke(
-        {"user_message": "上海1天预算500元", "user_id": "user-1", "thread_id": "travel:evidence"},
-        context=ctx,
-    ))
-
-    assert len(planner_contexts) == 1
-    assert "真实工具证据" in planner_contexts[0]
-    assert "真实证据:evidence-weather" in planner_contexts[0]
-
-
-def test_composite_branch_failure_is_preserved_for_partial_merge():
-    """单分支失败时，另一分支结果仍进入最终正文。"""
-    from app.graphs.orchestrator import TurnGraph
-
-    class Services:
-        def __init__(self):
-            from tests.test_turn_graph import _Memory, _fake_llm
-
-            self.short_term_memory = _Memory()
-            self.llm = _fake_llm()
-            self.travel_service = SimpleNamespace(
-                plan_trip_streaming=_raise("travel unavailable"),
-                chat_streaming=_raise("travel unavailable"),
-            )
-            self.shopping_fails = True
-
-        async def classify(self, user_message, thread_id, queue):
-            from app.classifier import ClassificationResult
-
-            return ClassificationResult(
-                route="plan_and_execute",
-                intent="travel",
-                intents=["shopping", "travel"],
-                sub_intent="plan_trip",
-                retrieval="mixed",
-                confidence=1.0,
-                reason="test",
-            )
-
-        def get_chat_history(self, thread_id):
-            return []
-
-        async def begin_turn(self, user_message, thread_id):
-            self.short_term_memory.add_message(thread_id, "user", user_message)
-
-        async def finish_turn(self, thread_id, response, classification, queue):
-            self.short_term_memory.add_message(thread_id, "assistant", response)
-            await queue.emit_done({"response": response})
-
-        async def plan_shopping_retrieval(self, *_args, **_kwargs):
-            raise RuntimeError("shopping unavailable")
-
-        async def retrieve_shopping_context(self, *_args, **_kwargs):
-            raise RuntimeError("shopping unavailable")
-
-        async def generate_shopping_response(self, *_args, **_kwargs):
-            raise RuntimeError("shopping unavailable")
-
-        def validate_shopping_response(self, *_args, **_kwargs):
-            return None
-
-        async def synthesize_composite_response(self, message, shopping, travel, constraints, queue):
-            assert shopping["status"] == "failed"
-            # 失败原因来自真实异常，而不是“键取不到”的占位文案
-            assert "分支缺失" not in str(shopping.get("error"))
-            assert "分支缺失" not in str(travel.get("error"))
-            return "购物未完成；旅行计划：" + str(travel.get("response") or travel.get("error"))
-
-    async def run():
-        graph = TurnGraph(Services())
-        return [
-            line async for line in graph.process_streaming(
-                "推荐跑鞋并规划杭州两日游", "user-1", "browser-1"
-            )
-        ]
-
-    lines = asyncio.run(run())
-    assert any("购物未完成" in line for line in lines)
-
-
 def _raise(message):
     async def run(*_args, **_kwargs):
         raise RuntimeError(message)
@@ -237,19 +86,3 @@ def test_shared_constraints_parse_wan_and_week():
     assert parse_days("半个月") == 15
 
 
-def test_branch_outcomes_keep_both_branches_by_name():
-    """BranchOutcome 字段是 name；合并后必须能按分支名取回两份结果。"""
-    from app.graphs.state import merge_branch_results
-    from app.graphs.subgraphs.composite import branch_outcomes
-    from app.services.task_models import branch_outcome
-
-    merged = merge_branch_results(
-        [branch_outcome("shopping", "推荐西装裤").model_dump()],
-        [branch_outcome("travel", "上海七日行程").model_dump()],
-    )
-    outcomes = branch_outcomes({"branch_results": merged})
-
-    assert set(outcomes) == {"shopping", "travel"}
-    assert outcomes["shopping"]["response"] == "推荐西装裤"
-    assert outcomes["travel"]["response"] == "上海七日行程"
-    assert outcomes["travel"]["status"] == "ok"

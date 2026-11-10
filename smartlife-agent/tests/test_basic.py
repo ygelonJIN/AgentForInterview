@@ -39,11 +39,10 @@ def test_travel_tool_provider():
     server = TravelToolProvider()
     tools = server.get_tools()
     
-    assert len(tools) == 3
+    assert len(tools) == 2
     tool_names = [tool.name for tool in tools]
     assert "search_destinations" in tool_names
     assert "get_local_activities" in tool_names
-    assert "plan_itinerary" in tool_names
 
 def test_memory_tool_provider():
     """测试 MemoryToolProvider"""

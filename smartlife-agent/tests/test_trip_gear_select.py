@@ -118,3 +118,44 @@ class TestSpecSchema:
     def test_候选区间计算(self):
         rows = [{"specs": {"weight_g": 300}}, {"specs": {"weight_g": 900}}]
         assert ranges_from(rows, "睡袋")["weight_g"] == (300, 900)
+
+
+class TestReviewTieBreak:
+    """评价只做平局裁决：分差够大时一次都不查，避免口碑稀释参数匹配。"""
+
+    def _twin(self, price=500):
+        return [
+            {"id": "1", "name": "帐篷A", "price": price, "rating": 4.5, "stock": 5},
+            {"id": "2", "name": "帐篷B", "price": price, "rating": 4.5, "stock": 5},
+        ]
+
+    def test_平局由真实评价裁决(self):
+        from app.trip_gear.select import pick
+
+        stats = {"1": {"rating": 3.8, "count": 30}, "2": {"rating": 4.7, "count": 12}}
+        best = pick(self._twin(), "帐篷", "帐篷", review_lookup=lambda pid: stats[pid])
+
+        assert best.product["name"] == "帐篷B"
+        assert "口碑平局裁决" in best.reason
+
+    def test_没有评价时保持打分结果(self):
+        from app.trip_gear.select import pick
+
+        best = pick(self._twin(), "帐篷", "帐篷", review_lookup=lambda _pid: {})
+        assert best.product["name"] == "帐篷A"
+
+    def test_分差够大时不查评价(self):
+        from app.trip_gear.select import pick
+
+        calls = []
+        candidates = [
+            {"id": "1", "name": "帐篷A", "price": 300, "rating": 4.8, "stock": 5},
+            {"id": "2", "name": "帐篷B", "price": 900, "rating": 3.6, "stock": 5},
+        ]
+        best = pick(
+            candidates, "帐篷", "帐篷",
+            review_lookup=lambda pid: calls.append(pid) or {"rating": 1.0, "count": 9},
+        )
+
+        assert calls == []
+        assert best.product["name"] == "帐篷A"

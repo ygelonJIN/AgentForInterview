@@ -50,6 +50,15 @@ async def generate(state: CustomerServiceState, runtime: Runtime[TurnContext]) -
         if chunk.content:
             full += str(chunk.content)
             await sink.emit_token(str(chunk.content), step="generate")
+    try:
+        from app.ui.blocks import order_blocks
+
+        await sink.emit("answer_blocks", {
+            "agent": "customer_service",
+            "blocks": order_blocks(orders, full),
+        }, step="generate")
+    except Exception:
+        pass
     return {"response": full, "status": "generated"}
 
 

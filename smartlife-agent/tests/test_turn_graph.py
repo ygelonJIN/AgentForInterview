@@ -120,26 +120,6 @@ def _run_graph(services, **overrides):
     return _events(asyncio.run(run()))
 
 
-def test_general_chat_subgraph_streams_tokens_and_returns_response():
-    from app.graphs.context import TurnContext
-    from app.graphs.subgraphs.general_chat import build_general_chat_graph
-
-    services = _FakeServices()
-    collected = []
-    ctx = TurnContext(services=services, trace_id="t1").bind_writer(collected.append)
-
-    async def run():
-        return await build_general_chat_graph().ainvoke(
-            {"user_message": "你好", "thread_id": "th1", "status": "started"},
-            context=ctx,
-        )
-
-    result = asyncio.run(run())
-    assert result["response"] == "你好"
-    assert any(event["event"] == "token" for event in collected)
-    assert any(event["event"] == "step" for event in collected)
-
-
 def test_shopping_subgraph_events_propagate_through_custom_stream():
     services = _FakeServices(intent="shopping", route="react")
     events = _run_graph(services)
@@ -151,20 +131,6 @@ def test_shopping_subgraph_events_propagate_through_custom_stream():
     ), "子图执行日志必须带 graph=shopping"
     done = next(event for event in events if event["event"] == "done")
     assert "跑鞋" in done["data"]["response"]
-
-
-def test_composite_intent_runs_parallel_branches_and_reduces():
-    services = _FakeServices(intent="shopping", route="react", intents=["shopping", "travel"])
-    # 复合分支里 travel 走服务桩
-    services.travel_service = SimpleNamespace(
-        plan_trip_streaming=_async_return("杭州两日"),
-        chat_streaming=_async_return("杭州两日"),
-    )
-    events = _run_graph(services)
-    done = next(event for event in events if event["event"] == "done")
-    # 关键：购物分支的正文必须真的传进合成，不能再退回“分支缺失”默认值
-    assert "合并[ok/" in done["data"]["response"]
-    assert "failed/failed" not in done["data"]["response"]
 
 
 def test_classification_is_recorded_in_state_not_in_orchestrator():
@@ -179,7 +145,8 @@ def test_turn_graph_builds_without_runtime_event_queue():
     graph = build_turn_graph()
     nodes = set(graph.get_graph().nodes)
     assert {"prepare", "classify", "finalize"} <= nodes
-    assert {"shopping", "travel", "trip_gear", "composite", "react", "general_chat"} <= nodes
+    assert {"shopping", "travel", "trip_gear", "general", "customer_service"} <= nodes
+    assert not {"composite", "general_chat", "general_plan", "react"} & nodes
 
 
 def test_node_lifecycle_comes_from_native_tasks_stream():

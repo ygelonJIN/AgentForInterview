@@ -5,7 +5,7 @@ import asyncio
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from app.graphs.context import TurnContext
-from app.graphs.subgraphs.react import build_react_graph, initial_react_state
+from app.graphs.subgraphs.general import build_general_graph, initial_general_state
 from app.observability import get_trace_recorder
 
 
@@ -60,13 +60,13 @@ def _run(model, tools, *, max_steps=4, tool_timeout=1.0, agent_id=None, trace_id
     if agent_id:
         extra["agent_id"] = agent_id
     ctx = TurnContext(services=_Services(model, tools), trace_id=trace_id).with_extra(**extra)
-    state = initial_react_state(
+    state = initial_general_state(
         [HumanMessage(content="查询回显")],
         trace_id=trace_id,
         max_steps=max_steps,
         tool_timeout=tool_timeout,
     )
-    return asyncio.run(build_react_graph().ainvoke(state, context=ctx))
+    return asyncio.run(build_general_graph().ainvoke(state, context=ctx))
 
 
 def test_react_graph_runs_tool_then_returns_final_answer():

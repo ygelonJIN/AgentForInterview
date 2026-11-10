@@ -100,20 +100,11 @@ def test_travel_tools_consume_activities_provider(monkeypatch):
         "city": "杭州",
         "date": "2026-10-10",
     })
-    plan = tools["plan_itinerary"].invoke({
-        "destination": "杭州",
-        "days": 2,
-        "budget": 1200,
-        "interests": ["骑行"],
-    })
-
     assert any(item["city"] == "杭州" for item in destinations)
     assert destinations[0]["source"] == "local_destination_catalog"
     assert activities[0]["source"] == "fake-activities"
     assert activities[0]["available"] is True
     assert [item["title"] for item in activities[0]["activities"]] == ["西湖", "中国茶叶博物馆"]
-    assert plan["source"] == "local_activity_planner"
-    assert len(plan["itinerary"]) == 2
     assert "search_hotels" not in tools
 
 
@@ -176,7 +167,7 @@ def test_current_registry_excludes_hotel_tool():
     all_names = [tool.name for tool in get_all_tools(actor_id="user_001")]
 
     assert {"search_products", "get_product_reviews", "get_order_status"} <= set(safe_names)
-    assert {"search_destinations", "get_local_activities", "plan_itinerary"} <= set(safe_names)
+    assert {"search_destinations", "get_local_activities"} <= set(safe_names)
     assert "search_hotels" not in safe_names
     assert "search_hotels" not in all_names
     assert "save_preference" not in safe_names

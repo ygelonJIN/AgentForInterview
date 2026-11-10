@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-06T17:40:14",
+  "generated_at": "2026-11-10T18:19:21",
   "graphs": [
     {
       "id": "memory",
@@ -40,6 +40,11 @@
           "fn": "classify",
           "subgraph": ""
         },
+        "finalize": {
+          "id": "finalize",
+          "fn": "finalize",
+          "subgraph": ""
+        },
         "shopping": {
           "id": "shopping",
           "fn": "",
@@ -55,35 +60,15 @@
           "fn": "",
           "subgraph": "trip_gear"
         },
-        "composite": {
-          "id": "composite",
+        "general": {
+          "id": "general",
           "fn": "",
-          "subgraph": "composite"
+          "subgraph": "general"
         },
         "customer_service": {
           "id": "customer_service",
           "fn": "",
           "subgraph": "customer_service"
-        },
-        "general_plan": {
-          "id": "general_plan",
-          "fn": "",
-          "subgraph": "general_plan"
-        },
-        "react": {
-          "id": "react",
-          "fn": "",
-          "subgraph": "react"
-        },
-        "general_chat": {
-          "id": "general_chat",
-          "fn": "",
-          "subgraph": "general_chat"
-        },
-        "finalize": {
-          "id": "finalize",
-          "fn": "finalize",
-          "subgraph": ""
         }
       },
       "edges": [
@@ -100,51 +85,15 @@
           "conditional": false
         },
         {
+          "src": "finalize",
+          "dst": "__end__",
+          "label": "",
+          "conditional": false
+        },
+        {
           "src": "classify",
           "dst": "shopping",
           "label": "shopping",
-          "conditional": true
-        },
-        {
-          "src": "classify",
-          "dst": "travel",
-          "label": "travel",
-          "conditional": true
-        },
-        {
-          "src": "classify",
-          "dst": "trip_gear",
-          "label": "trip_gear",
-          "conditional": true
-        },
-        {
-          "src": "classify",
-          "dst": "composite",
-          "label": "composite",
-          "conditional": true
-        },
-        {
-          "src": "classify",
-          "dst": "customer_service",
-          "label": "customer_service",
-          "conditional": true
-        },
-        {
-          "src": "classify",
-          "dst": "general_plan",
-          "label": "general_plan",
-          "conditional": true
-        },
-        {
-          "src": "classify",
-          "dst": "react",
-          "label": "react",
-          "conditional": true
-        },
-        {
-          "src": "classify",
-          "dst": "general_chat",
-          "label": "general_chat",
           "conditional": true
         },
         {
@@ -154,10 +103,22 @@
           "conditional": false
         },
         {
+          "src": "classify",
+          "dst": "travel",
+          "label": "travel",
+          "conditional": true
+        },
+        {
           "src": "travel",
           "dst": "finalize",
           "label": "",
           "conditional": false
+        },
+        {
+          "src": "classify",
+          "dst": "trip_gear",
+          "label": "trip_gear",
+          "conditional": true
         },
         {
           "src": "trip_gear",
@@ -166,91 +127,26 @@
           "conditional": false
         },
         {
-          "src": "composite",
+          "src": "classify",
+          "dst": "general",
+          "label": "general",
+          "conditional": true
+        },
+        {
+          "src": "general",
           "dst": "finalize",
           "label": "",
           "conditional": false
+        },
+        {
+          "src": "classify",
+          "dst": "customer_service",
+          "label": "customer_service",
+          "conditional": true
         },
         {
           "src": "customer_service",
           "dst": "finalize",
-          "label": "",
-          "conditional": false
-        },
-        {
-          "src": "general_plan",
-          "dst": "finalize",
-          "label": "",
-          "conditional": false
-        },
-        {
-          "src": "react",
-          "dst": "finalize",
-          "label": "",
-          "conditional": false
-        },
-        {
-          "src": "general_chat",
-          "dst": "finalize",
-          "label": "",
-          "conditional": false
-        },
-        {
-          "src": "finalize",
-          "dst": "__end__",
-          "label": "",
-          "conditional": false
-        }
-      ]
-    },
-    {
-      "id": "composite",
-      "module": "app/graphs/subgraphs/composite.py",
-      "nodes": {
-        "shopping_branch": {
-          "id": "shopping_branch",
-          "fn": "shopping_branch",
-          "subgraph": ""
-        },
-        "travel_branch": {
-          "id": "travel_branch",
-          "fn": "travel_branch",
-          "subgraph": ""
-        },
-        "synthesize": {
-          "id": "synthesize",
-          "fn": "synthesize",
-          "subgraph": ""
-        }
-      },
-      "edges": [
-        {
-          "src": "__start__",
-          "dst": "shopping_branch",
-          "label": "",
-          "conditional": false
-        },
-        {
-          "src": "__start__",
-          "dst": "travel_branch",
-          "label": "",
-          "conditional": false
-        },
-        {
-          "src": "shopping_branch",
-          "dst": "synthesize",
-          "label": "",
-          "conditional": false
-        },
-        {
-          "src": "travel_branch",
-          "dst": "synthesize",
-          "label": "",
-          "conditional": false
-        },
-        {
-          "src": "synthesize",
-          "dst": "__end__",
           "label": "",
           "conditional": false
         }
@@ -293,108 +189,8 @@
       ]
     },
     {
-      "id": "general_chat",
-      "module": "app/graphs/subgraphs/general_chat.py",
-      "nodes": {
-        "generate": {
-          "id": "generate",
-          "fn": "generate",
-          "subgraph": ""
-        }
-      },
-      "edges": [
-        {
-          "src": "__start__",
-          "dst": "generate",
-          "label": "",
-          "conditional": false
-        },
-        {
-          "src": "generate",
-          "dst": "__end__",
-          "label": "",
-          "conditional": false
-        }
-      ]
-    },
-    {
-      "id": "general_plan",
-      "module": "app/graphs/subgraphs/general_plan.py",
-      "nodes": {
-        "make_plan": {
-          "id": "make_plan",
-          "fn": "make_plan",
-          "subgraph": ""
-        },
-        "execute_steps": {
-          "id": "execute_steps",
-          "fn": "execute_steps",
-          "subgraph": ""
-        },
-        "validate": {
-          "id": "validate",
-          "fn": "validate",
-          "subgraph": ""
-        },
-        "revise": {
-          "id": "revise",
-          "fn": "revise",
-          "subgraph": ""
-        },
-        "finalize": {
-          "id": "finalize",
-          "fn": "finalize",
-          "subgraph": ""
-        }
-      },
-      "edges": [
-        {
-          "src": "__start__",
-          "dst": "make_plan",
-          "label": "",
-          "conditional": false
-        },
-        {
-          "src": "make_plan",
-          "dst": "execute_steps",
-          "label": "",
-          "conditional": false
-        },
-        {
-          "src": "execute_steps",
-          "dst": "validate",
-          "label": "",
-          "conditional": false
-        },
-        {
-          "src": "validate",
-          "dst": "revise",
-          "label": "revise",
-          "conditional": true
-        },
-        {
-          "src": "validate",
-          "dst": "finalize",
-          "label": "finalize",
-          "conditional": true
-        },
-        {
-          "src": "revise",
-          "dst": "execute_steps",
-          "label": "",
-          "conditional": false
-        },
-        {
-          "src": "finalize",
-          "dst": "__end__",
-          "label": "",
-          "conditional": false
-        }
-      ]
-    },
-    {
-      "id": "react",
-      "module": "app/graphs/subgraphs/react.py",
+      "id": "general",
+      "module": "app/graphs/subgraphs/general.py",
       "nodes": {
         "agent": {
           "id": "agent",
@@ -504,138 +300,13 @@
       ]
     },
     {
-      "id": "travel_plan",
-      "module": "app/graphs/subgraphs/travel.py",
-      "nodes": {
-        "build_context": {
-          "id": "build_context",
-          "fn": "build_context",
-          "subgraph": ""
-        },
-        "extract_requirements": {
-          "id": "extract_requirements",
-          "fn": "extract_requirements_node",
-          "subgraph": ""
-        },
-        "clarify": {
-          "id": "clarify",
-          "fn": "clarify",
-          "subgraph": ""
-        },
-        "build_steps": {
-          "id": "build_steps",
-          "fn": "build_steps",
-          "subgraph": ""
-        },
-        "execute_steps": {
-          "id": "execute_steps",
-          "fn": "execute_steps",
-          "subgraph": ""
-        },
-        "make_plan": {
-          "id": "make_plan",
-          "fn": "make_plan",
-          "subgraph": ""
-        },
-        "reflect": {
-          "id": "reflect",
-          "fn": "reflect",
-          "subgraph": ""
-        },
-        "revise": {
-          "id": "revise",
-          "fn": "revise",
-          "subgraph": ""
-        },
-        "finalize": {
-          "id": "finalize",
-          "fn": "finalize",
-          "subgraph": ""
-        }
-      },
-      "edges": [
-        {
-          "src": "__start__",
-          "dst": "build_context",
-          "label": "",
-          "conditional": false
-        },
-        {
-          "src": "build_context",
-          "dst": "extract_requirements",
-          "label": "",
-          "conditional": false
-        },
-        {
-          "src": "extract_requirements",
-          "dst": "clarify",
-          "label": "clarify",
-          "conditional": true
-        },
-        {
-          "src": "extract_requirements",
-          "dst": "build_steps",
-          "label": "build_steps",
-          "conditional": true
-        },
-        {
-          "src": "clarify",
-          "dst": "__end__",
-          "label": "",
-          "conditional": false
-        },
-        {
-          "src": "build_steps",
-          "dst": "execute_steps",
-          "label": "",
-          "conditional": false
-        },
-        {
-          "src": "execute_steps",
-          "dst": "make_plan",
-          "label": "",
-          "conditional": false
-        },
-        {
-          "src": "make_plan",
-          "dst": "reflect",
-          "label": "",
-          "conditional": false
-        },
-        {
-          "src": "reflect",
-          "dst": "revise",
-          "label": "revise",
-          "conditional": true
-        },
-        {
-          "src": "reflect",
-          "dst": "finalize",
-          "label": "finalize",
-          "conditional": true
-        },
-        {
-          "src": "revise",
-          "dst": "make_plan",
-          "label": "",
-          "conditional": false
-        },
-        {
-          "src": "finalize",
-          "dst": "__end__",
-          "label": "",
-          "conditional": false
-        }
-      ]
-    },
-    {
       "id": "travel",
       "module": "app/graphs/subgraphs/travel.py",
       "nodes": {
         "travel_plan": {
           "id": "travel_plan",
           "fn": "",
-          "subgraph": "travel_plan"
+          "subgraph": "trip_gear"
         },
         "travel_chat": {
           "id": "travel_chat",
@@ -689,21 +360,6 @@
           "fn": "plan",
           "subgraph": ""
         },
-        "gear": {
-          "id": "gear",
-          "fn": "gear",
-          "subgraph": ""
-        },
-        "owned": {
-          "id": "owned",
-          "fn": "owned",
-          "subgraph": ""
-        },
-        "shop": {
-          "id": "shop",
-          "fn": "shop",
-          "subgraph": ""
-        },
         "verify": {
           "id": "verify",
           "fn": "verify_node",
@@ -719,9 +375,29 @@
           "fn": "finalize",
           "subgraph": ""
         },
+        "gear": {
+          "id": "gear",
+          "fn": "gear",
+          "subgraph": ""
+        },
+        "owned": {
+          "id": "owned",
+          "fn": "owned",
+          "subgraph": ""
+        },
+        "shop": {
+          "id": "shop",
+          "fn": "shop",
+          "subgraph": ""
+        },
         "verify_clarify": {
           "id": "verify_clarify",
           "fn": "verify_clarify",
+          "subgraph": ""
+        },
+        "repair_confirm": {
+          "id": "repair_confirm",
+          "fn": "repair_confirm",
           "subgraph": ""
         }
       },
@@ -781,9 +457,21 @@
           "conditional": false
         },
         {
+          "src": "plan",
+          "dst": "verify",
+          "label": "",
+          "conditional": false
+        },
+        {
           "src": "verify",
           "dst": "repair",
           "label": "repair",
+          "conditional": true
+        },
+        {
+          "src": "verify",
+          "dst": "repair_confirm",
+          "label": "repair_confirm",
           "conditional": true
         },
         {
@@ -797,6 +485,12 @@
           "dst": "finalize",
           "label": "finalize",
           "conditional": true
+        },
+        {
+          "src": "repair_confirm",
+          "dst": "verify",
+          "label": "",
+          "conditional": false
         },
         {
           "src": "verify_clarify",
@@ -830,11 +524,11 @@
       "nodes": {
         "prepare": {
           "id": "prepare",
-          "fn": "prepare",
+          "fn": "",
           "subgraph": ""
         },
-        "trip_gear": {
-          "id": "trip_gear",
+        "trip": {
+          "id": "trip",
           "fn": "",
           "subgraph": "trip_gear_plan"
         }
@@ -848,12 +542,12 @@
         },
         {
           "src": "prepare",
-          "dst": "trip_gear",
+          "dst": "trip",
           "label": "",
           "conditional": false
         },
         {
-          "src": "trip_gear",
+          "src": "trip",
           "dst": "__end__",
           "label": "",
           "conditional": false
@@ -865,11 +559,11 @@
     {
       "name": "_CLASSIFY_PROMPT",
       "module": "app/classifier.py",
-      "lineno": 198,
+      "lineno": 229,
       "messages": [
         {
           "role": "system",
-          "text": "你是 SmartLife Agent 的分诊系统。分析用户消息，一次性返回分类结果。\n\n路由规则（route）：\n- \"react\": 单次查询、导购对话、客服问答、简单问答、单步操作\n- \"plan_and_execute\": 多步规划（行程、采购清单、预算分配）、跨场景任务、需要用户确认计划、复杂决策\n\n意图规则（intent）：\n- \"shopping\": 购物相关（商品搜索、导购、评价）\n- \"customer_service\": 客服相关（订单查询、退换货、投诉）\n- \"travel\": 旅游相关（行程规划、目的地推荐、酒店查询）\n- \"general\": 通用对话\n\n多意图规则：\n- 如果一句话明确包含两个独立任务（例如“推荐跑鞋，再制定杭州两天计划”），必须同时输出两个意图。\n- intent 放主意图；intents 放完整意图列表，最多两个；primary_intent 放主意图；intent_scores 给每个意图 0-1 分。\n- 两个意图都很明确时不要强行二选一。复合任务 route 通常使用 \"plan_and_execute\"。\n\n检索策略（retrieval）：\n- \"sql_only\": 查商品属性（价格、分类、品牌、库存、排序）\n- \"rag_only\": 查评价口碑、攻略内容、FAQ\n- \"mixed\": 同时需要商品数据和评价（大多数购物查询用这个）\n- \"none\": 仅用于纯闲聊、政策问答等不需要查数据的场景\n\n重要：只要涉及找商品、推荐商品、查价格，必须用 \"mixed\" 或 \"sql_only\"，绝不能用 \"none\"！\n\nsub_intent 取值：\n- 用户要的是\"出行清单/装备清单/带什么东西/行程加装备一起规划\"时，sub_intent 必须写 \"gear_plan\"；\n- 其他情况写一句不超过 8 字的简述（例如\"商品比价\"、\"订单售后\"）。\n\n严格返回JSON，不要其他文字：\n{{\"route\": \"...\", \"intent\": \"...\", \"intents\": [\"...\"], \"primary_intent\": \"...\", \"intent_scores\": {{\"...\": 0.X}}, \"sub_intent\": \"...\", \"retrieval\": \"...\", \"confidence\": 0.X, \"reason\": \"...\"}}"
+          "text": "你是 SmartLife Agent 的分诊系统。分析用户消息，一次性返回分类结果。\n\n路由规则（route）：\n- \"react\": 单次查询、导购对话、客服问答、简单问答、单步操作\n- \"plan_and_execute\": 多步规划（行程、采购清单、预算分配）、跨场景任务、需要用户确认计划、复杂决策\n\n意图规则（intent）：\n- \"shopping\": 购物相关（商品搜索、导购、评价）\n- \"customer_service\": 客服相关（订单查询、退换货、投诉）\n- \"travel\": 旅游相关（行程规划、目的地推荐、酒店查询）\n- \"general\": 通用对话\n{extra_intents}\n多意图规则：\n- 如果一句话明确包含两个独立任务（例如“推荐跑鞋，再制定杭州两天计划”），必须同时输出两个意图。\n- intent 放主意图；intents 放完整意图列表，最多两个；primary_intent 放主意图；intent_scores 给每个意图 0-1 分。\n- 两个意图都很明确时不要强行二选一。复合任务 route 通常使用 \"plan_and_execute\"。\n\n检索策略（retrieval）：\n- \"sql_only\": 查商品属性（价格、分类、品牌、库存、排序）\n- \"rag_only\": 查评价口碑、攻略内容、FAQ\n- \"mixed\": 同时需要商品数据和评价（大多数购物查询用这个）\n- \"none\": 仅用于纯闲聊、政策问答等不需要查数据的场景\n\n重要：只要涉及找商品、推荐商品、查价格，必须用 \"mixed\" 或 \"sql_only\"，绝不能用 \"none\"！\n\nsub_intent 取值：\n- 用户要的是\"出行清单/装备清单/带什么东西/行程加装备一起规划\"时，sub_intent 必须写 \"gear_plan\"；\n- 其他情况写一句不超过 8 字的简述（例如\"商品比价\"、\"订单售后\"）。\n\n严格返回JSON，不要其他文字：\n{{\"route\": \"...\", \"intent\": \"...\", \"intents\": [\"...\"], \"primary_intent\": \"...\", \"intent_scores\": {{\"...\": 0.X}}, \"sub_intent\": \"...\", \"retrieval\": \"...\", \"confidence\": 0.X, \"reason\": \"...\"}}"
         },
         {
           "role": "user",
@@ -880,7 +574,7 @@
     {
       "name": "_CLASSIFY_ARBITER_PROMPT",
       "module": "app/classifier.py",
-      "lineno": 233,
+      "lineno": 264,
       "messages": [
         {
           "role": "system",
@@ -908,58 +602,13 @@
       ]
     },
     {
-      "name": "prompt",
-      "module": "app/graphs/subgraphs/general_chat.py",
-      "lineno": 27,
-      "messages": [
-        {
-          "role": "system",
-          "text": "你是 SmartLife Agent 智能助手，帮助用户购物和旅行规划。用中文回复。友好、专业、简洁。"
-        },
-        {
-          "role": "user",
-          "text": "state['user_message']"
-        }
-      ]
-    },
-    {
-      "name": "prompt",
-      "module": "app/graphs/subgraphs/general_plan.py",
-      "lineno": 38,
-      "messages": [
-        {
-          "role": "system",
-          "text": "把复杂任务拆成可执行步骤。每一步只做一件事。\n如果步骤需要工具，使用 tool_name 和 JSON arguments；否则 tool_name 为 null。\n不得虚构外部事实。输出结构化计划。"
-        },
-        {
-          "role": "user",
-          "text": "任务：{request}\n\n上下文：{context}\n\n上一版：{previous}\n\n反馈：{feedback}"
-        }
-      ]
-    },
-    {
-      "name": "prompt",
-      "module": "app/graphs/subgraphs/general_plan.py",
-      "lineno": 155,
-      "messages": [
-        {
-          "role": "system",
-          "text": "根据计划和真实执行结果生成最终回答。失败步骤必须明确披露，不得编造。"
-        },
-        {
-          "role": "user",
-          "text": "任务：{request}\n\n计划与结果：\n{results}"
-        }
-      ]
-    },
-    {
       "name": "plan_prompt",
       "module": "app/services/travel_service.py",
       "lineno": 38,
       "messages": [
         {
           "role": "system",
-          "text": "你是一个旅行规划专家。根据用户需求制定详细的旅行计划。\n\n能力：\n1. 查询目的地天气\n2. 推荐景点和活动\n3. 规划行程路线\n4. 计算预算\n\n规划原则：\n1. 每天不超过3-4个景点，不要太赶\n2. 合理安排地理位置，避免来回跑\n3. 预留用餐和休息时间\n4. 考虑天气因素\n5. 控制在预算范围内\n\n实时事实规则：\n1. 只有上下文中标记为【真实工具证据】的天气、路线数据可以当作事实引用；\n2. 没有真实天气证据时，明确说明“未获取到可验证的实时天气”，不得使用模拟值、季节典型值或猜测温度冒充当前天气；\n3. 过期或来源不明的数据不得写成“当前”“实时”或确定价格。\n\n用户 Memory 规则：\n- 上下文中的用户偏好来自已保存的长期 Memory，可用于个性化；\n- 与本轮需求冲突时，以用户本轮明确要求为准。\n\n用中文回复，输出清晰、完整的最终行程正文。审核宽松，仅在严重硬错误时按需修订。不要输出版本说明、审核附注、改进说明或重复标题。"
+          "text": "你是一个旅行规划专家。根据用户需求制定详细的旅行计划。\n\n能力：\n1. 查询目的地天气\n2. 推荐景点和活动\n3. 规划行程路线\n4. 计算预算\n\n规划原则：\n1. 每天不超过3-4个景点，不要太赶\n2. 合理安排地理位置，避免来回跑\n3. 预留用餐和休息时间\n4. 考虑天气因素\n5. 控制在预算范围内\n\n实时事实规则：\n1. 只有上下文中标记为【真实工具证据】的天气、路线数据可以当作事实引用；\n2. 没有真实天气证据时，明确说明“未获取到可验证的实时天气”，不得使用模拟值、季节典型值或猜测温度冒充当前天气；\n3. 过期或来源不明的数据不得写成“当前”“实时”或确定价格；\n4. 活动证据里只有**场所**（场馆、景点、公园），没有场次、档期和票价。不得声称某场馆“正在上演”某演出，只能说“可到官方渠道查档期”；用户问具体演出时如实说明拿不到，不要把常识当成当期排期。\n\n用户 Memory 规则：\n- 上下文中的用户偏好来自已保存的长期 Memory，可用于个性化；\n- 与本轮需求冲突时，以用户本轮明确要求为准。\n\n用中文回复，输出清晰、完整的最终行程正文。审核宽松，仅在严重硬错误时按需修订。不要输出版本说明、审核附注、改进说明或重复标题。"
         },
         {
           "role": "user",
@@ -970,7 +619,7 @@
     {
       "name": "reflect_prompt",
       "module": "app/services/travel_service.py",
-      "lineno": 67,
+      "lineno": 68,
       "messages": [
         {
           "role": "system",
@@ -985,7 +634,7 @@
     {
       "name": "revise_prompt",
       "module": "app/services/travel_service.py",
-      "lineno": 85,
+      "lineno": 86,
       "messages": [
         {
           "role": "system",
@@ -1000,7 +649,7 @@
     {
       "name": "chat_prompt",
       "module": "app/services/travel_service.py",
-      "lineno": 90,
+      "lineno": 91,
       "messages": [
         {
           "role": "system",
@@ -1015,7 +664,7 @@
     {
       "name": "general_prompt",
       "module": "app/services/turn_services.py",
-      "lineno": 83,
+      "lineno": 85,
       "messages": [
         {
           "role": "system",
@@ -1034,22 +683,7 @@
     {
       "name": "prompt",
       "module": "app/services/turn_services.py",
-      "lineno": 327,
-      "messages": [
-        {
-          "role": "system",
-          "text": "把购物建议与旅行计划综合成一份一致的最终回答。\n必须保留真实商品名和行程事实，不得新增未经检索的数据。\n统一检查预算、日期、人数和装备/活动是否冲突；失败时保留原分支正文并明确说明。"
-        },
-        {
-          "role": "user",
-          "text": "原始请求：{request}\n\n共享约束：\n{constraints}\n\n购物分支：\n{shopping}\n\n旅行分支：\n{travel}\n\n请输出最终中文回答。"
-        }
-      ]
-    },
-    {
-      "name": "prompt",
-      "module": "app/services/turn_services.py",
-      "lineno": 454,
+      "lineno": 401,
       "messages": [
         {
           "role": "system",
@@ -1128,7 +762,7 @@
     {
       "name": "plan_prompt",
       "module": "app/trip_gear/service.py",
-      "lineno": 120,
+      "lineno": 122,
       "messages": [
         {
           "role": "system",

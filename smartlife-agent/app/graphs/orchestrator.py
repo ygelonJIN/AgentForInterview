@@ -2,8 +2,8 @@
 
 节点组合方式：
 - 单场景 → 编译子图直接作为节点（custom 事件原生透传）
-- 复合意图 → 并行分支 + ``branch_results`` reducer 归约
 - 收束 → ``finalize`` 发 done；记忆提取作为独立图，不占关键路径
+- 复合请求不再并行：shopping + travel 的"买东西去玩"由 trip_gear 一次算完
 
 没有任何编排对象被 UI 直接调用；流式走 ``astream(stream_mode="custom")``。
 """
@@ -20,27 +20,19 @@ from app.graphs.events import to_sse
 from app.graphs.memory import MemoryExtractionRunner, MemoryCenter
 from app.graphs.nodes import classify, finalize, prepare, route
 from app.graphs.state import TurnState
-from app.graphs.subgraphs.composite import build_composite_graph
-from app.graphs.subgraphs.customer_service import build_customer_service_graph
-from app.graphs.subgraphs.general_chat import build_general_chat_graph
-from app.graphs.subgraphs.general_plan import build_general_plan_graph
-from app.graphs.subgraphs.react import build_react_graph
-from app.graphs.subgraphs.shopping import build_shopping_graph
-from app.graphs.subgraphs.travel import build_travel_graph
-from app.graphs.subgraphs.trip_gear import build_trip_gear_graph
+from app.agents.specs import iter_specs
 from app.observability import log_exception, new_trace_id, timed_span, trace_context, turn_usage
 from app.session import build_thread_id
 
-ROUTE_TARGETS = {
-    "shopping": "shopping",
-    "travel": "travel",
-    "trip_gear": "trip_gear",
-    "composite": "composite",
-    "customer_service": "customer_service",
-    "general_plan": "general_plan",
-    "react": "react",
-    "general_chat": "general_chat",
-}
+# 五个 Agent = 五个节点 = 五条工具白名单 = 五个 MCP Server。
+# 清单唯一来源是 app/agents/specs.py：加 Agent 只改那里 + 一条工具白名单。
+# travel 与 trip_gear 共用一套图，差别只有 with_gear。
+def route_targets() -> Dict[str, str]:
+    """节点 → 节点；导入的 Agent 也会出现在这里，所以每次建图时重新算。"""
+    return {spec.agent_id: spec.agent_id for spec in iter_specs()}
+
+
+ROUTE_TARGETS = route_targets()
 
 
 # 场景 → Agent 能力面。原来这里写死 "general"，导致 shopping / travel 两个
@@ -58,21 +50,16 @@ def build_turn_graph(checkpointer: Optional[Any] = None):
     graph = StateGraph(TurnState, context_schema=TurnContext)
     graph.add_node("prepare", prepare, timeout=5)
     graph.add_node("classify", classify, timeout=20)
-    graph.add_node("shopping", build_shopping_graph())
-    graph.add_node("travel", build_travel_graph())
-    graph.add_node("trip_gear", build_trip_gear_graph())
-    graph.add_node("composite", build_composite_graph())
-    graph.add_node("customer_service", build_customer_service_graph())
-    graph.add_node("general_plan", build_general_plan_graph())
-    graph.add_node("react", build_react_graph())
-    graph.add_node("general_chat", build_general_chat_graph())
+    for spec in iter_specs():
+        graph.add_node(spec.agent_id, spec.build())
     graph.add_node("finalize", finalize, timeout=10)
 
     graph.add_edge(START, "prepare")
     graph.add_edge("prepare", "classify")
-    graph.add_conditional_edges("classify", route, ROUTE_TARGETS)
-    for scene_node in ROUTE_TARGETS.values():
-        graph.add_edge(scene_node, "finalize")
+    targets = route_targets()
+    graph.add_conditional_edges("classify", route, targets)
+    for spec in iter_specs():
+        graph.add_edge(spec.agent_id, "finalize")
     # 记忆提取不进关键路径：由 UI 在流结束后单独跑 MemoryExtractionRunner，
     # 原来那条"state["extract_memory"] 为真才走"的分支从来没有被置真过。
     graph.add_edge("finalize", END)
@@ -117,6 +104,32 @@ class TurnGraph:
 
         async for chunk in self._stream_graph(payload, config, context, trace_id):
             yield chunk
+
+    async def invoke(
+        self,
+        user_message: str,
+        user_id: str,
+        session_id: str,
+        scene: str = "general",
+        agent: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """非流式一次调用，供 MCP / 外部系统使用；``agent`` 可点名入口。"""
+        thread_id = build_thread_id(user_id, scene, session_id)
+        trace_id = new_trace_id()
+        context = build_turn_context(self.services, trace_id).with_extra(
+            actor_id=user_id, agent_id=agent or _agent_id_for_scene(scene)
+        )
+        payload = {
+            "user_message": user_message,
+            "user_id": user_id,
+            "session_id": session_id,
+            "scene": scene,
+            "status": "started",
+        }
+        if agent:
+            payload["forced_agent"] = agent
+        config = {"configurable": {"thread_id": thread_id}}
+        return await self.graph.ainvoke(payload, config=config, context=context)
 
     async def resume_streaming(
         self,

@@ -189,6 +189,10 @@ class TripFacts(BaseModel):
     uv_index_max: Optional[float] = None
     aqi_max: Optional[float] = None
     weather_summary: str = ""
+    # 目的地时区：只有境外/跨时区行程才有值，境内留空（不写"时差 0 小时"）
+    timezone: str = ""
+    utc_offset: Optional[float] = None
+    time_diff_hours: Optional[float] = None
     # 用户点名的固定活动；booked 会钉进行程，planned 只是偏好
     fixed_events: List[FixedEvent] = Field(default_factory=list)
     # 用户表达了"想参加活动"的意向（没说具体哪场），影响行程内容取向

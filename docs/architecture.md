@@ -20,10 +20,10 @@
                     ┌──────────▼───────────┐
                     │ 条件边（原生）         │
                     └─┬────┬────┬────┬────┬─┘
-        ┌─────────────▼┐ ┌─▼──────┐ ┌▼─────────────┐ ┌▼──────────────┐
-        │ shopping     │ │ travel │ │ composite     │ │ customer /    │
-        │              │ │        │ │ （并行合并）   │ │ general / react│
-        └──────┬───────┘ └──┬─────┘ └──────┬────────┘ └──────┬────────┘
+        ┌─────────────┐ ┌────────┐ ┌───────────┐ ┌──────────────────┐
+        │ shopping    │ │ travel │ │ trip_gear │ │ customer_service │
+        │             │ │        │ │           │ │ / general        │
+        └──────┬──────┘ └───┬────┘ └─────┬─────┘ └────────┬─────────┘
                └────────────┴──────────────┴─────────────────┘
                                     │
                     ┌───────────────▼───────────────┐
@@ -33,11 +33,12 @@
 能力面（节点内调用，不持有编排）：Tool Registry / MCP、Hybrid Retrieval（NL2SQL+RAG+Rank）、Memory（短/长/MD/审批）
 ```
 
-装备类请求（`sub_intent=gear_plan`）与多天行程规划（`sub_intent=plan_trip` + `plan_and_execute`）不进并行分支，走 `trip_gear` 子图，见下文「行程子系统」。
+五个节点 = 五个 Agent = 五条工具白名单，名字一一对应（`agent_capabilities.AGENT_TOOL_POLICIES`）。
+`travel` 与 `trip_gear` 共用同一张行程图，差别只有 `with_gear`：前者剥掉装备段（`gear` / `owned` / `shop`），见下文「行程子系统」。
 
 分层：`app/main.py`（UI，只调 TurnGraph）→ `app/graphs/orchestrator.py`（`build_turn_graph()`）→ `app/graphs/subgraphs/*`（节点签名统一 `(state, runtime)`）→ `app/services/*`（无编排的领域能力）→ `app/retrieval` / `app/memory` / `app/tools`。
 
-## 五个"原生"约束
+## 四个"原生"约束
 
 | 维度 | 原生做法 | 已废弃做法 |
 | --- | --- | --- |
@@ -45,14 +46,20 @@
 | 流式 | `runtime.stream_writer(...)` + `astream(stream_mode="custom", subgraphs=True)` | 自研 `EventQueue` |
 | 重试/超时 | `add_node(..., retry_policy=..., timeout=...)` | 自研 `run_policy_node` |
 | 节点计时 | `stream_mode="tasks"` 的 `node_started` / `node_succeeded` | 包装器里手写日志 |
-| 并发复合 | 并行边 + `branch_results` reducer | 节点里 `asyncio.gather` |
 | 人机中断 | `interrupt()` + `Command(resume=...)` + checkpointer | 直接调审批对象方法 |
 
 ## 顶层路由
 
-`classify` 输出四个信号，各管一件事：`intents`/`primary_intent` 选 Agent，`route` 选 ReAct 还是 Plan&Execute，`retrieval` 选 SQL/RAG/混合，`sub_intent=gear_plan`（或纯行程的 `plan_trip + plan_and_execute`）进 `trip_gear`。多意图最多保留两个，只有 `shopping + travel` 走并行分支。
+`classify` 输出四个信号，各管一件事：`intents`/`primary_intent` 选 Agent，`route` 选 ReAct 还是 Plan&Execute，`retrieval` 选 SQL/RAG/混合，`sub_intent` 决定走 `travel` 还是 `trip_gear`。多意图最多保留两个。
 
-`trip_gear` 同时接管多天行程规划（`nodes._is_trip_plan`）：01–05 面板不是可以贴到任何回答上的样式，它要的是约束/行程/装备/预算这套结构化结果，而 `travel` 子图只产出正文。收敛到同一张图，用户才不会遇到"同样是规划，有时有面板有时只有一段话"。
+判定顺序（`nodes.route`）：
+
+1. `gear_plan`，或原话里出现露营/装备/清单/带什么/徒步/穿越/登山 → `trip_gear`；
+2. `shopping + travel` 同时就绪：`route=plan_and_execute` 或带装备场景 → `trip_gear`；否则按主意图走（"买跑鞋，顺便问下三亚天气"不该被当成一次行程）；
+3. `travel + plan_trip + plan_and_execute` → `travel`（同一张图，无装备段）；
+4. 其余按主意图：`shopping` / `customer_service` / `travel` / `general`。
+
+`travel` 不再是独立链路：`build_travel_graph()` 把 `build_trip_gear_graph(with_gear=False)` 挂成 `travel_plan` 节点，`travel_chat` 只接单点问答（`route=react`）。01–05 面板由两者共用——同一张图、同一套输出，travel 只是没有装备段。
 
 判定顺序与阈值（`app/nlu/signals.py`）：
 
@@ -65,11 +72,11 @@
 | 低置信 | 关键词层返回 `None` → 指代沿用 → 小模型（<0.55 分或 JSON 坏）→ 主模型仲裁一次 |
 | 模型失败 | 有关键词证据就按关键词兜底（`confidence=0.4`），没有才回 `general` |
 
-`route` 只有三个消费方：`general`（react / general_plan）、`travel`（chat / 规划图）、`composite`（写死 `plan_and_execute`）。`shopping`、`trip_gear`、`customer_service` 不看它。`travel` 的 `plan_trip` 是例外：它带着 `plan_and_execute` 时被改派到 `trip_gear`。
+`route` 只有两个消费方：`general`（ReAct / 单步）与 `travel`（chat / 规划图）。`shopping`、`trip_gear`、`customer_service` 不看它。
 
 `sub_intent=gear_plan` 的劫持改成显式枚举 + 中文限定词（`nodes._is_gear_plan`），不再用 `"gear" in sub_intent` 的包含判断。
 
-`react` 绑到工具时会注入一条系统消息（`TOOL_USE_RULES`）：只查确实不知道的实时事实、查不到就说查不到、不拿工具结果拼行程；没有工具时不注入。
+`general`（原 `react` 节点）绑到工具时会注入一条系统消息（`TOOL_USE_RULES`）：只查确实不知道的实时事实、查不到就说查不到、不拿工具结果拼行程；没有工具时不注入。
 
 ## NLU 层（`app/nlu`）
 
@@ -116,6 +123,8 @@
 ## 行程子系统（`app/graphs/subgraphs/trip_gear.py`）
 
 ### 链路
+
+`build_trip_gear_graph(with_gear=True/False)` 两种组装：`trip_gear` 是全量，`travel` 跳过 `gear` / `owned` / `shop` 三段。`verify` 收到 `with_gear=False` 时不判装备类约束（标 `unverified`），`render` 不输出装备分区。
 
 ```text
 derive → plan → gear → owned → shop → verify ─┬→ repair（自动修复）→ verify
@@ -322,13 +331,14 @@ derive → plan → gear → owned → shop → verify ─┬→ repair（自动
 
 ### 实时外部事实：空气质量 / 汇率 / 节假日
 
-天气之外还有三类"查回来就能进约束"的事实，全部免 Key、走同一套 provider 抽象（缓存 + 熔断 + `fetched_at`）：
+天气之外还有四类"查回来就能进约束"的事实：前三类免 Key、走同一套 provider 抽象（缓存 + 熔断 + `fetched_at`），时差是纯本地计算（`zoneinfo`，不联网）：
 
 | 工具 | 数据源 | 进清单的方式 | 拿不到时 |
 |---|---|---|---|
 | `get_air_quality(city, start_date, days≤5)` | Open-Meteo air-quality | 只有 AQI ≥ 100 的那天才写一条"减少长时间户外"；AQI 优良不占行 | 不写条目（补充证据，不制造噪声） |
 | `get_exchange_rate(base, quote)` | Frankfurter（欧洲央行） | 境外目的地一条"1 人民币 ≈ X 日元"，软约束，不改预算口径 | 不写 |
 | `get_public_holidays(country, year)` | Nager.Date | 行程日期落在法定假日时一条提示，软约束 | 不写 |
+| `get_time_offset(city, date)` | `zoneinfo`（离线） | 与北京不同区时一条"时差：比北京时间早/晚 X 小时"，软约束 | 不写（不按经度粗算） |
 
 三条边界：
 
@@ -344,6 +354,7 @@ derive → plan → gear → owned → shop → verify ─┬→ repair（自动
 | 空气质量 | 目的地非空且 `days ≤ 5` | 天数超接口窗口 | 不写条目 |
 | 汇率 | `currency_for(destination)` 命中 | 境内 / 货币表外 | 不写 |
 | 法定假日 | **出发日期明确**且境内 | 未给日期（按今天推会误报）/ 境外 | 不写 |
+| 时差 | 目的地已解析出时区 | 境内 / 与北京同时区 | 不写 |
 
 - **并发 + 单条限时**：`_load_facts` 用 `asyncio.gather` 并发取四条，每条 `asyncio.wait_for(..., FACT_TIMEOUT_SECONDS=4)`。之前是串行，provider 三重试时最坏两分钟，和"单次规划 ≤60s"冲突。
 - **位置固定**：都在 `derive` 内、`plan` 之前。天气要进规划提示词，挪不到后面；其余三条只影响约束与装备，但也没必要多一层状态。
@@ -504,6 +515,11 @@ custom chunk 与旧 SSE 一致，UI 无需改动：
 {"event": "token", "data": {"token": "你"}, "step": "generate", "timestamp": 0.0, "trace_id": "..."}
 ```
 
+回答块：`{"event": "answer_blocks", "data": {"agent": "...", "blocks": [...]}}`。
+块类型 `text/lead/stats/cards/table/timeline/panel` 由 `app/ui/blocks.py` 从真实数据构造
+（商品行、订单行），前端 `render_answer_blocks` 直接渲染，不解析 Markdown。
+trip_gear / travel 仍用 `plan_result` 渲染 01–05 面板。
+
 `done` 额外带 `timing_ms`（首 token / 回答就绪 / 链路）和 `usage`（按本轮 `trace_id` 从 TraceRecorder 汇总的 prompt / completion / total token）。供应商不回传 usage 时该字段缺省；当前界面不展示 Token（实测供应商两轮都没回传，摆了也只能显示「—」）。
 
 子图事件靠 `subgraphs=True` 透传，命名空间在 `_split_chunk` 里剥掉。结构化结果单发 `plan_result` 事件（`facts` / `constraints` / `itinerary` / `gear` / `products` / `issues` / `verdict` / `revision`），前端据此渲染面板，不必解析 Markdown。
@@ -523,13 +539,34 @@ NLU 场景集 `data/evaluation/nlu.spec.jsonl` 覆盖关键词层、槽位、装
 
 关键指标：`new_accuracy` / `legacy_accuracy`（对照"只查理由里有没有'温标'"的旧逻辑）、`legacy_reported_insufficient`（旧逻辑恒为 0）、`legacy_false_accept`、`spec_unknown_rate`。评测确定性：不调模型、不联网，同一份场景集结果一致。
 
-## 新增一个场景子图
+## 新增一个 Agent
 
 1. 定义状态：通用字段放 `app/graphs/state.py`，该场景专有的就近写在子图模块里。
 2. 写节点，签名 `(state, runtime: Runtime[TurnContext])`，事件用 `runtime.context.sink_for(runtime)`。
 3. `build_xxx_graph()` 里用 `retry_policy` / `timeout` 声明策略。
-4. 在 `orchestrator.py` 的 `ROUTE_TARGETS` 挂节点与路由名。
-5. 在 `nodes.py` 的 `route()` 给条件。
+4. 在 `app/agents/specs.py` 加一条 `AgentSpec`，`builder` 写成 `"模块:函数"` 字符串。
+5. 在 `app/tools/agent_capabilities.py` 加一条 `AgentToolPolicy` 白名单。
+
+**就这两处**。顶层图的节点、`ROUTE_TARGETS`、MCP 的 `--agent`、配置页都从 `AGENT_SPECS` 派生。
+`builder` 之所以是字符串而不是函数引用，是为了让 `scripts/build_pipeline_spec.py` 的
+静态解析（只读 AST、不 import 业务模块）也能读出 Agent 与子图的对应关系。
+
+点名叫某个 Agent 时（MCP 的 `run` 工具）走 `state["forced_agent"]`，分类照跑但入口以点名为准。
+
+### 启停与配置
+
+- 开关落 `data/agent_config.json`（生成物，不进版本库），`app/agents/config.py` 读写；
+- `nodes.route()` 末尾兜底：被停用的 Agent 不接客，回退 `general`，点名调用也不放行；
+- UI「Agent 配置」页（`app/ui/agents_page.py`）列出每个 Agent 的工具面、自然语言入口与输出样式，可直接开关；
+- `scripts/run_mcp_server.py --agent` 取值来自 `AGENT_SPECS`；
+- **工具也可以自己加、自己选**：把 `TOOLS = [@tool ...]` 写进 `data/tools/*.py`，
+  启动时并入全局工具池；「Agent 配置」页每个 Agent 一个多选框，保存后
+  `get_agent_tool_policy()` 用配置替换默认白名单（可加可减），注册表只注册选中的。
+  `data/tools/` 是本地代码，只放自己写的文件。
+
+**这里没有导入/导出**。可插拔指的是"加一条 `AgentSpec` + 一条白名单就能接进来，开关控制是否接客"；
+Agent 的编排与工具都写在仓库里，因为它们依赖 `TurnContext` / `services` / 数据源，单独打包出去跑不起来
+（实测每个子图的依赖闭包约 86–88 个模块）。
 
 依赖注入：生产从 `services` 取能力；测试用 `TurnContext.extra` 覆盖 `planner` / `product_search` / `weather_lookup` / `memory_loader` / `max_revisions` 等。
 
@@ -544,6 +581,12 @@ NLU 场景集 `data/evaluation/nlu.spec.jsonl` 覆盖关键词层、槽位、装
 | `tools/geo.py` | 全球地名解析：别名表 + 择优 + 保守拒答 |
 | `activity_notes.py` | 本地活动资料解析（UI 目录页与工具共用同一份） |
 | `tools/providers.py` | 天气/路线/活动 provider、缓存、熔断 |
+| `tools/time_offset.py` | 城市 → IANA 时区、UTC 偏移、与北京时差（离线） |
+| `agents/specs.py` | Agent 清单：节点名 / 能力面 / MCP 名一处定义 |
+| `agents/runner.py` | `run_agent`：点名一个 Agent 跑一轮，MCP `run` 工具的实现 |
+| `agents/config.py` | Agent 启停（`data/agent_config.json`） |
+| `ui/agents_page.py` | Agent 配置页：工具面、MCP 命令、启停开关 |
+| `ui/blocks.py` | 回答块构造（只读真实数据，不造字段） |
 | `retrieval/search_index.py` | 商品 2-gram 检索索引（FTS5） |
 | `trip_gear/catalog.py` | 商品库目录摘要（按品类，给模型看） |
 | `evaluation/nlu_spec.py` | NLU 场景集加载与评测 |

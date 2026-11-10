@@ -37,15 +37,17 @@ class ClassificationResult(BaseModel):
         default="react",
         description="路由策略：react用于简单任务，plan_and_execute用于复杂多步任务"
     )
-    intent: Literal["shopping", "travel", "customer_service", "general"] = Field(
+    # 意图不再是写死的四个值：导入的 Agent 可以声明新的意图入口
+    # （app/agents/specs.py 的 AgentSpec.intent），校验在模型层统一做。
+    intent: str = Field(
         default="general",
         description="主意图类别；兼容旧的单意图字段"
     )
-    intents: List[Literal["shopping", "travel", "customer_service", "general"]] = Field(
+    intents: List[str] = Field(
         default_factory=list,
         description="明确的多意图集合；为空时等价于 [intent]"
     )
-    primary_intent: Optional[Literal["shopping", "travel", "customer_service", "general"]] = Field(
+    primary_intent: Optional[str] = Field(
         default=None,
         description="主意图；与 intent 保持一致，便于多意图结果显式表达"
     )
@@ -89,6 +91,10 @@ class ClassificationResult(BaseModel):
         else:
             self.intent = deduped[0]
         self.intents = deduped[:2]
+        allowed = _allowed_intents()
+        unknown = [item for item in self.intents if item not in allowed]
+        if unknown:
+            raise ValueError(f"未知意图: {unknown}；可用 {sorted(allowed)}")
         return self
 
     @property
@@ -107,6 +113,31 @@ class ClassificationResult(BaseModel):
 _TRAVEL_DURATION_RE = signals.TRAVEL_DURATION
 
 _PRIORITY = {"shopping": 0, "travel": 1, "customer_service": 2}
+
+
+def _allowed_intents() -> set:
+    try:
+        from app.agents.specs import allowed_intents
+
+        return set(allowed_intents())
+    except Exception:
+        return {"shopping", "travel", "customer_service", "general"}
+
+
+def _extra_intents_text() -> str:
+    """把导入的 Agent 声明的新意图拼进 prompt；没有新意图时是空行。"""
+    base = {"shopping", "travel", "customer_service", "general"}
+    lines = []
+    try:
+        from app.agents.specs import AGENT_SPECS
+
+        for spec in AGENT_SPECS.values():
+            intent = str(spec.intent or "")
+            if intent and intent not in base and intent != "forced_only":
+                lines.append(f'- "{intent}": {spec.display_name}（{spec.description}）')
+    except Exception:
+        return ""
+    return "\n".join(lines)
 
 
 def _has_purchase_verb(message: str) -> bool:
@@ -207,7 +238,7 @@ _CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
 - "customer_service": 客服相关（订单查询、退换货、投诉）
 - "travel": 旅游相关（行程规划、目的地推荐、酒店查询）
 - "general": 通用对话
-
+{extra_intents}
 多意图规则：
 - 如果一句话明确包含两个独立任务（例如“推荐跑鞋，再制定杭州两天计划”），必须同时输出两个意图。
 - intent 放主意图；intents 放完整意图列表，最多两个；primary_intent 放主意图；intent_scores 给每个意图 0-1 分。
@@ -672,6 +703,7 @@ class UnifiedClassifier:
             result = self.chain.invoke({
                 "message": message,
                 "context": self._format_context(history),
+                "extra_intents": _extra_intents_text(),
             })
             data = self._result_data(result)
             candidate = self._from_data(data)
@@ -736,6 +768,7 @@ class UnifiedClassifier:
             result = await self.chain.ainvoke({
                 "message": message,
                 "context": self._format_context(history),
+                "extra_intents": _extra_intents_text(),
             })
             data = self._result_data(result)
             candidate = self._from_data(data)

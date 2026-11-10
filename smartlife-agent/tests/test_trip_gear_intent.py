@@ -45,15 +45,31 @@ def test_gear_plan_routes_to_trip_gear_node():
     assert route(state) == "trip_gear"
 
 
-def test_trip_plan_routes_to_trip_gear_for_the_same_panels():
-    """多天行程也走 trip_gear：面板要结构化结果，travel 只出正文。"""
+def test_trip_plan_routes_to_travel_without_gear_section():
+    """纯旅行规划走 travel：同一张图、同一套面板，只是没有装备段。"""
     state = {
         "classification": {
             "intent": "travel",
             "intents": ["travel"],
             "sub_intent": "plan_trip",
             "route": "plan_and_execute",
-        }
+        },
+        "user_message": "去莫干山玩三天",
+    }
+
+    assert route(state) == "travel"
+
+
+def test_gear_scene_words_pull_trip_plan_into_trip_gear():
+    """说到露营/装备就是"行程 + 装备协同"，不能只排行程。"""
+    state = {
+        "classification": {
+            "intent": "travel",
+            "intents": ["travel"],
+            "sub_intent": "plan_trip",
+            "route": "plan_and_execute",
+        },
+        "user_message": "周末去莫干山露营三天",
     }
 
     assert route(state) == "trip_gear"

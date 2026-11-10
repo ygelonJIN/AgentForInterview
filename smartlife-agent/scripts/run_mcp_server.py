@@ -20,13 +20,16 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--include-write-tools", action="store_true")
     parser.add_argument("--actor-id", default=os.environ.get("SMARTLIFE_MCP_ACTOR_ID", ""))
+    from app.agents.specs import AGENT_SPECS
+
     parser.add_argument(
         "--agent",
-        choices=("shopping", "travel", "general"),
         default=os.environ.get("SMARTLIFE_MCP_AGENT", "").strip() or None,
-        help="启动独立 Agent MCP Server；省略则保留统一工具 Server",
+        help="启动独立 Agent MCP Server（可用：" + "、".join(AGENT_SPECS) + "）；省略则保留统一工具 Server",
     )
     args = parser.parse_args()
+    if args.agent and args.agent not in AGENT_SPECS:
+        parser.error(f"未知 Agent: {args.agent}，可用：" + "、".join(AGENT_SPECS))
 
     auth_token = os.environ.get("SMARTLIFE_MCP_AUTH_TOKEN", "") if args.transport != "stdio" else ""
     public_url = os.environ.get(
