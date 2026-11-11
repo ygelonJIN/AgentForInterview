@@ -2,7 +2,7 @@
 
 > **毕业设计题目**：基于 LangGraph 的行程约束派生与装备协同规划智能体设计与实现
 
-SmartLife Agent 是一个面向电商导购、旅行规划、客服与通用任务的全栈智能体平台，也是本毕业设计的工程基础。项目基于 Python、Streamlit、LangChain、LangGraph、ChromaDB 和 MCP，演示了任务路由、智能体编排、混合检索、工具调用、长期记忆、审批机制、流式输出及评测能力。
+SmartLife Agent 是一个面向电商导购、旅行规划、客服与通用任务的全栈智能体平台，也是本毕业设计的工程基础。项目基于 Python、Streamlit、LangChain、LangGraph 和 ChromaDB，演示了任务路由、智能体编排、混合检索、工具调用、长期记忆、审批机制、流式输出及评测能力。
 
 本设计在通用平台之上聚焦一条纵向链路：把一句出行需求派生为可追溯的约束清单，生成结构化逐日行程，由行程推导装备清单，结合对话与长期记忆判断已有装备，只对缺口调用商品检索，最后做预算、时间与装备齐全性校验，并在有限轮次内修复。实现见 `smartlife-agent/app/trip_gear/`，说明见 `docs/architecture.md`。
 
@@ -15,7 +15,7 @@ SmartLife Agent 是一个面向电商导购、旅行规划、客服与通用任�
 - **纯 LangGraph 编排**：顶层图按 `intent` 选场景、按 `route` 选执行范式、按 `retrieval` 选 SQL/RAG/混合、按 `sub_intent=gear_plan` 走行程+装备链路。依赖注入走 `context_schema` + `Runtime.context`，流式走 `astream(stream_mode=["custom","tasks"])`，节点超时/重试走原生 `timeout` / `retry_policy`，复合意图用并行边 + reducer 归约。详见 `docs/architecture.md`。
 - **混合检索**：结合 NL2SQL、RAG、向量召回和 Cross-Encoder Rerank，分别处理结构化与非结构化数据。
 - **Agent 工具隔离**：电商、旅游和通用 Agent 拥有独立 Tool Registry，模型只能发现当前 Agent 的工具。
-- **MCP 协议服务**：支持 stdio 与 Streamable HTTP，可把每个 Agent 作为独立 MCP 能力面即插即用；跨 Agent 工具在注册、发现和执行层都会被拒绝。
+- **Agent 工具隔离**：每个 Agent 只绑定自己的工具白名单，模型伪造跨域 `tool_call` 会在执行层被拒绝。
 - **长期记忆**：支持偏好、事件和对话记忆，提供 Markdown 同步、记忆压缩、用户隔离和记忆写入审批。
 - **数据导入**：支持商品、订单、用户、评价等 CSV 数据，以及 PDF、DOCX、Excel 和 Markdown 文档导入。
 - **可靠性机制**：包含超时、重试、熔断、缓存、节点执行策略和结果校验。
@@ -33,7 +33,6 @@ SmartLife Agent 是一个面向电商导购、旅行规划、客服与通用任�
 | 模型接入 | OpenAI-compatible API |
 | 向量检索 | ChromaDB |
 | 精排 | sentence-transformers / Cross-Encoder |
-| 协议服务 | MCP |
 | 数据存储 | SQLite、Markdown |
 | 可观测性 | OpenTelemetry |
 | 数据处理 | Pandas、NumPy |
@@ -314,17 +313,21 @@ SmartLife Agent 将数据源划分为两类：
    └─ 必要时重新规划或修订
 ```
 
-## MCP Server
+## Agent 工具面
 
-项目可以将每个 Agent 作为独立 MCP Server 发布。每个 Server 使用自己的能力清单，不混用其他 Agent 的工具：
+每个 Agent 只能看到并调用自己的工具，跨 Agent 的 `tool_call` 在注册、发现和执行三层都会被拒绝。
 
 | Agent | 独占工具 |
 |---|---|
 | `shopping` | `search_products`、`get_product_reviews`、`get_order_status`（订单需要 Actor） |
-| `travel` | `search_destinations`、`get_local_activities`、`plan_itinerary`、`get_weather`、`get_route`、`get_current_time` |
+| `travel` | `search_destinations`、`get_local_activities`、`get_weather`、`get_route`、`get_current_time` |
 | `general` | `get_weather`、`get_route`、`get_current_time` |
 
 `shopping` 与 `travel` 的工具集合严格互斥。
+
+**不做对外服务**：没有 MCP / HTTP 入口。工具面只在进程内使用，由
+`app/tools/agent_capabilities.py` 的白名单和 `build_tool_registry()` 约束；
+「Agent 配置」页可以直接增删某个 Agent 的工具。
 
 ### 天气、路线与活动的数据来源
 
@@ -339,6 +342,8 @@ SmartLife Agent 将数据源划分为两类：
 
 地名解析单独一层（`app/tools/geo.py`）：中文城市名先过别名表，再按行政级别与人口择优，
 表外地名标 `uncertain` 并由上层披露。查不准时宁可说查不到，也不把国内同名地点当成用户要去的地方。
+`lexicon.PLACES` 里的常用城市都有英文别名（汕头、潮州这类中文原词在 geocoder 里查不到），
+缺别名的长尾小城会明确报"定位不到"。
 
 另外两个旅行工具的口径：
 
@@ -355,61 +360,6 @@ SmartLife Agent 将数据源划分为两类：
 
 要参加某个具体活动，请在需求里直接说（"11 月 8 号晚上去上海音乐厅看 XX"），
 系统把它当固定条目排进日程、算进预算、并检查与前后行程的时间冲突。
-
-这种结构支持即插即用：外部 MCP 客户端只连接所需 Agent；即使模型被注入并伪造跨域 `tool_call`，运行时也会拒绝。当前主聊天由 LangGraph 直接使用进程内 Agent Registry；远端 MCP Agent 的自动注册、发现和消息路由仍是后续目标。
-
-### 当前实现边界
-
-当前“即插即用”是指外部 MCP 客户端可以独立连接、替换或升级某个 Agent MCP Server，并且只能看到和调用该 Agent 自己的工具。
-
-已经实现：
-
-- 按 `--agent shopping/travel/general` 启动独立 MCP Server；
-- MCP `tools/list` 只返回当前 Agent 的工具；
-- 模型 `bind_tools()` 只绑定当前 Agent 的工具；
-- 执行层拒绝伪造或越权的跨 Agent `tool_call`。
-
-尚未实现：
-
-- 远端 MCP Agent 的自动注册和动态发现；
-- Orchestrator 通过 MCP 网络协议路由聊天消息；
-- 多个远端 Agent 之间的能力协商。
-
-当前主聊天链路仍由 LangGraph 使用进程内 Agent Registry 和静态 `bind_tools()` 执行，不依赖 MCP 网络调用。
-
-### stdio 模式
-
-```bash
-# 电商 Agent MCP
-venv312/bin/python scripts/run_mcp_server.py --transport stdio --agent shopping
-
-# 旅游 Agent MCP
-venv312/bin/python scripts/run_mcp_server.py --transport stdio --agent travel
-```
-
-不传 `--agent` 时保留旧的统一 Tool Registry Server，便于兼容已有客户端。
-
-### Streamable HTTP 模式
-
-```bash
-export SMARTLIFE_MCP_AUTH_TOKEN="replace-with-a-secret"
-
-venv312/bin/python scripts/run_mcp_server.py \
-  --transport streamable-http \
-  --agent shopping \
-  --host 127.0.0.1 \
-  --port 8765
-```
-
-默认只发布只读工具。需要包含写入类工具时：
-
-```bash
-venv312/bin/python scripts/run_mcp_server.py \
-  --transport stdio \
-  --include-write-tools
-```
-
-即使启用写入工具，记忆写入仍会先创建审批请求，不会直接修改长期记忆。
 
 ## 数据导入
 
@@ -503,10 +453,9 @@ venv312/bin/python scripts/run_e2e_benchmark.py \
 ├── smartlife-agent/
 │   ├── .streamlit/              # Streamlit 主题配置（与 design token 对齐）
 │   ├── app/
-│   │   ├── agents/              # ReAct、Plan & Execute 和场景智能体
+│   │   ├── agents/              # Agent 清单与启停配置
 │   │   ├── evaluation/          # RAG、Rerank、A/B 与端到端评测
 │   │   ├── memory/              # 短期记忆、长期记忆和记忆审批
-│   │   ├── mcp_servers/         # MCP 协议服务
 │   │   ├── retrieval/           # NL2SQL、RAG、规划与精排
 │   │   ├── tools/               # 天气、地图、购物、旅行等工具
 │   │   ├── trip_gear/           # 约束派生、逐日行程、装备推导与校验
@@ -516,7 +465,7 @@ venv312/bin/python scripts/run_e2e_benchmark.py \
 │   │   └── reliability.py       # 超时、重试、熔断和缓存
 │   ├── data/                    # 示例数据、模板、数据库和评测数据
 │   ├── memory_docs/             # 本地记忆 Markdown
-│   ├── scripts/                 # 导入、评测、MCP 和检查脚本
+│   ├── scripts/                 # 导入、评测与检查脚本
 │   ├── tests/                   # 自动化测试
 │   ├── requirements.txt
 │   ├── requirements.lock
@@ -528,9 +477,7 @@ venv312/bin/python scripts/run_e2e_benchmark.py \
 
 - 不要提交 `data/config.json` 和 `data/config.secrets.json`。
 - 不要在代码、日志或 Git 提交中保存 API Key。
-- MCP Streamable HTTP 模式应配置 `SMARTLIFE_MCP_AUTH_TOKEN`。
 - 生产环境建议绑定 `127.0.0.1`，并通过反向代理提供 HTTPS。
-- 写入类工具默认关闭，只有明确传入 `--include-write-tools` 时才发布。
 - 支付、退款和记忆修改等敏感操作应保留审批流程。
 - 部署前执行 `scripts/security_check.py`。
 
