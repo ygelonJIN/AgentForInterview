@@ -1,10 +1,9 @@
 """Agent 专属工具能力面与严格隔离策略。
 
-这里的策略同时约束三层：
+这里的策略同时约束两层：
 
-1. MCP ``tools/list`` 只能看到当前 Agent 的工具；
-2. 模型 Tool Calling 只会 bind 当前 Agent 的工具；
-3. 即使模型被注入、越狱或返回伪造 tool_call，执行层也会拒绝跨 Agent 工具。
+1. 模型 Tool Calling 只会 bind 当前 Agent 的工具；
+2. 即使模型被注入、越狱或返回伪造 tool_call，执行层也会拒绝跨 Agent 工具。
 """
 
 from __future__ import annotations
@@ -23,7 +22,6 @@ class AgentToolPolicy:
     display_name: str
     description: str
     tool_names: frozenset[str]
-    mcp_server_name: str
 
     def allows(self, tool_name: str) -> bool:
         return str(tool_name or "") in self.tool_names
@@ -47,7 +45,6 @@ AGENT_TOOL_POLICIES: dict[str, AgentToolPolicy] = {
             "get_product_reviews",
             "get_order_status",
         }),
-        mcp_server_name="smartlife-shopping-agent",
     ),
     "travel": AgentToolPolicy(
         agent_id="travel",
@@ -64,7 +61,6 @@ AGENT_TOOL_POLICIES: dict[str, AgentToolPolicy] = {
             "get_route",
             "get_current_time",
         }),
-        mcp_server_name="smartlife-travel-agent",
     ),
     "trip_gear": AgentToolPolicy(
         agent_id="trip_gear",
@@ -80,14 +76,12 @@ AGENT_TOOL_POLICIES: dict[str, AgentToolPolicy] = {
             "search_products",
             "get_product_reviews",
         }),
-        mcp_server_name="smartlife-trip-gear-agent",
     ),
     "customer_service": AgentToolPolicy(
         agent_id="customer_service",
         display_name="订单客服 Agent",
         description="只读当前用户的订单状态",
         tool_names=frozenset({"get_order_status"}),
-        mcp_server_name="smartlife-customer-service-agent",
     ),
     "general": AgentToolPolicy(
         agent_id="general",
@@ -98,7 +92,6 @@ AGENT_TOOL_POLICIES: dict[str, AgentToolPolicy] = {
             "get_route",
             "get_current_time",
         }),
-        mcp_server_name="smartlife-general-agent",
     ),
 }
 

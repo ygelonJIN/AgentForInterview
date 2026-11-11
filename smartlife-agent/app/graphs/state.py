@@ -34,7 +34,7 @@ class TurnState(TypedDict, total=False):
     # 按需提取时由 UI 传入的消息窗口（游标之后、已截断）
     memory_window: List[Dict[str, str]]
 
-    # MCP / 外部调用可以指定 Agent，跳过分类兜底
+    # 点名调用可以指定 Agent，跳过分类兜底
     forced_agent: str
 
     # 状态

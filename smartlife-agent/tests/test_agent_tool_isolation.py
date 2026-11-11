@@ -1,4 +1,4 @@
-"""Agent 即插即用能力面、MCP 发现和运行时工具隔离测试。"""
+"""Agent 即插即用能力面与运行时工具隔离测试。"""
 
 import asyncio
 
@@ -7,7 +7,6 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from app.graphs.context import TurnContext
 from app.graphs.subgraphs.general import build_general_graph, initial_general_state
-from app.mcp_servers.protocol_server import build_mcp_server
 from app.tools.agent_capabilities import (
     AGENT_TOOL_POLICIES,
     ToolAuthorizationError,
@@ -68,21 +67,6 @@ def test_agent_registry_rejects_foreign_tools_at_registration():
         raise AssertionError("跨 Agent 工具没有被拒绝")
 
 
-def test_mcp_servers_are_independent_capability_surfaces():
-    shopping = build_mcp_server(agent_id="shopping", actor_id="user_001")
-    travel = build_mcp_server(agent_id="travel", actor_id="user_001")
-
-    shopping_names = asyncio.run(_tool_names(shopping))
-    travel_names = asyncio.run(_tool_names(travel))
-
-    assert shopping.name == "smartlife-shopping-agent"
-    assert travel.name == "smartlife-travel-agent"
-    assert "search_products" in shopping_names
-    assert "get_route" not in shopping_names
-    assert "get_route" in travel_names
-    assert "search_products" not in travel_names
-
-
 def test_model_tool_call_cannot_cross_agent_boundary():
     class ShoppingTool:
         name = "search_products"
@@ -129,15 +113,3 @@ def test_model_tool_call_cannot_cross_agent_boundary():
     assert result["tool_results"][0]["ok"] is False
     assert "工具越权" in result["tool_results"][0]["error"]
     assert "get_route" in result["tool_results"][0]["error"]
-
-
-def test_mcp_call_rejects_tool_from_other_agent():
-    from mcp.server.mcpserver.exceptions import ToolError
-
-    shopping = build_mcp_server(agent_id="shopping", actor_id="user_001")
-    with pytest.raises(ToolError, match="Unknown tool: get_route"):
-        asyncio.run(shopping.call_tool("get_route", {"origin": "上海", "destination": "杭州"}))
-
-
-async def _tool_names(server):
-    return {tool.name for tool in await server.list_tools()}

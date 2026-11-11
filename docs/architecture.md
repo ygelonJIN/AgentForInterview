@@ -30,7 +30,7 @@
                     │ finalize →（可选）extract_memory│
                     └───────────────────────────────┘
 
-能力面（节点内调用，不持有编排）：Tool Registry / MCP、Hybrid Retrieval（NL2SQL+RAG+Rank）、Memory（短/长/MD/审批）
+能力面（节点内调用，不持有编排）：Tool Registry、Hybrid Retrieval（NL2SQL+RAG+Rank）、Memory（短/长/MD/审批）
 ```
 
 五个节点 = 五个 Agent = 五条工具白名单，名字一一对应（`agent_capabilities.AGENT_TOOL_POLICIES`）。
@@ -574,24 +574,23 @@ NLU 场景集 `data/evaluation/nlu.spec.jsonl` 覆盖关键词层、槽位、装
 4. 在 `app/agents/specs.py` 加一条 `AgentSpec`，`builder` 写成 `"模块:函数"` 字符串。
 5. 在 `app/tools/agent_capabilities.py` 加一条 `AgentToolPolicy` 白名单。
 
-**就这两处**。顶层图的节点、`ROUTE_TARGETS`、MCP 的 `--agent`、配置页都从 `AGENT_SPECS` 派生。
+**就这两处**。顶层图的节点、`ROUTE_TARGETS`、配置页都从 `AGENT_SPECS` 派生。
 `builder` 之所以是字符串而不是函数引用，是为了让 `scripts/build_pipeline_spec.py` 的
 静态解析（只读 AST、不 import 业务模块）也能读出 Agent 与子图的对应关系。
 
-点名叫某个 Agent 时（MCP 的 `run` 工具）走 `state["forced_agent"]`，分类照跑但入口以点名为准。
+点名叫某个 Agent 时（脚本/评测）走 `state["forced_agent"]`，分类照跑但入口以点名为准。
 
 ### 启停与配置
 
 - 开关落 `data/agent_config.json`（生成物，不进版本库），`app/agents/config.py` 读写；
 - `nodes.route()` 末尾兜底：被停用的 Agent 不接客，回退 `general`，点名调用也不放行；
 - UI「Agent 配置」页（`app/ui/agents_page.py`）列出每个 Agent 的工具面、自然语言入口与输出样式，可直接开关；
-- `scripts/run_mcp_server.py --agent` 取值来自 `AGENT_SPECS`；
 - **工具也可以自己加、自己选**：把 `TOOLS = [@tool ...]` 写进 `data/tools/*.py`，
   启动时并入全局工具池；「Agent 配置」页每个 Agent 一个多选框，保存后
   `get_agent_tool_policy()` 用配置替换默认白名单（可加可减），注册表只注册选中的。
   `data/tools/` 是本地代码，只放自己写的文件。
 
-**这里没有导入/导出**。可插拔指的是"加一条 `AgentSpec` + 一条白名单就能接进来，开关控制是否接客"；
+**不做对外服务**：没有 MCP / HTTP 入口，也没有 Agent 的导入导出。可插拔只指"加一条 `AgentSpec` + 一条白名单就能接进来，开关控制是否接客"；
 Agent 的编排与工具都写在仓库里，因为它们依赖 `TurnContext` / `services` / 数据源，单独打包出去跑不起来
 （实测每个子图的依赖闭包约 86–88 个模块）。
 
@@ -609,10 +608,9 @@ Agent 的编排与工具都写在仓库里，因为它们依赖 `TurnContext` / 
 | `activity_notes.py` | 本地活动资料解析（UI 目录页与工具共用同一份） |
 | `tools/providers.py` | 天气/路线/活动 provider、缓存、熔断 |
 | `tools/time_offset.py` | 城市 → IANA 时区、UTC 偏移、与北京时差（离线） |
-| `agents/specs.py` | Agent 清单：节点名 / 能力面 / MCP 名一处定义 |
-| `agents/runner.py` | `run_agent`：点名一个 Agent 跑一轮，MCP `run` 工具的实现 |
+| `agents/specs.py` | Agent 清单：节点名 / 能力面一处定义 |
 | `agents/config.py` | Agent 启停（`data/agent_config.json`） |
-| `ui/agents_page.py` | Agent 配置页：工具面、MCP 命令、启停开关 |
+| `ui/agents_page.py` | Agent 配置页：工具面、启停开关 |
 | `ui/blocks.py` | 回答块构造（只读真实数据，不造字段） |
 | `retrieval/search_index.py` | 商品 2-gram 检索索引（FTS5） |
 | `trip_gear/catalog.py` | 商品库目录摘要（按品类，给模型看） |

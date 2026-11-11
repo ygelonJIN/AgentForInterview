@@ -1,8 +1,8 @@
-"""Agent 清单：一个 Agent = 一个图节点 = 一条工具白名单 = 一个 MCP Server。
+"""Agent 清单：一个 Agent = 一个图节点 = 一条工具白名单。
 
 加一个 Agent 只需要改两处：本文件加一条 ``AgentSpec``，
 ``agent_capabilities.AGENT_TOOL_POLICIES`` 加一条白名单。
-顶层图、路由表、MCP 的 ``--agent`` 取值都从这里派生。
+顶层图、路由表、配置页都从这里派生。
 
 构图函数用 ``"模块:函数"`` 字符串声明而不是直接引用：这样
 ``scripts/build_pipeline_spec.py`` 的静态解析（只读 AST，不 import 业务模块）

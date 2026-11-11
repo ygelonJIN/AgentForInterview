@@ -21,7 +21,7 @@ def test_no_payment_or_order_tools_anywhere():
     assert not (names & FORBIDDEN), f"支付/下单工具不应存在: {names & FORBIDDEN}"
 
 
-def test_shopping_mcp_does_not_create_orders():
+def test_shopping_agent_does_not_create_orders():
     names = {tool.name for tool in ShoppingToolProvider().get_tools()}
     assert "place_order" not in names
     assert names == {"search_products", "get_product_reviews", "get_order_status"}

@@ -1,4 +1,4 @@
-"""Agent 清单一致性：清单、能力面、路由、MCP 四处必须对得上。"""
+"""Agent 清单一致性：清单、能力面、路由三处必须对得上。"""
 
 import pytest
 
@@ -22,7 +22,6 @@ def test_spec_names_are_aligned_three_ways():
         assert spec.builder.endswith(":build_" + spec.agent_id + "_graph")
         assert spec.build() is not None
         assert policy.agent_id == spec.agent_id
-        assert policy.mcp_server_name.endswith("agent")
 
 
 def test_route_honours_explicit_agent():

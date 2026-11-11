@@ -92,7 +92,7 @@ def build_tool_registry(
     - ``trip_gear``：行程事实（天气/空气/汇率/假日/路线/时差）；
     - ``customer_service``：只注册订单工具；
     - ``general``：只注册通用天气、路线和时间工具；
-    - 省略：保留旧的统一 MCP Registry 行为。
+    - 省略：注册全部工具（仅测试用）。
     """
     from app.tools.map import get_route
     from app.tools.time import get_current_time

@@ -1,7 +1,6 @@
 """领域工具集合的轻量容器。
 
-这里只负责组织 LangChain BaseTool，不实现或模拟 MCP 协议。
-真正的 MCP Protocol Server 位于 ``app.mcp_servers.protocol_server``。
+这里只负责组织 LangChain BaseTool，供各 Agent 按白名单绑定。
 """
 
 from __future__ import annotations

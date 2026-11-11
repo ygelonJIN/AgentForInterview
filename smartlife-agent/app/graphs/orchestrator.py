@@ -24,7 +24,7 @@ from app.agents.specs import iter_specs
 from app.observability import log_exception, new_trace_id, timed_span, trace_context, turn_usage
 from app.session import build_thread_id
 
-# 五个 Agent = 五个节点 = 五条工具白名单 = 五个 MCP Server。
+# 五个 Agent = 五个节点 = 五条工具白名单。
 # 清单唯一来源是 app/agents/specs.py：加 Agent 只改那里 + 一条工具白名单。
 # travel 与 trip_gear 共用一套图，差别只有 with_gear。
 def route_targets() -> Dict[str, str]:
@@ -36,7 +36,7 @@ ROUTE_TARGETS = route_targets()
 
 
 # 场景 → Agent 能力面。原来这里写死 "general"，导致 shopping / travel 两个
-# 能力面在运行时永远绑不上，只有 MCP Server 的 --agent 参数和测试用得上。
+# 能力面在运行时永远绑不上，只有点名调用和测试用得上。
 _AGENT_SCENES = {"shopping", "travel", "general"}
 
 
@@ -113,7 +113,7 @@ class TurnGraph:
         scene: str = "general",
         agent: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """非流式一次调用，供 MCP / 外部系统使用；``agent`` 可点名入口。"""
+        """非流式一次调用（脚本/评测用）；``agent`` 可点名入口。"""
         thread_id = build_thread_id(user_id, scene, session_id)
         trace_id = new_trace_id()
         context = build_turn_context(self.services, trace_id).with_extra(

@@ -173,7 +173,7 @@ def _route_target(state: TurnState) -> str:
     """
     forced = str(state.get("forced_agent") or "").strip().lower()
     if forced in ROUTE_KEYS or forced in _all_agent_ids():
-        # MCP 的 run 工具 / 导入的 Agent：点名优先，分类照跑（留证据）。
+        # 点名调用（脚本/评测）：点名优先，分类照跑（留证据）。
         return forced
 
     classification = state.get("classification") or {}
