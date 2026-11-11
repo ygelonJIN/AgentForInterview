@@ -40,6 +40,9 @@ _ORIGIN_DEPART = re.compile(r"(?:在|从)\s*([\u4e00-\u9fa5]{2,6}?)\s*出发")
 # 这条不能只靠 _valid_destination——"后天出发"也是 2 个汉字 + 出发，
 # 所以只认地名表里真有、或省份表里真有的词。
 _ORIGIN_BARE_DEPART = re.compile(r"([\u4e00-\u9fa5]{2,6}?)\s*出发")
+# "上海，去广东"：句首裸地名 + 逗号 + 出行动词。动词必须在逗号后面紧跟，
+# 否则"汕头，广州和潮州各玩两天"这种城市枚举会被误判成出发地。
+_ORIGIN_BARE_HEAD = re.compile(r"^\s*([\u4e00-\u9fa5]{2,6})\s*[，,、；;]\s*(?:去|到|飞|前往|回到)")
 # "上海到广州"：没有"从"也要认出起点
 _ORIGIN_TO = re.compile(r"(?:^|[，。；;、\s])\s*([\u4e00-\u9fa5]{2,6}?)\s*(?:到|至)\s*[\u4e00-\u9fa5]{2,6}")
 _ORIGIN_SUBJECTS = ("我", "我们", "本人", "咱", "俺", "他", "她", "住", "住在")
@@ -150,6 +153,8 @@ _SCOPE_INCLUDE = ("含装备", "包含装备", "装备也算", "算上装备", "
 _LODGING_RATE = re.compile(
     r"(?:(?:酒店|住宿|房费|民宿|住店)[^，。；;！？\n]{0,10}?)?"
     r"(?:一晚|每晚|一晚上|每夜)[^0-9，。；;！？\n]{0,8}(?P<num>\d{2,5}(?:\.\d+)?)"
+    r"|(?:酒店|民宿|住宿|房费|住店)[^，。；;！？\n]{0,12}?(?P<num2>\d{2,5}(?:\.\d+)?)\s*"
+    r"(?:元|块)?\s*(?:左右|上下|以内|以下)?\s*(?:一晚|每晚)"
 )
 
 _CAMP_WORDS = ("露营", "营地", "扎营", "帐篷过夜")
@@ -353,6 +358,11 @@ def parse_origin(text: str) -> str:
                 return candidate
     # 裸"X出发"放在最后：前面几条带"从/在/到"的先说话，
     # 剩下没有介词的才用地名表兜底（"上海出发去广东"）。
+    match = _ORIGIN_BARE_HEAD.search(source)
+    if match:
+        candidate = _trim_destination(match.group(1))
+        if candidate in lexicon.PLACES:
+            return candidate
     for match in _ORIGIN_BARE_DEPART.finditer(source):
         candidate = _trim_destination(match.group(1))
         if candidate in lexicon.PLACES or candidate in lexicon.PROVINCES:
@@ -460,8 +470,8 @@ _RATE_AFTER = re.compile(
 
 def _nights_is_price(source: str, match) -> bool:
     """判断这个"N 晚"是住宿时长还是房价口径。"""
-    before = source[max(0, match.start() - 4):match.start()]
-    if any(word in before for word in ("每", "酒店", "房价", "住宿", "房")):
+    before = source[max(0, match.start() - 12):match.start()]
+    if any(word in before for word in ("每", "酒店", "房价", "住宿", "房", "民宿")):
         return True
     return bool(_RATE_AFTER.match(source[match.end():]))
 
@@ -538,10 +548,18 @@ def _nearest_cue(before: str):
     return best  # (cue, end, kind)
 
 
+# 金额紧挨着"一晚/每晚"时，它是房价不是整趟预算。
+_LODGING_AFTER = re.compile(r"^\s*(?:元|块)?\s*(?:左右|上下|以内|以下)?[^，。；;\n]{0,2}?(?:一晚|每晚)")
+_LODGING_BEFORE = re.compile(r"(?:每晚|一晚|一晚上|每夜)[^，。；;\n]{0,4}$")
+
+
 def _kind_of(source: str, start: int, end: int) -> str:
     before = source[max(0, start - 14):start]
     after = source[end:end + 12]
     tail = before[-10:]
+
+    if _LODGING_AFTER.match(after) or _LODGING_BEFORE.search(before[-8:]):
+        return "lodging"
 
     cue, cue_end, kind = _nearest_cue(before)
     if cue:
@@ -599,7 +617,9 @@ def parse_budget_detail(text: str):
     先剔除装备预算和商品单价，再按"总预算 > 上限 > 下限 > 唯一金额"取。
     """
     source = str(text or "")
-    buckets: Dict[str, list] = {"total": [], "max": [], "min": [], "plain": [], "gear": [], "item": []}
+    buckets: Dict[str, list] = {
+        "total": [], "max": [], "min": [], "plain": [], "gear": [], "item": [], "lodging": []
+    }
     for value, start, end in _budget_candidates(source):
         buckets[_kind_of(source, start, end)].append(value)
 
@@ -933,7 +953,7 @@ def parse_lodging_budget(text: str) -> Optional[float]:
     if not match:
         return None
     try:
-        value = float(match.group("num"))
+        value = float(match.group("num") or match.group("num2"))
     except ValueError:
         return None
     return value if 50 <= value <= 3000 else None

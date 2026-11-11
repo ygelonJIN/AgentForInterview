@@ -144,6 +144,8 @@ class TripGearState(TypedDict, total=False):
     spend: Dict[str, Any]
     # 预算分配：行程额度 / 装备额度，以及用户选的是哪一档
     budget_split: Dict[str, Any]
+    # split / travel / gear_only：滑条两端会直接退化成一个纯形态
+    split_mode: str
 
     # 输出
     response: str
@@ -163,6 +165,19 @@ def _dep(runtime: Runtime[TurnContext], name: str, fallback: Optional[Callable[.
     if service is None:
         return None
     return getattr(service, fallback or name, None)
+
+
+def _itinerary_of(state: TripGearState, facts: TripFacts) -> Itinerary:
+    """取行程；"只买装备"时用占位行程（不计费），只给装备推导提供上下文。"""
+    raw = state.get("itinerary")
+    if raw:
+        return Itinerary.model_validate(raw)
+    draft = fallback_itinerary(facts)
+    for day in draft.days:
+        for item in day.items:
+            item.cost = 0
+        day.lodging_cost = 0
+    return draft
 
 
 def _gear_items(state: TripGearState) -> List[GearItem]:
@@ -615,7 +630,7 @@ async def plan(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str,
 
 async def gear(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
     facts = TripFacts.model_validate(state["facts"])
-    itinerary = Itinerary.model_validate(state["itinerary"])
+    itinerary = _itinerary_of(state, facts)
     derived = derive_gear(facts, itinerary, extra_text=state["user_message"])
     suggestions = [GearItem.model_validate(item) for item in state.get("suggestions", [])]
     derived = merge_suggestions(derived, suggestions)
@@ -719,7 +734,7 @@ def _review_stats(product_id: str) -> Dict[str, Any]:
 
 async def shop(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
     facts = TripFacts.model_validate(state["facts"])
-    itinerary = Itinerary.model_validate(state["itinerary"])
+    itinerary = _itinerary_of(state, facts)
     items = _gear_items(state)
     products = dict(state.get("products") or {})
     product_search = _dep(runtime, "product_search", "_search")
@@ -810,7 +825,7 @@ async def shop(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str,
 async def verify_node(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
     facts = TripFacts.model_validate(state["facts"])
     constraints = [Constraint.model_validate(item) for item in state["constraints"]]
-    itinerary = Itinerary.model_validate(state["itinerary"])
+    itinerary = _itinerary_of(state, facts)
     items = _gear_items(state)
     # 替代检索只在"赶不上/无货"时才真的被调用，这里先拿到回调。
     find_alternatives = (
@@ -1060,16 +1075,18 @@ async def repair(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[st
 
 async def finalize(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
     with_gear = bool(state.get("with_gear", True))
+    facts = TripFacts.model_validate(state["facts"])
     text = render(
-        TripFacts.model_validate(state["facts"]),
+        facts,
         [Constraint.model_validate(item) for item in state["constraints"]],
-        Itinerary.model_validate(state["itinerary"]),
+        _itinerary_of(state, facts),
         _gear_items(state),
         state.get("products") or {},
         [Issue.model_validate(item) for item in state.get("issues", [])],
         list(state.get("owned_ambiguous") or []),
         spend=state.get("spend") or {},
         with_gear=with_gear,
+        with_itinerary=bool(state.get("itinerary")),
     )
     await _notify(state, runtime, "finalize", "完成")
     sink = runtime.context.sink_for(runtime)
@@ -1079,7 +1096,12 @@ async def finalize(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[
         await sink.emit("plan_result", {
             "facts": TripFacts.model_validate(state["facts"]).model_dump(),
             "constraints": [item.model_dump() for item in map(Constraint.model_validate, state["constraints"])],
-            "itinerary": Itinerary.model_validate(state["itinerary"]).model_dump(),
+            "itinerary": (
+                _itinerary_of(state, TripFacts.model_validate(state["facts"])).model_dump()
+                if state.get("itinerary") else
+                {"destination": str((state.get("facts") or {}).get("destination") or ""), "days": []}
+            ),
+            "with_itinerary": bool(state.get("itinerary")),
             "gear": [item.model_dump() for item in _gear_items(state)],
             "products": state.get("products") or {},
             "issues": [item.model_dump() for item in map(Issue.model_validate, state.get("issues", []))],
@@ -1190,6 +1212,16 @@ def _blocking_gaps(facts: TripFacts) -> List[str]:
     return gaps
 
 
+def after_budget_split(state: TripGearState) -> str:
+    """0% 行程（只买装备）直接跳过排行程。"""
+    return "gear" if state.get("split_mode") == "gear_only" else "plan"
+
+
+def after_plan(state: TripGearState) -> str:
+    """100% 行程（不要装备）就不进装备段。"""
+    return "gear" if bool(state.get("with_gear", True)) else "verify"
+
+
 def after_derive(state: TripGearState) -> str:
     # 返回值是分支标签，不是节点名："plan" 在映射里被接到 budget_split。
     return "clarify" if state.get("status") == "needs_info" else "plan"
@@ -1236,6 +1268,14 @@ async def budget_split(state: TripGearState, runtime: Runtime[TurnContext]) -> D
             }
 
     trip_cap, gear_cap = budget_split_util.caps(float(facts.budget), chosen["gear_cap"])
+    trip_pct = chosen.get("trip_pct")
+    # 滑条两端不是"比例很小"，而是"不要另一边"：
+    # 100% 行程 → 跳过装备段（等价 travel）；0% 行程 → 跳过行程段（只买装备）。
+    split_mode = "split"
+    if trip_pct is not None and int(trip_pct) >= 100:
+        split_mode = "travel"
+    elif trip_pct is not None and int(trip_pct) <= 0:
+        split_mode = "gear_only"
     facts.trip_cap = trip_cap
     facts.gear_cap = gear_cap
     facts.budget_split_label = str(chosen.get("label") or "")
@@ -1256,7 +1296,7 @@ async def budget_split(state: TripGearState, runtime: Runtime[TurnContext]) -> D
         state, runtime, "budget_split",
         f"预算 {facts.budget:g} 元分成 行程 {trip_cap:g} / 装备 {gear_cap:g}",
     )
-    return {
+    payload: Dict[str, Any] = {
         "facts": facts.model_dump(),
         "constraints": [item.model_dump() for item in constraints],
         "budget_split": {
@@ -1265,9 +1305,15 @@ async def budget_split(state: TripGearState, runtime: Runtime[TurnContext]) -> D
             "gear_cap": gear_cap,
             "label": facts.budget_split_label,
             "source": facts.budget_split_source,
+            "mode": split_mode,
         },
+        "split_mode": split_mode,
         "status": "split_ready",
     }
+    if split_mode == "travel":
+        # 只排行程：整段装备（gear/owned/shop）都不跑，输出等价 travel
+        payload["with_gear"] = False
+    return payload
 
 
 async def clarify(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
@@ -1421,16 +1467,21 @@ def build_trip_gear_plan_graph(checkpointer: Optional[Any] = None, *, with_gear:
         "clarify", after_clarify,
         {"clarify": "clarify", "plan": "budget_split", "end": END},
     )
-    graph.add_edge("budget_split", "plan")
+
     if with_gear:
         graph.add_node("gear", gear, timeout=NODE_TIMEOUTS["gear"])
         graph.add_node("owned", owned, timeout=NODE_TIMEOUTS["owned"])
         graph.add_node("shop", shop, timeout=NODE_TIMEOUTS["shop"])
-        graph.add_edge("plan", "gear")
+        # 装备段是否走，看这一轮的分成（滑条两端各退化成一种纯形态）
+        graph.add_conditional_edges(
+            "budget_split", after_budget_split, {"plan": "plan", "gear": "gear"}
+        )
+        graph.add_conditional_edges("plan", after_plan, {"gear": "gear", "verify": "verify"})
         graph.add_edge("gear", "owned")
         graph.add_edge("owned", "shop")
         graph.add_edge("shop", "verify")
     else:
+        graph.add_edge("budget_split", "plan")
         graph.add_edge("plan", "verify")
     graph.add_node("verify_clarify", verify_clarify, timeout=NODE_TIMEOUTS["verify_clarify"])
     graph.add_node("repair_confirm", repair_confirm, timeout=NODE_TIMEOUTS["repair_confirm"])

@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-11T15:00:35",
+  "generated_at": "2026-11-11T15:55:11",
   "graphs": [
     {
       "id": "memory",
@@ -429,14 +429,26 @@
         {
           "src": "budget_split",
           "dst": "plan",
-          "label": "",
-          "conditional": false
+          "label": "plan",
+          "conditional": true
+        },
+        {
+          "src": "budget_split",
+          "dst": "gear",
+          "label": "gear",
+          "conditional": true
         },
         {
           "src": "plan",
           "dst": "gear",
-          "label": "",
-          "conditional": false
+          "label": "gear",
+          "conditional": true
+        },
+        {
+          "src": "plan",
+          "dst": "verify",
+          "label": "verify",
+          "conditional": true
         },
         {
           "src": "gear",
@@ -453,6 +465,12 @@
         {
           "src": "shop",
           "dst": "verify",
+          "label": "",
+          "conditional": false
+        },
+        {
+          "src": "budget_split",
+          "dst": "plan",
           "label": "",
           "conditional": false
         },

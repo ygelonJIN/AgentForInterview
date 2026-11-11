@@ -24,6 +24,8 @@ DEFAULT_LABEL = "80/20"
 DEFAULT_SOURCE = "默认（未选择时按行程优先）"
 
 _RATIO_RE = re.compile(r"(\d{1,3})\s*[/:：]\s*(\d{1,3})")
+# 滑动条只回一个整数：直接当"行程占比"
+_BARE_PERCENT_RE = re.compile(r"(?<!\d)(\d{1,3})(?!\d)")
 _GEAR_RATIO_RE = re.compile(r"装备\s*(?:占|比例)?\s*(\d{1,3})\s*%")
 _TRIP_AMOUNT_RE = re.compile(r"行程(?:预算)?\s*(?:[:：]|占)?\s*(\d+(?:\.\d+)?)\s*元?")
 _GEAR_AMOUNT_RE = re.compile(r"装备(?:预算)?\s*(?:[:：]|占)?\s*(\d+(?:\.\d+)?)\s*元?")
@@ -48,8 +50,9 @@ def caps(budget: float, gear_cap: float) -> Tuple[float, float]:
 def parse(text: str, budget: float) -> Optional[Dict[str, Any]]:
     """解析用户的答案；认不出来返回 None（调用方回落到默认档）。
 
-    接受三种写法：
-    - 档位 ``80/20`` / ``50/50`` / ``20/80``
+    接受四种写法：
+    - 滑动条回的裸数字 ``80``（= 行程占比 80%）
+    - 档位 ``80/20``（行程/装备）
     - 装备占比 ``装备 30%``
     - 金额 ``装备预算 1000`` / ``行程 4000``
     """
@@ -63,22 +66,34 @@ def parse(text: str, budget: float) -> Optional[Dict[str, Any]]:
         trip_part, gear_part = int(match.group(1)), int(match.group(2))
         if trip_part + gear_part > 0:
             gear = total * gear_part / (trip_part + gear_part)
-            return {"gear_cap": round(gear, 2), "label": f"{trip_part}/{gear_part}",
-                    "source": "用户选择"}
+            return {"gear_cap": round(gear, 2), "trip_pct": trip_part,
+                    "label": f"{trip_part}/{gear_part}", "source": "用户选择"}
 
     match = _GEAR_RATIO_RE.search(raw)
     if match:
-        return {"gear_cap": round(total * int(match.group(1)) / 100, 2), "label": "自定义",
-                "source": "用户选择"}
+        pct = max(0, min(100, int(match.group(1))))
+        return {"gear_cap": round(total * pct / 100, 2), "trip_pct": 100 - pct,
+                "label": "自定义", "source": "用户选择"}
 
     match = _GEAR_AMOUNT_RE.search(raw)
     if match:
-        return {"gear_cap": round(float(match.group(1)), 2), "label": "自定义",
-                "source": "用户选择"}
+        gear = max(0.0, min(float(match.group(1)), total))
+        return {"gear_cap": round(gear, 2), "trip_pct": round((1 - gear / total) * 100),
+                "label": "自定义", "source": "用户选择"}
 
     match = _TRIP_AMOUNT_RE.search(raw)
     if match:
-        return {"gear_cap": round(max(0.0, total - float(match.group(1))), 2),
+        trip = max(0.0, min(float(match.group(1)), total))
+        return {"gear_cap": round(total - trip, 2), "trip_pct": round(trip / total * 100),
                 "label": "自定义", "source": "用户选择"}
+
+    # 滑动条：一个 0~100 的整数 = 行程占比（放在金额/百分比之后，
+    # 否则"装备 30%"会被当成"行程 30%"）
+    match = _BARE_PERCENT_RE.search(raw)
+    if match:
+        trip_pct = max(0, min(100, int(match.group(1))))
+        return {"gear_cap": round(total * (100 - trip_pct) / 100, 2),
+                "trip_pct": trip_pct, "label": f"{trip_pct}/{100 - trip_pct}",
+                "source": "用户选择"}
 
     return None

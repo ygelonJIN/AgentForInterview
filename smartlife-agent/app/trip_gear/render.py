@@ -73,6 +73,7 @@ def render(
     spend: Optional[Dict[str, Any]] = None,
     *,
     with_gear: bool = True,
+    with_itinerary: bool = True,
 ) -> str:
     lines: List[str] = []
 
@@ -81,7 +82,7 @@ def render(
     for constraint in constraints[:12]:
         lines.append(f"- {constraint.text}（来源：{constraint.source}）")
 
-    if itinerary.days:
+    if with_itinerary and itinerary.days:
         lines.append("")
         lines.append(f"## 行程（{itinerary.destination or facts.destination} · {len(itinerary.days)} 天）")
         for day in itinerary.days:

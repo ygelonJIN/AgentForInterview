@@ -255,7 +255,9 @@ class TripGearService:
                 # 住宿费必须落进 itinerary：以前模型路径只写 lodging 字段、
                 # 不写金额，住宿一分钱不进预算，"5000 只用掉 2000"有一半来自这里。
                 # 认不出的住宿方式按 0（不替用户假设高价），但会由约束清单提示。
-                lodging_cost=lodging_cost_for(facts.lodging, facts.effective_people),
+                lodging_cost=lodging_cost_for(
+                    facts.lodging, facts.effective_people, nightly=facts.lodging_budget
+                ),
             )
             for day in result.days
         ]

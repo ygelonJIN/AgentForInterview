@@ -54,16 +54,16 @@ def test_budget_split_asks_before_planning():
 
     payload = first["__interrupt__"][0].value
     assert payload["type"] == "trip_gear_budget_split"
-    assert [option["value"] for option in payload["questions"][0]["options"]] == [
-        "80/20", "50/50", "20/80",
-    ]
+    question = payload["questions"][0]
+    assert question["type"] == "slider"
+    assert (question["min"], question["max"], question["step"]) == (0, 100, 10)
 
 
 def test_resume_applies_chosen_ratio():
     graph, ctx, config, first = _start("周末两个人去莫干山露营，预算3000")
     assert first["__interrupt__"]
 
-    state = asyncio.run(graph.ainvoke(Command(resume="20/80"), config, context=ctx))
+    state = asyncio.run(graph.ainvoke(Command(resume="20"), config, context=ctx))
 
     assert state["budget_split"]["trip_cap"] == 600.0
     assert state["budget_split"]["gear_cap"] == 2400.0
@@ -85,7 +85,7 @@ def test_travel_does_not_ask_about_splitting():
     assert not state.get("budget_split")
 
 
-@pytest.mark.parametrize("answer,gear", [("80/20", 600.0), ("50/50", 1500.0)])
+@pytest.mark.parametrize("answer,gear", [("80", 600.0), ("50", 1500.0)])
 def test_ratio_is_applied_to_the_budget(answer, gear):
     graph, ctx, config, _first = _start("周末两个人去莫干山露营，预算3000", thread=f"split-{answer}")
     state = asyncio.run(graph.ainvoke(Command(resume=answer), config, context=ctx))
@@ -97,7 +97,7 @@ def test_equipment_spend_never_exceeds_the_gear_cap():
     from app.trip_gear.verify import gear_cost
 
     graph, ctx, config, _first = _start("周末两个人去莫干山露营，预算1000", thread="split-cap")
-    state = asyncio.run(graph.ainvoke(Command(resume="20/80"), config, context=ctx))
+    state = asyncio.run(graph.ainvoke(Command(resume="20"), config, context=ctx))
 
     from app.trip_gear.models import GearItem
 
@@ -138,3 +138,61 @@ def test_shopper_reserves_money_so_later_items_still_fit():
     assert set(products) == {"帐篷", "睡袋"}, "两件都该买到，只是帐篷退到便宜款"
     assert products["帐篷"]["price"] == 299
     assert sum(item["price"] for item in products.values()) <= 700
+
+
+def test_slider_at_100_means_travel_only():
+    """滑条拉到 100% 行程 = 不要装备：装备段整段跳过，输出等价 travel。"""
+    graph, ctx, config, _first = _start("周末两个人去莫干山露营，预算3000", thread="split-100")
+    state = asyncio.run(graph.ainvoke(Command(resume="100"), config, context=ctx))
+
+    assert state["split_mode"] == "travel"
+    assert state["with_gear"] is False
+    assert not state.get("gear")
+    assert state["itinerary"]["days"], "行程照常生成"
+
+
+def test_slider_at_0_means_gear_only():
+    """滑条拉到 0% 行程 = 只买装备：不排行程，只出装备清单。"""
+    graph, ctx, config, _first = _start("周末两个人去莫干山露营，预算3000", thread="split-0")
+    state = asyncio.run(graph.ainvoke(Command(resume="0"), config, context=ctx))
+
+    assert state["split_mode"] == "gear_only"
+    assert not state.get("itinerary"), "不该生成逐日行程"
+    assert state["gear"], "装备清单要照常推出来"
+    assert state["budget_split"]["trip_cap"] == 0.0
+    assert state["budget_split"]["gear_cap"] == 3000.0
+
+
+def test_panel_total_includes_lodging_like_verify():
+    """面板合计必须和 verify 同口径（条目 + 住宿），否则一个说没超、一个说超。"""
+    from app.ui.theme import plan_panels_html
+
+    payload = {
+        "facts": {"budget": 5000, "destination": "广东", "people": 2, "budget_scope": "all_in"},
+        "itinerary": {"destination": "广东", "days": [
+            {"day": 1, "items": [{"time": "09:00", "activity": "外滩", "cost": 1480}],
+             "lodging_cost": 600},
+            {"day": 2, "items": [{"time": "08:00", "activity": "小公园", "cost": 1500}],
+             "lodging_cost": 600},
+        ]},
+        "gear": [], "products": {}, "issues": [], "constraints": [],
+    }
+
+    html = plan_panels_html(payload)
+
+    assert "行程合计 ¥4180" in html, "2980 条目 + 1200 住宿"
+
+
+def test_card_does_not_ask_what_the_user_already_said():
+    """已经说过的预算/人数不能再问一遍——之前是因为预算没解析出来，卡片才补问。"""
+    from app.services.clarify_questions import build_questions
+    from app.trip_gear.constraints import derive_constraints
+
+    facts, _ = derive_constraints(
+        "上海，去广东，情侣，一周，5000块，要去很多城市，包含汕头，"
+        "做一个规划，我有一个pocket3，酒店找300左右一晚"
+    )
+
+    questions = build_questions(["出发日期"], facts)
+
+    assert [q["key"] for q in questions] == ["start_date"]

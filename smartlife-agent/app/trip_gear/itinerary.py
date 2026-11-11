@@ -13,12 +13,14 @@ DAY_WINDOW_MIN = 840  # 8:00-22:00
 LODGING_PRICE = {"camp": 50.0, "hotel": 400.0}
 
 
-def lodging_cost_for(lodging: str, people=None, nights: int = 1) -> float:
+def lodging_cost_for(lodging: str, people=None, nights: int = 1, nightly=None) -> float:
     """按住宿类型算一晚的人均费用；认不出的类型按 0（当作不需要花钱）。
 
     ``people`` 允许为 None（用户没说人数），此时按 1 人计。
+    ``nightly`` 是用户明说的"一晚 300 左右"——有它就用它，不要拿默认的
+    酒店价去算，否则用户说 300、系统按 400 记，最后莫名超预算。
     """
-    price = LODGING_PRICE.get(str(lodging or "").strip().lower(), 0.0)
+    price = float(nightly) if nightly else LODGING_PRICE.get(str(lodging or "").strip().lower(), 0.0)
     count = max(1, int(people or 1))
     return round(price * count * max(1, int(nights)), 2)
 
@@ -255,7 +257,9 @@ def fallback_itinerary(facts: TripFacts) -> Itinerary:
                 city=city_of_day.get(day, ""),
                 items=items,
                 lodging=facts.lodging,
-                lodging_cost=lodging_cost_for(facts.lodging, facts.effective_people),
+                lodging_cost=lodging_cost_for(
+                    facts.lodging, facts.effective_people, nightly=facts.lodging_budget
+                ),
             )
         )
     return apply_fixed_events(Itinerary(destination=place, days=plans), facts)

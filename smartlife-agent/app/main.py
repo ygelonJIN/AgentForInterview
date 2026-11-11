@@ -405,6 +405,25 @@ def render_clarify_card() -> None:
                 unsafe_allow_html=True,
             )
             choice = ""
+            if str(question.get("type") or "") == "slider":
+                # 预算分配用滑条：0 = 只买装备（shopping），100 = 只排行程（travel）
+                value = st.slider(
+                    question.get("title") or key,
+                    min_value=int(question.get("min", 0)),
+                    max_value=int(question.get("max", 100)),
+                    value=int(question.get("default", 80)),
+                    step=int(question.get("step", 10)),
+                    key=f"clarify_slider_{key}",
+                    label_visibility="collapsed",
+                )
+                hint = str(question.get("hint") or "").strip()
+                if hint:
+                    st.caption(hint)
+                answers.append({
+                    "prefix": question.get("answer_prefix") or "",
+                    "value": str(value),
+                })
+                continue
             if labels:
                 choice = st.radio(
                     question.get("title") or key,

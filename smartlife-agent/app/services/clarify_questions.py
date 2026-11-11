@@ -51,8 +51,8 @@ def _question(key: str, title: str, options: Sequence[Dict[str, str]]) -> Dict[s
 def date_options(today=None) -> List[Dict[str, str]]:
     """出发日期给三个相对写法；解析交给 parse_start_date，不在这里算死。"""
     return [
-        _option("这周六"),
-        _option("下周一"),
+        _option("明天"),
+        _option("后天"),
         _option("下个月"),
     ]
 
@@ -66,18 +66,25 @@ _VERIFY_OPTIONS = {
 
 
 def budget_split_questions(budget: float) -> List[Dict[str, Any]]:
-    """预算到位后问一次"行程和装备各拿多少"。
+    """预算到位后问一次"行程和装备各拿多少"，用滑动条。
 
-    这不是缺信息，是取舍：trip_gear 里两边都要，比例只能用户定。三档都是
-    "两边都要"前提下的倾斜，不提供"只排行程"（那是 travel）。
+    0 和 100 是两个端点：0 = 只买装备（走 shopping），100 = 只排行程（走 travel），
+    中间才是 trip_gear。滑条比三个选项更能表达"偏一点"这种诉求。
     """
-    from app.trip_gear.split import options as split_options
-
-    return [_question(
-        "budget_split",
-        f"预算 {float(budget):g} 元怎么分？",
-        split_options(),
-    )]
+    return [{
+        "key": "budget_split",
+        "type": "slider",
+        # 标题要跟"预算多少"区分开：金额已经记下了，这里只问比例
+        "title": f"行程和装备怎么分这 {float(budget):g} 元？",
+        "answer_prefix": "预算分配",
+        "min": 0,
+        "max": 100,
+        "step": 10,
+        "default": 80,
+        "hint": "只定比例，不改金额：0 = 只买装备，100 = 只排行程",
+        "options": [],
+        "allow_custom": False,
+    }]
 
 
 def build_questions(

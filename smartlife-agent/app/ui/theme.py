@@ -1260,6 +1260,11 @@ def _day_html(day: Dict[str, Any]) -> str:
             + "</span>"
             f'<span class="sl-tl-cost">{_money(cost) if cost else "—"}</span></div>'
         )
+    # 当天小计同样要算住宿：只算条目会让"每天 ¥1480"和面板合计对不上
+    try:
+        subtotal += float(day.get("lodging_cost") or 0)
+    except (TypeError, ValueError):
+        pass
     if not items:
         items.append('<div class="sl-tl-item"><span class="sl-tl-time">—</span><span class="sl-tl-act">暂无安排</span><span class="sl-tl-cost">—</span></div>')
     if not day.get("title"):
@@ -1353,6 +1358,8 @@ def plan_panels_html(payload: Dict[str, Any]) -> str:
     ambiguous = payload.get("owned_ambiguous") or []
 
     days = itinerary.get("days") or []
+    # 行程合计必须和 verify 用同一个口径：条目花费 + 住宿费。
+    # 以前只加条目花费，于是面板写"没超预算"、05 却报"超出预算"。
     trip_total = 0.0
     for day in days:
         for entry in day.get("items", []) or []:
@@ -1360,6 +1367,10 @@ def plan_panels_html(payload: Dict[str, Any]) -> str:
                 trip_total += float(entry.get("cost") or 0)
             except (TypeError, ValueError):
                 pass
+        try:
+            trip_total += float(day.get("lodging_cost") or 0)
+        except (TypeError, ValueError):
+            pass
 
     gear_total = 0.0
     for item in gear:

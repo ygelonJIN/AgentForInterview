@@ -24,3 +24,21 @@ def test_corpus_slots(case):
 
     for key, expected in case["expect"].items():
         assert actual.get(key) == expected, f"{case['message']} 的 {key} 期望 {expected!r}，实际 {actual.get(key)!r}"
+
+
+def test_price_before_unit_is_not_days_or_total_budget():
+    """「酒店找300左右一晚」：300 是房价，不能算总预算，也不能把「一晚」当成 2 天。"""
+    from app.nlu.slots import extract_slots
+
+    slots = extract_slots(
+        "上海，去广东，情侣，一周，5000块，要去很多城市，包含汕头，"
+        "做一个规划，我有一个pocket3，酒店找300左右一晚"
+    )
+
+    assert slots.origin == "上海", "句首裸地名 + 逗号 + 出行动词要认成出发地"
+    assert slots.destination == "广东"
+    assert slots.cities == ["汕头"], "上海是出发地，不该进串联城市"
+    assert slots.days == 7, "「一周」要读成 7 天"
+    assert slots.people == 2
+    assert slots.budget == 5000.0, "房价不能被当成整趟预算"
+    assert slots.lodging_budget == 300.0
