@@ -10,6 +10,7 @@ import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from app.trip_gear.models import GearItem
+from app.trip_gear.select import cheapest as cheapest_scored
 from app.trip_gear.select import pick as pick_scored
 from app.trip_gear.spec_schema import subcategory_for
 
@@ -85,12 +86,44 @@ class GearShopper:
         if not self.search:
             return products
 
+        # 先算"把每件买到手的最低成本"，再按它给后面的装备留底线：
+        # 否则前面几件会按"评分最高"把钱花光，后面的件即使有更便宜的款也买不到。
+        pending = [
+            item for item in gear
+            if item.status == "need_buy" and item.name not in products
+        ]
+        floor_by_name = {item.name: self._min_price(item) for item in pending}
+
+        # 底线也装不下时，从清单末尾开始省——装备清单是按重要性排的，
+        # 末尾那几件才是可以不要的。
+        keep = list(pending)
+        dropped: set = set()
+        total_floor = sum(floor_by_name[name] or 0.0 for name in floor_by_name)
+        while (
+            remaining_budget is not None
+            and keep
+            and total_floor > remaining_budget + 1e-6
+        ):
+            item = keep.pop()
+            dropped.add(item.name)
+            total_floor -= floor_by_name.get(item.name) or 0.0
+        reserve = total_floor if remaining_budget is not None else 0.0
+
         kept: List[GearItem] = []
         for item in gear:
             if item.status != "need_buy" or item.name in products:
                 kept.append(item)
                 continue
-            product, reason = self._select(item, remaining_budget)
+            if item.name in dropped:
+                item.status = "skipped"
+                item.reason = (item.reason + "；预算不足，已按额度省略").strip("；")
+                kept.append(item)
+                continue
+            reserve -= floor_by_name.get(item.name) or 0.0
+            cap = None if remaining_budget is None else remaining_budget - reserve
+            product, reason = self._select(
+                item, remaining_budget if cap is None else max(0.0, cap)
+            )
             if product:
                 products[item.name] = product
                 if remaining_budget is not None:
@@ -98,11 +131,24 @@ class GearShopper:
                 kept.append(item)
                 continue
             if reason == "budget":
-                item.reason = (item.reason + "；预算不足，未选款").strip("；")
+                # 额度是用户选的，就该在额度内给结论：买不起的件标成"已省略"，
+                # 不再留一条"未选款"——那个状态既没买到、也不算结束，只会被当成故障。
+                item.status = "skipped"
+                item.reason = (item.reason + "；预算不足，已按额度省略").strip("；")
                 kept.append(item)
             # reason == "no_match"：库里没有，直接不进清单
         gear[:] = kept
         return products
+
+    def _min_price(self, item: GearItem) -> Optional[float]:
+        """这件装备"还能满足规格"的最低价；没有可用候选返回 None。"""
+        return cheapest_scored(
+            self._candidates(item),
+            category=item.name,
+            gear_name=item.name,
+            facts=self.facts,
+            qty=item.qty,
+        )
 
     def candidates_for(self, item: GearItem) -> List[Dict[str, Any]]:
         """公开候选集（模型挑款复用同一批候选，避免两套检索）。"""

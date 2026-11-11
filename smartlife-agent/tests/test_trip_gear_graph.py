@@ -2,6 +2,9 @@
 
 import asyncio
 
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
+
 from app.graphs.context import TurnContext
 from app.graphs.subgraphs.trip_gear import build_trip_gear_graph
 from app.trip_gear.models import DayPlan, GearItem, Itinerary, ItineraryItem
@@ -74,7 +77,21 @@ def _run(message: str, history_text: str = "", chat_history=None, **kwargs):
     payload = {"user_message": message, "user_id": "user-1", "thread_id": "trip-gear"}
     if history_text:
         payload["history_text"] = history_text
-    return asyncio.run(build_trip_gear_graph().ainvoke(payload, context=ctx))
+
+    async def _drive():
+        graph = build_trip_gear_graph(checkpointer=InMemorySaver())
+        config = {"configurable": {"thread_id": "trip-gear"}}
+        state = await graph.ainvoke(payload, config, context=ctx)
+        # 有预算的行程现在会先停在"预算怎么分"；测试里当作已选"行程优先"。
+        for _ in range(2):
+            payload_interrupt = (state.get("__interrupt__") or [{}])[0]
+            value = getattr(payload_interrupt, "value", payload_interrupt) or {}
+            if not isinstance(value, dict) or value.get("type") != "trip_gear_budget_split":
+                return state
+            state = await graph.ainvoke(Command(resume="50/50"), config, context=ctx)
+        return state
+
+    return asyncio.run(_drive())
 
 
 def test_full_chain_renders_constraints_itinerary_and_gear():
@@ -143,14 +160,14 @@ def test_over_budget_items_are_left_unbought_instead_of_overspending():
     )
 
     response = state["response"]
-    assert "预算不足，未选款" in response
+    assert "已按预算省略" in response
     # 总花费必须落在预算内，而不是靠事后砍单把账做平
     assert "¥500" in response
     assert not any(
         issue["constraint"].startswith("预算") for issue in state["issues"]
     )
     assert any(
-        "预算不足" in str(issue["constraint"]) for issue in state["issues"]
+        "已按预算省略" in str(issue["constraint"]) for issue in state["issues"]
     )
 
 
@@ -310,15 +327,17 @@ def test_verdict_marks_missing_information_as_needs_input():
     assert verdict["state"] in {"feasible", "needs_input", "infeasible"}
 
 
-def test_verify_asks_when_information_would_change_the_verdict():
-    """预算兜不住 + 规格不明时，应当停下来问，而不是硬出一份"看起来可行"的方案。"""
+def test_tight_budget_omits_gear_instead_of_leaving_it_unbought():
+    """装备额度不够时：能买的照买，买不起的标"已按预算省略"。
+
+    以前会留一条"预算不足，未选款"——既没买到、也不算结束，看起来像故障。
+    现在额度是用户选的，就按额度给结论：省略并说明，不再出现"装不下"。
+    """
     from langgraph.checkpoint.memory import InMemorySaver
     from langgraph.types import Command
 
     graph = build_trip_gear_graph(checkpointer=InMemorySaver())
-    cfg = {"configurable": {"thread_id": "trip-gear-verify-ask"}}
-    # 不注入 planner：用无模型兜底行程，它会把 lodging 落成 camp，
-    # 免得"住宿没兑现"这条无关问题把结论顶成不可行。
+    cfg = {"configurable": {"thread_id": "trip-gear-budget-omit"}}
     ctx = TurnContext(services=_Services(None), trace_id="trip-gear").with_extra(
         product_search=_search_with_lead,
         weather_lookup=lambda _destination, _date: {
@@ -329,29 +348,23 @@ def test_verify_asks_when_information_would_change_the_verdict():
         },
     )
 
-    first = asyncio.run(
-        graph.ainvoke(
-            {"user_message": "周末两个人去莫干山露营，预算300", "user_id": "user-1",
-             "thread_id": "trip-gear-verify-ask"},
-            cfg,
-            context=ctx,
-        )
-    )
-    interrupts = first.get("__interrupt__") or []
-    assert interrupts, "该问的时候要停下来问"
-    payload = interrupts[0].value
-    assert payload["type"] == "trip_gear_verify_clarify"
-    assert payload["question"]
-    # 中断时节点写入还没提交，结论要从问卷里读——前端也是这么取的。
-    assert payload["verdict"]["state"] == "needs_input"
+    state = asyncio.run(graph.ainvoke(
+        {"user_message": "周末两个人去莫干山露营，预算1000", "user_id": "user-1",
+         "thread_id": "trip-gear-budget-omit"},
+        cfg,
+        context=ctx,
+    ))
+    assert state["__interrupt__"][0].value["type"] == "trip_gear_budget_split"
+    state = asyncio.run(graph.ainvoke(Command(resume="20/80"), cfg, context=ctx))
 
-    # 用户补一句：帐篷能睡三人、预算其实是 3000 -> 应当复审后转为可行。
-    second = asyncio.run(
-        graph.ainvoke(Command(resume="帐篷能睡三个人，预算其实是3000"), cfg, context=ctx)
-    )
-    assert second["status"] == "ok"
-    assert second["verdict"]["state"] == "feasible"
-    assert "## 装备清单" in second["response"]
+    assert not state.get("__interrupt__")
+    omitted = [
+        item["name"] for item in state["gear"]
+        if item["status"] == "skipped" and "预算不足" in (item.get("reason") or "")
+    ]
+    assert omitted, "额度不够时应当明确省略，而不是留一条买不到的行"
+    assert any("已按预算省略" in str(i["constraint"]) for i in state["issues"])
+    assert not any("未选款" in str(i["constraint"]) for i in state["issues"])
 
 
 def test_verify_clarify_gives_up_after_round_limit():
@@ -370,7 +383,7 @@ def test_verify_clarify_gives_up_after_round_limit():
             "precipitation_probability": 10,
         },
     )
-    payload = {"user_message": "周末两个人去莫干山露营，预算300", "user_id": "user-1",
+    payload = {"user_message": "周末两个人去莫干山露营，预算3000", "user_id": "user-1",
                "thread_id": "trip-gear-verify-limit"}
 
     state = asyncio.run(graph.ainvoke(payload, cfg, context=ctx))
@@ -713,3 +726,119 @@ def test_model_cannot_move_the_itinerary_to_the_departure_city():
     itinerary, _ = TripGearService._from_plan_output(facts, output)
 
     assert [day.city for day in itinerary.days] == ["汕头", "广州"]
+
+
+def test_partial_answer_asks_again_for_what_is_still_missing():
+    """补答里有一项没解析出来时，要再问那一项，不能直接停住。"""
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.types import Command
+
+    graph = build_trip_gear_graph(checkpointer=InMemorySaver())
+    cfg = {"configurable": {"thread_id": "trip-gear-ask-again"}}
+    ctx = TurnContext(services=_Services(None), trace_id="trip-gear").with_extra(
+        product_search=_search,
+    )
+
+    first = asyncio.run(graph.ainvoke(
+        {"user_message": "去莫干山两天，预算1500", "user_id": "user-1",
+         "thread_id": "trip-gear-ask-again"},
+        cfg,
+        context=ctx,
+    ))
+    assert first["__interrupt__"][0].value["missing"] == ["人数", "出发日期"]
+
+    # 人数答了、日期给了个解析不出来的"1"
+    second = asyncio.run(graph.ainvoke(
+        Command(resume="人数：1 人；出发日期：1"), cfg, context=ctx
+    ))
+    interrupts = second.get("__interrupt__") or []
+    assert interrupts, "还缺出发日期，应当继续问"
+    assert interrupts[0].value["type"] == "trip_gear_clarify"
+    assert interrupts[0].value["missing"] == ["出发日期"]
+
+    # 补上日期后正常往下走（下一站是预算分配）
+    third = asyncio.run(graph.ainvoke(Command(resume="下周一"), cfg, context=ctx))
+    assert third["__interrupt__"][0].value["type"] == "trip_gear_budget_split"
+
+
+def test_incomplete_answers_keep_asking():
+    """答了但没解析出来：继续问，不设轮数上限。"""
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.types import Command
+
+    graph = build_trip_gear_graph(checkpointer=InMemorySaver())
+    cfg = {"configurable": {"thread_id": "trip-gear-ask-limit"}}
+    ctx = TurnContext(services=_Services(None), trace_id="trip-gear").with_extra(
+        product_search=_search,
+    )
+    state = asyncio.run(graph.ainvoke(
+        {"user_message": "去莫干山两天，预算1500", "user_id": "user-1",
+         "thread_id": "trip-gear-ask-limit"},
+        cfg,
+        context=ctx,
+    ))
+
+    for _ in range(3):
+        assert state.get("__interrupt__"), "答了但没补齐，应当继续问"
+        state = asyncio.run(graph.ainvoke(Command(resume="随便写点"), cfg, context=ctx))
+
+    assert state.get("__interrupt__"), "不设轮数上限：还在答就继续问"
+    assert state["__interrupt__"][0].value["type"] == "trip_gear_clarify"
+
+
+def test_empty_answer_stops_asking():
+    """用户没作答（关掉卡片/空回答）就收尾，不拿同一张卡反复拦人。"""
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.types import Command
+
+    graph = build_trip_gear_graph(checkpointer=InMemorySaver())
+    cfg = {"configurable": {"thread_id": "trip-gear-ask-empty"}}
+    ctx = TurnContext(services=_Services(None), trace_id="trip-gear").with_extra(
+        product_search=_search,
+    )
+    state = asyncio.run(graph.ainvoke(
+        {"user_message": "去莫干山两天，预算1500", "user_id": "user-1",
+         "thread_id": "trip-gear-ask-empty"},
+        cfg,
+        context=ctx,
+    ))
+    assert state.get("__interrupt__")
+
+    state = asyncio.run(graph.ainvoke(Command(resume=""), cfg, context=ctx))
+
+    assert not state.get("__interrupt__")
+    assert state.get("status") == "needs_info"
+
+
+def test_followup_message_keeps_the_trip_context():
+    """补一句话不该把上一轮的目的地/天数/人数/日期/预算/城市全丢掉。"""
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    graph = build_trip_gear_graph(checkpointer=InMemorySaver())
+    cfg = {"configurable": {"thread_id": "trip-gear-carry"}}
+    ctx = TurnContext(services=_Services(None), trace_id="trip-gear").with_extra(
+        product_search=_search,
+    )
+
+    state = asyncio.run(graph.ainvoke(
+        {
+            "user_message": "我有一个pocket3",
+            "history_text": (
+                "上海出发，去广东玩五天，要去很多城市，包括汕头，预算5000\n"
+                "人数：1 人；出发日期：明天"
+            ),
+            "user_id": "user-1",
+            "thread_id": "trip-gear-carry",
+        },
+        cfg,
+        context=ctx,
+    ))
+
+    payload = state["__interrupt__"][0].value
+    facts = payload["facts"]
+    assert facts["destination"] == "广东"
+    assert facts["days"] == 5
+    assert facts["people"] == 1
+    assert facts["start_date"]
+    assert facts["budget"] == 5000
+    assert "汕头" in facts["cities"]

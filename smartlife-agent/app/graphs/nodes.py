@@ -20,15 +20,48 @@ from app.streaming import EventType
 from app.session import build_thread_id
 
 
+def _sanitize_history(messages: List[Any]) -> List[Any]:
+    """去掉会让 thinking 模型 400 的 assistant 工具消息，以及它们的 tool 结果。
+
+    只丢"没有 reasoning_content 的 tool_calls 消息"——有 reasoning 的照常保留，
+    新一轮拼出来的消息本来就不带 tool_calls。
+    """
+    dropped_calls: set = set()
+    kept: List[Any] = []
+    for message in messages:
+        kind = getattr(message, "type", "")
+        if kind in {"ai", "assistant"} and getattr(message, "tool_calls", None):
+            reasoning = (getattr(message, "additional_kwargs", None) or {}).get(
+                "reasoning_content"
+            )
+            if reasoning:
+                kept.append(message)
+                continue
+            for call in message.tool_calls or []:
+                if isinstance(call, dict) and call.get("id"):
+                    dropped_calls.add(call["id"])
+            continue
+        if kind == "tool" and getattr(message, "tool_call_id", "") in dropped_calls:
+            continue
+        kept.append(message)
+    return kept
+
+
 async def prepare(state: TurnState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
     """建立 thread、记录用户消息、一次性派生共享约束。"""
     thread_id = build_thread_id(state["user_id"], state.get("scene", "general"), state["session_id"])
     await runtime.context.services.begin_turn(state["user_message"], thread_id)
     constraints = build_composite_plan(state["user_message"]).constraints
     # react 等子图按 messages 驱动，父图必须先播种，否则子图读到 KeyError。
-    messages = list(state.get("messages") or [])
-    if not messages:
-        messages = [HumanMessage(content=state["user_message"])]
+    #
+    # 两件必须做的事：
+    # 1. 本轮用户消息一定要接上。检查点会把上一轮的 messages 带回来，
+    #    以前只在"没有 messages"时才塞本轮输入，于是第二轮起模型看到的是
+    #    上一轮的问题，本轮这句根本没进上下文。
+    # 2. 历史里"带 tool_calls 但没有 reasoning_content"的 assistant 消息要丢掉，
+    #    否则 thinking 模型直接 400；它对应的 tool 消息一并丢弃，避免孤儿。
+    messages = _sanitize_history(list(state.get("messages") or []))
+    messages.append(HumanMessage(content=state["user_message"]))
     return {
         "thread_id": thread_id,
         "constraints": constraints.model_dump(),

@@ -1,6 +1,6 @@
 """旅行领域服务。
 
-只提供**能力**：prompt、规划/审核模型调用、工具执行、上下文构建、轻量对话。
+只提供**能力**：prompt、规划/审核模型调用、工具执行、上下文构建。
 控制流（需求抽取 → 证据 → 计划 → 审核 → 修订）在
 ``app.graphs.subgraphs.travel`` 的图里。
 """
@@ -14,7 +14,6 @@ from app.config import create_llm, create_small_llm
 from app.memory.long_term import LongTermMemory
 from app.llm_json import ainvoke_json, invoke_json
 from app.observability import extract_model_usage, timed_span
-from app.streaming import EventType
 from app.tools.travel_executor import TravelToolExecutor
 
 
@@ -88,12 +87,6 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
             ("user", "原始请求：{original_request}\n\n上一版计划：{plan}\n\n审核意见：{feedback}\n\n请输出完整改进后的计划。")
         ])
 
-        self.chat_prompt = ChatPromptTemplate.from_messages([
-            ("system", """你是旅游规划专家。根据用户需求提供目的地推荐、景点介绍、出行建议。
-用中文回复，内容实用、结构清晰。"""),
-            ("user", "{input}")
-        ])
-
     @property
     def memory(self):
         if self._memory is None:
@@ -120,16 +113,19 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
         行程有几天就查几天：只查出发那天，等于把第 2、3 天的天气留成空白，
         而大纲里又不会说"这几天没查过"。
         """
-        from app.graphs.subgraphs.travel import extract_requirements
+        from app.nlu.slots import extract_slots
 
-        requirements = extract_requirements(user_input)
-        destination = str(requirements.get("destination") or "").strip()
+        # 槽位只有一个来源：nlu.slots。以前这里从 travel 子图 import
+        # extract_requirements，travel 改成复用行程图后那个函数没了，
+        # 这条调用一直抛 ImportError，购物链路取天气时会直接失败。
+        slots = extract_slots(user_input)
+        destination = str(slots.destination or "").strip()
         if not destination:
             return ""
-        raw_date = str(requirements.get("start_date") or "").strip()
+        raw_date = str(slots.start_date or "").strip()
         travel_date = date.fromisoformat(raw_date) if raw_date else date.today()
         try:
-            span = max(1, min(16, int(requirements.get("days") or 1)))
+            span = max(1, min(16, int(slots.days or 1)))
         except (TypeError, ValueError):
             span = 1
 
@@ -340,62 +336,3 @@ severity 只能是 pass、minor、critical。只有 critical 才设置 is_satisf
             plan or "",
             flags=re.DOTALL,
         ).strip()
-
-
-    async def chat_streaming(
-        self,
-        user_input: str,
-        user_id: str = "user_001",
-        queue=None
-    ) -> str:
-        """
-        异步流式旅游问答
-
-        Args:
-            user_input: 用户输入
-            user_id: 用户ID
-            queue: 事件出口（EventSink，由调用方节点提供）
-
-        Returns:
-            str: 回复文本
-        """
-        guide_context = self._read_local_guides(user_input)
-        memory_context = self._get_memory_context(user_id, query=user_input)
-        parts = [user_input]
-        if guide_context:
-            parts.append("【参考攻略】\n" + guide_context)
-        if memory_context:
-            parts.append(memory_context)
-        full_input = "\n\n".join(parts)
-
-        if queue:
-            await queue.emit(EventType.STEP, {
-                "step": 2,
-                "total": 4,
-                "name": "旅游资料检索",
-                "description": "读取本地攻略和跨场景偏好，为旅游问答准备上下文",
-            }, step="retrieval")
-            await queue.emit(EventType.STEP, {
-                "step": 3,
-                "total": 4,
-                "name": "生成回复",
-                "description": "大模型流式生成旅游建议",
-            }, step="generate")
-            await queue.emit_thinking("🧠 正在为您查询旅游信息...", step="generate")
-
-        chain = self.chat_prompt | self.llm
-        full_response = ""
-
-        with timed_span(
-            "model.travel_chat",
-            trace_id=getattr(queue, "trace_id", ""),
-            attributes={"user_id": user_id},
-        ) as measurement:
-            async for chunk in chain.astream({"input": full_input}):
-                measurement.add_attributes(extract_model_usage(chunk))
-                if chunk.content:
-                    full_response += chunk.content
-                    if queue:
-                        await queue.emit_token(chunk.content, step="generate")
-
-        return full_response

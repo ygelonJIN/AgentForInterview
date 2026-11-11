@@ -213,3 +213,25 @@ def test_overseas_trip_keeps_weather_and_fx_apart():
     keys = {item.key for item in constraints}
     assert {"weather", "fx", "destination"} <= keys
     assert "air_quality" not in keys  # AQI 40 是优，不写条目
+
+
+def test_domestic_cities_have_an_alias_so_geocoding_does_not_fail():
+    """地名表里的国内城市必须有英文别名。
+
+    回归背景：Open-Meteo 对中文原词常常返回空（"汕头"→[]，"Shantou"→汕头市），
+    没有别名就会在查路线/天气时抛 LocationUncertain，用户看到的是"工具坏了"。
+    """
+    from app.tools.geo import lookup_alias
+
+    # 常用的国内目的地 + 广东全省（这次踩雷的就是汕头、潮州）。
+    # 地名表里还有一百多个长尾小城没进别名表，属于已知缺口，不在这里兜。
+    must_have = (
+        "汕头", "潮州", "揭阳", "广州", "深圳", "珠海", "佛山", "东莞", "中山",
+        "惠州", "江门", "肇庆", "杭州", "上海", "北京", "成都", "重庆", "西安",
+        "南京", "苏州", "厦门", "青岛", "大连", "三亚", "丽江", "昆明", "大理",
+        "长沙", "武汉", "郑州", "济南", "沈阳", "哈尔滨", "南宁", "桂林", "海口",
+        "贵阳", "兰州", "西宁", "银川", "乌鲁木齐", "拉萨", "呼和浩特", "太原",
+        "合肥", "南昌", "福州", "长春",
+    )
+    missing = [city for city in must_have if lookup_alias(city) is None]
+    assert missing == [], f"这些城市还没有别名，查询会失败：{missing}"

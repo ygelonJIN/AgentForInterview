@@ -185,6 +185,30 @@ def _review_of(review_lookup: Optional[Callable[[str], Dict[str, Any]]], product
     return {"rating": float(rating), "count": count}
 
 
+def cheapest(
+    candidates: Iterable[Dict[str, Any]],
+    category: str,
+    gear_name: str,
+    facts: Any = None,
+    qty: int = 1,
+) -> Optional[float]:
+    """同品类里"仍然满足规格"的最低价（含数量）。没有可用候选时返回 None。
+
+    用途是给后续装备留底线：前面几件不能把钱花光，得保证后面每件还买得起
+    最便宜的那款。规格不过关的再便宜也不算——降预算不能降保障。
+    """
+    requirements = spec_requirements(facts, {gear_name}) if facts is not None else []
+    floor: Optional[float] = None
+    for product in candidates:
+        fit, _ = _fit(product, requirements)
+        if fit <= 0:
+            continue
+        price = float(product.get("price") or 0) * max(1, qty)
+        if floor is None or price < floor:
+            floor = price
+    return floor
+
+
 def pick(
     candidates: Iterable[Dict[str, Any]],
     category: str,

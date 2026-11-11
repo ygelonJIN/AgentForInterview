@@ -59,22 +59,38 @@
 3. `travel + plan_trip + plan_and_execute` → `travel`（同一张图，无装备段）；
 4. 其余按主意图：`shopping` / `customer_service` / `travel` / `general`。
 
-`travel` 不再是独立链路：`build_travel_graph()` 把 `build_trip_gear_graph(with_gear=False)` 挂成 `travel_plan` 节点，`travel_chat` 只接单点问答（`route=react`）。01–05 面板由两者共用——同一张图、同一套输出，travel 只是没有装备段。
+`travel` 只有一条路：`build_travel_graph()` 只挂一个 `travel_plan` 节点，跑的就是 `build_trip_gear_graph(with_gear=False)`，与 `trip_gear` 共用 `derive → plan → verify → repair → finalize` 和 01–05 面板，差别只有 `with_gear` 一个参数。**没有 `travel_chat`**：早先那条"不进规划、直接把问题丢给大模型写正文"的分支已删除——它让同一句话有时出面板、有时出整篇 Markdown，且缺天数/人数/日期时模型会替用户定。所有 travel 请求现在都进图，缺信息由 `clarify` 追问。
 
 判定顺序与阈值（`app/nlu/signals.py`）：
 
 | 层 | 规则 |
 |---|---|
-| 关键词打分 | 品类/品牌 1.0、购物动作 0.6、泛化词 0.4；地名 1.0、强旅游词 1.0、场景词 0.6、时长 1.0、地名+出行语境 0.4。跨度去重（"跑步鞋"只算一次），否定词（"不要帐篷"）直接扣掉 |
+| 关键词打分 | 品类/品牌 1.0、购物动作 0.6、泛化词 0.4；地名 0.8、强旅游词 1.0、场景词 0.6、时长 1.0、地名+出行语境 0.4。跨度去重（"跑步鞋"只算一次），否定词（"不要帐篷"）直接扣掉 |
 | 购物就绪 | 必须命中**实义品类/品牌**且总分 ≥1.2；只有"价格/多少钱"不算 |
-| 旅游就绪 | 总分 ≥1.2；`route` 由规划词或"玩 N 天"决定 |
+| 旅游就绪 | 总分 ≥1.2，**且不能只靠地名**：地名之外没有强词/场景词/时长时，必须再配上出行语境（去/到/周末）才算。"上海和汕头哪个好玩"这类只有地名的句子交小模型 |
 | 复合 | 两类都就绪 → 取分数最高的两个，`confidence=0.9` |
-| 低置信 | 关键词层返回 `None` → 指代沿用 → 小模型（<0.55 分或 JSON 坏）→ 主模型仲裁一次 |
+| 延续 | 关键词层返回 `None` 时**默认沿用上一轮意图**，但有三条例外：跨领域新任务（新品类、订单/退款、换到别的领域）切换；寒暄（谢谢/好的）不沿用也不重算；句子里没有任何本领域实词、也没有指代（"今天天气怎么样""推荐一部电影"）交小模型判。同一个领域里的换目的地/改日期仍算延续，由 derive 按槽位覆盖 |
+| 低置信 | 关键词层返回 `None`（且无可沿用的上一轮）→ 小模型（<0.55 分或 JSON 坏）→ 主模型仲裁一次 |
 | 模型失败 | 有关键词证据就按关键词兜底（`confidence=0.4`），没有才回 `general` |
 
-`route` 只有两个消费方：`general`（ReAct / 单步）与 `travel`（chat / 规划图）。`shopping`、`trip_gear`、`customer_service` 不看它。
+### 关键词层只出证据，不定结论
+
+强弱口径集中在 `signals.IntentScores`（`shopping_strong` / `travel_strong` / `service_strong`）：
+品类+购买动作、强旅游词或"地名+时长/出发结构"、客服词凑够两个，才算强证据，可以直接短路；
+其余"就绪但不够硬"的一律交小模型，并把关键词结论作为线索写进 prompt（`{keyword_hint}`）。
+分类事件多带一个 `strength` 字段，"这次为什么没走模型"在界面上直接看得到。
+
+理由是可纠错：以前只要有一类就绪就 `return`，错判既没有模型复核，
+日志里也全是 `method=keyword`；而词表是开放集，靠补词永远追不上。
+出口兜底不变——模型失败时仍按关键词证据回落（`confidence=0.4`）。
+
+`route` 现在**没有图内消费方**：删掉 `travel_chat` 之后，`general` 恒为 ReAct、`travel` 恒为规划图，没有任何节点按 `route` 分叉。它只剩展示与日志价值（分类卡片里的"策略"）。`shopping`、`trip_gear`、`customer_service` 本来就不看它。要恢复按复杂度分叉时，应在子图内部决定，不要再回到"分类层替子图做决定"。
 
 `sub_intent=gear_plan` 的劫持改成显式枚举 + 中文限定词（`nodes._is_gear_plan`），不再用 `"gear" in sub_intent` 的包含判断。
+
+`prepare` 每轮都会把**本轮用户消息**接在检查点带回的历史后面，并把历史里
+"带 `tool_calls` 却没有 `reasoning_content`"的 assistant 消息连同它的 tool 结果一起丢掉——
+thinking 模型会拒收这种消息（400），而检查点会让它每轮重现。
 
 `general`（原 `react` 节点）绑到工具时会注入一条系统消息（`TOOL_USE_RULES`）：只查确实不知道的实时事实、查不到就说查不到、不拿工具结果拼行程；没有工具时不注入。
 
@@ -127,11 +143,19 @@
 `build_trip_gear_graph(with_gear=True/False)` 两种组装：`trip_gear` 是全量，`travel` 跳过 `gear` / `owned` / `shop` 三段。`verify` 收到 `with_gear=False` 时不判装备类约束（标 `unverified`），`render` 不输出装备分区。
 
 ```text
-derive → plan → gear → owned → shop → verify ─┬→ repair（自动修复）→ verify
-   └→ clarify（缺目的地/天数/人数/日期）      ├→ repair_confirm（要用户点头的改法，≤1 轮）→ verify
-                                              ├→ verify_clarify（带代价的提问，≤2 轮）→ verify
-                                              └→ finalize（不可行：替代方案 + 放弃清单）
+derive → budget_split → plan → gear → owned → shop → verify ─┬→ repair（自动修复）→ verify
+   └→ clarify（缺目的地/天数/人数/日期）                      ├→ repair_confirm（要用户点头的改法，≤1 轮）→ verify
+                                                              ├→ verify_clarify（带代价的提问，≤2 轮）→ verify
+                                                              └→ finalize（不可行：替代方案 + 放弃清单）
 ```
+
+`budget_split` 是**规划之前**的一步：有预算的 trip_gear 会停下来问一次"行程和装备各拿多少"（`80/20`、`50/50`、`20/80`，也可自己填金额），选完写进 `facts.trip_cap` / `facts.gear_cap` 和约束清单，plan 按行程额度排、shop 按装备额度买。不再用"总预算 − 行程实际花费 = 装备预算"这条旧口径——它把行程省下的钱自动变成更贵的装备，用户没有选择权。用户已经明说"装备预算 1000"时不问；`travel`（没有装备段）整笔预算就是行程预算，也不问。
+
+补答不完整时（比如只答了人数、日期那句没解析出来）不会直接收尾：`after_clarify` 把还缺的项
+再问一轮，**只问缺的那几项**，而且**不设轮数上限**——用户在答就一直问，直到补齐。
+两个出口按"用户有没有在答"区分：答了但没解析出来 → `ask_continue=True` 继续问；
+根本空回答（关掉卡片）→ 收尾，不拿同一张卡反复拦人。
+以前这里直接 `end`，界面上只剩一句"还需要补充：出发日期"，没有卡片可点，这一轮就卡死了。
 
 两个 `clarify` 分工不同，**不要合并**：`derive` 后那个补"能不能开始规划"的槽位；`verify` 后那个补"方案到底行不行"的判断依据，只有算过一遍方案才知道该问什么。
 
@@ -516,6 +540,9 @@ custom chunk 与旧 SSE 一致，UI 无需改动：
 ```
 
 回答块：`{"event": "answer_blocks", "data": {"agent": "...", "blocks": [...]}}`。
+
+分类结果事件（`classify`）额外带 `strength`（`strong` / 弱证据不出现在事件里）：
+关键词层能直接定案时才发，`method="keyword"`；交小模型时 `method="llm"`。
 块类型 `text/lead/stats/cards/table/timeline/panel` 由 `app/ui/blocks.py` 从真实数据构造
 （商品行、订单行），前端 `render_answer_blocks` 直接渲染，不解析 Markdown。
 trip_gear / travel 仍用 `plan_result` 渲染 01–05 面板。

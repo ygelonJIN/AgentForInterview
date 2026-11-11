@@ -168,8 +168,63 @@ def _sub_intent_for(intent: str, route: str) -> str:
     return "chat"
 
 
-def _keyword_classify(message: str) -> Optional[Dict[str, Any]]:
-    """关键词快速分类（零延迟）。打分明细见 ``app.nlu.signals``。"""
+# 寒暄与确认词：既不是新任务，也不该触发重算。
+_SMALL_TALK = (
+    "你好", "您好", "在吗", "谢谢", "多谢", "好的", "好啊", "行", "嗯", "哦",
+    "收到", "明白了", "知道了", "ok", "OK", "拜拜", "再见", "辛苦了",
+)
+
+
+# 问句标记：用来区分"补充信息"和"另起一个问题"。
+_QUESTION_HINTS = ("?", "？", "吗", "呢", "什么", "怎么", "为什么", "哪", "多少", "如何", "是否")
+
+
+def _is_bare_question(message: str) -> bool:
+    text = str(message or "")
+    return any(hint in text for hint in _QUESTION_HINTS)
+
+
+# 未来日期词：在行程上下文里，这种句子基本就是在补出发时间。
+_FUTURE_DATE = re.compile(r"(明天|后天|大后天|下周[一二三四五六日天末]?|下个月|下月|周末|\d+\s*号)")
+
+
+def _has_domain_evidence(message: str) -> bool:
+    """这句话里有没有"属于当前领域"的实词。
+
+    只看实义证据（品类/品牌、地名、强旅游词、场景词、时长、客服词），
+    不看"推荐/找"这类泛动作——否则"推荐一部电影"会被当成购物证据，
+    于是在行程中途被当成补充信息。
+    """
+    signal = signals.score_intents(message)
+    return bool(
+        signal.product_hits
+        or signal.travel_places
+        or signal.travel_strong_words
+        or signal.travel_scenes
+        or signal.travel_has_duration
+        or signal.hits.get("customer_service")
+        or signal.weak_hits.get("shopping")
+        or bool(_FUTURE_DATE.search(str(message or "")))
+    )
+
+
+def _is_small_talk(message: str) -> bool:
+    text = str(message or "").strip().lower()
+    if not text:
+        return True
+    if len(text) <= 4 and any(word in text for word in _SMALL_TALK):
+        return True
+    return text in {word.lower() for word in _SMALL_TALK}
+
+
+def _keyword_evidence(message: str) -> Optional[Dict[str, Any]]:
+    """关键词层给出的候选结论与证据强度。
+
+    关键词层只是快路径，不是判断者：只有**强证据**（口径见
+    ``signals.IntentScores.shopping_strong`` 等）才允许直接定案；
+    弱证据仍交小模型，只作为线索一起送过去。这样错判至少还有一次
+    被模型纠正的机会，而不是静默地成为最终结论。
+    """
     signal = signals.score_intents(message)
     route = signal.route
     weak_count = len(signal.weak_hits.get("shopping") or [])
@@ -186,10 +241,13 @@ def _keyword_classify(message: str) -> Optional[Dict[str, Any]]:
         return None
 
     scores = {key: float(value) for key, value in candidates.items()}
+    strong = [name for name in candidates if name in signal.strong_intents]
+    picked = strong or list(candidates)
+    strength = "strong" if strong else "weak"
 
-    # 明确的复合意图：两类都达到独立证据阈值时保留两个，只有 shopping+travel 并行。
-    if len(candidates) >= 2:
-        ordered = sorted(candidates, key=lambda item: (-candidates[item], _PRIORITY[item]))[:2]
+    # 明确的复合意图：两类都是强证据时保留两个，只有 shopping+travel 并行。
+    if len(picked) >= 2:
+        ordered = sorted(picked, key=lambda item: (-candidates[item], _PRIORITY[item]))[:2]
         retrieval = "mixed" if "shopping" in ordered else "rag_only"
         sub_intents = [_sub_intent_for(item, route) for item in ordered]
         return {
@@ -203,9 +261,10 @@ def _keyword_classify(message: str) -> Optional[Dict[str, Any]]:
             "reason": "多意图关键词匹配: "
             + ", ".join(f"{key}={candidates[key]:g}" for key in ordered),
             "from": "keyword",
+            "strength": strength,
         }
 
-    intent = max(candidates, key=lambda item: (candidates[item], -_PRIORITY[item]))
+    intent = max(picked, key=lambda item: (candidates[item], -_PRIORITY[item]))
     retrieval = {"shopping": "mixed", "travel": "rag_only", "customer_service": "none"}[intent]
     hits = len(signal.hits.get(intent) or [])
     reason = f"关键词匹配 ({hits} 个关键词命中"
@@ -222,7 +281,34 @@ def _keyword_classify(message: str) -> Optional[Dict[str, Any]]:
         "confidence": 0.85,
         "reason": reason,
         "from": "keyword",
+        "strength": strength,
     }
+
+
+def _keyword_classify(message: str) -> Optional[Dict[str, Any]]:
+    """关键词层的**结论**：只有强证据才返回，弱证据返回 None（交小模型）。"""
+    evidence = _keyword_evidence(message)
+    if evidence and evidence.get("strength") == "strong":
+        return evidence
+    return None
+
+
+def _keyword_hint(evidence: Optional[Dict[str, Any]]) -> str:
+    """弱证据作为线索送进小模型 prompt；没有证据时明确写"无"。"""
+    if not evidence:
+        return "无"
+    candidates = "、".join(evidence.get("intents") or [evidence.get("intent", "")])
+    return (
+        f"{candidates}（{evidence.get('reason', '')}）；"
+        "只是线索：与本句实际诉求不符时，按你的判断改"
+    )
+
+
+def _keyword_result(evidence: Dict[str, Any]) -> "ClassificationResult":
+    return ClassificationResult(**{
+        key: value for key, value in evidence.items()
+        if key in ClassificationResult.model_fields
+    })
 
 
 # 小模型分类 prompt
@@ -258,7 +344,7 @@ sub_intent 取值：
 
 严格返回JSON，不要其他文字：
 {{"route": "...", "intent": "...", "intents": ["..."], "primary_intent": "...", "intent_scores": {{"...": 0.X}}, "sub_intent": "...", "retrieval": "...", "confidence": 0.X, "reason": "..."}}"""),
-            ("user", "对话上下文：{context}\n\n当前消息：{message}")
+            ("user", "对话上下文：{context}\n关键词线索：{keyword_hint}\n\n当前消息：{message}")
 ])
 
 _CLASSIFY_ARBITER_PROMPT = ChatPromptTemplate.from_messages([
@@ -380,25 +466,71 @@ class UnifiedClassifier:
         return any(term in message for term in reference_terms)
 
     @staticmethod
-    def _has_task_switch_signal(message: str) -> bool:
-        """明确的新任务信号不应被上一轮分类锁死。"""
-        return signals.has_task_switch_signal(message)
+    def _has_task_switch_signal(message: str, previous_intent: str = "") -> bool:
+        """只有**跨领域**的新任务才算切换。
+
+        ``signals.has_task_switch_signal`` 把"任何旅游词"都当新任务，
+        于是行程里问一句"酒店怎么选"也会被判成另起一轮。这里按上一轮
+        意图比对：还在同一个领域就不算切换。
+        """
+        signal = signals.score_intents(message)
+        shopping = bool(signal.product_hits)
+        travel = bool(
+            signal.travel_places or signal.travel_strong_words or signal.travel_scenes
+        )
+        service = bool(signal.hits.get("customer_service"))
+        if shopping and previous_intent != "shopping":
+            return True
+        if travel and previous_intent not in {"travel", "trip_gear"}:
+            return True
+        if service and previous_intent != "customer_service":
+            return True
+        return False
 
     def _context_fallback(
         self,
         message: str,
         previous: Optional[ClassificationResult],
     ) -> Optional[ClassificationResult]:
-        if (
-            not previous
-            or not self._uses_reference(message)
-            or self._has_task_switch_signal(message)
-        ):
+        """多轮里"没头没尾的一句"沿用上一轮，不要重新开始。
+
+        两种触发：
+        - 指代（"这个""刚才""改成"）——本来就有；
+        - 行程中途补一句"我有一个 pocket3"——这是**装备信息**，不是新任务。
+          以前它会因为关键词层没命中、小模型判成 general，整轮掉进通用助手，
+          把已经排好的行程和槽位全丢在一边，还得从头再问一遍。
+        """
+        if not previous or self._has_task_switch_signal(message, previous.intent):
             return None
-        return previous.model_copy(update={
+        # 寒暄不是新任务，但也不该让行程重算一遍。
+        if _is_small_talk(message):
+            return None
+        # 句子里没有任何本领域的实词（"今天天气怎么样""推荐一部电影"）：
+        # 可能是在问别的事，交给小模型判——它能看到上文，判得比规则准。
+        # 有实词（地名/品类/预算/日期/客服词）才默认沿用，避免把行程丢在半路。
+        # 指代（"就按刚才那个方案"）本身就是延续，不需要再看实词。
+        followup = self._uses_reference(message)
+        gear_note = (
+            previous.intent in {"travel", "trip_gear"}
+            and signals.mentions_owned_item(message)
+        )
+        if not followup and not gear_note and not _has_domain_evidence(message):
+            return None
+
+        # 默认沿用：同一段对话里，只有"明确的新任务"才切换 Agent。
+
+        update = {
             "confidence": max(0.55, min(previous.confidence, 0.8)),
-            "reason": f"多轮指代，沿用上一轮分类：{previous.intent}/{previous.route}",
-        })
+            "reason": f"多轮延续，沿用上一轮分类：{previous.intent}/{previous.route}",
+        }
+        if gear_note and not followup:
+            # 已有物品只对装备段有用：直接标 gear_plan，路由到 trip_gear，
+            # 而不是再走一遍没有装备段的 travel。
+            update.update({
+                "sub_intent": "gear_plan",
+                "reason": f"多轮补充装备信息，沿用上一轮分类（{previous.intent}）并转装备协同",
+            })
+        return previous.model_copy(update=update)
 
     @staticmethod
     def _from_data(
@@ -686,12 +818,10 @@ class UnifiedClassifier:
             ClassificationResult: 分类结果
         """
         # 第一层：只对当前消息做关键词判断，历史仅提供给模型上下文。
-        keyword_result = _keyword_classify(message)
-        if keyword_result:
-            return ClassificationResult(**{
-                k: v for k, v in keyword_result.items()
-                if k in ClassificationResult.model_fields
-            })
+        # 只有强证据才短路；弱证据带进第二层当线索。
+        evidence = _keyword_evidence(message)
+        if evidence and evidence.get("strength") == "strong":
+            return _keyword_result(evidence)
 
         context_fallback = self._context_fallback(message, previous)
         if context_fallback:
@@ -702,6 +832,7 @@ class UnifiedClassifier:
         try:
             result = self.chain.invoke({
                 "message": message,
+                "keyword_hint": _keyword_hint(evidence),
                 "context": self._format_context(history),
                 "extra_intents": _extra_intents_text(),
             })
@@ -751,12 +882,10 @@ class UnifiedClassifier:
             ClassificationResult: 分类结果
         """
         # 第一层：只对当前消息做关键词判断，历史仅提供给模型上下文。
-        keyword_result = _keyword_classify(message)
-        if keyword_result:
-            return ClassificationResult(**{
-                k: v for k, v in keyword_result.items()
-                if k in ClassificationResult.model_fields
-            })
+        # 只有强证据才短路；弱证据带进第二层当线索。
+        evidence = _keyword_evidence(message)
+        if evidence and evidence.get("strength") == "strong":
+            return _keyword_result(evidence)
 
         context_fallback = self._context_fallback(message, previous)
         if context_fallback:
@@ -767,6 +896,7 @@ class UnifiedClassifier:
         try:
             result = await self.chain.ainvoke({
                 "message": message,
+                "keyword_hint": _keyword_hint(evidence),
                 "context": self._format_context(history),
                 "extra_intents": _extra_intents_text(),
             })
@@ -818,16 +948,14 @@ class UnifiedClassifier:
             ClassificationResult: 分类结果
         """
         # 第一层：只对当前消息做关键词判断，历史仅提供给模型上下文。
-        keyword_result = _keyword_classify(message)
-        if keyword_result:
+        # 只有强证据才短路；弱证据带进第二层当线索，模型可以推翻。
+        evidence = _keyword_evidence(message)
+        if evidence and evidence.get("strength") == "strong":
             await queue.emit(EventType.CLASSIFY, {
-                **keyword_result,
+                **evidence,
                 "method": "keyword"
             }, step="classify")
-            return ClassificationResult(**{
-                k: v for k, v in keyword_result.items()
-                if k in ClassificationResult.model_fields
-            })
+            return _keyword_result(evidence)
 
         context_fallback = self._context_fallback(message, previous)
         if context_fallback:
@@ -854,6 +982,10 @@ class UnifiedClassifier:
                 structured_result = await self.chain.ainvoke({
                     "message": message,
                     "context": self._format_context(history),
+                    # 提示词里有 {extra_intents}，漏传就等于每次分类都 KeyError；
+                    # 流式这条路径一直没传，凡是"关键词没命中"的消息都只能走兜底。
+                    "extra_intents": _extra_intents_text(),
+                    "keyword_hint": _keyword_hint(evidence),
                 })
                 measurement.add_attributes(extract_model_usage(structured_result))
 

@@ -89,7 +89,17 @@ async def agent(state: GeneralState, runtime: Runtime[TurnContext]) -> Dict[str,
         trace_id=state.get("trace_id", ""),
         attributes={"step": state.get("step_count", 0) + 1},
     ) as measurement:
-        response = await model_with_tools.ainvoke(messages)
+        try:
+            response = await model_with_tools.ainvoke(messages)
+        except Exception as exc:
+            if not _is_reasoning_rejection(exc):
+                raise
+            # thinking 模型要求把上一轮的 reasoning_content 原样带回。正常路径
+            # 由 config.ReasoningChatOpenAI 负责；这里是兜底：万一消息是历史或
+            # 旧进程拼出来的（拿不到 reasoning），就把工具往返整段丢掉重问一次，
+            # 至少把这一轮回答出来，而不是整轮 400。
+            log_exception("general.reasoning_missing", exc)
+            response = await model_with_tools.ainvoke(_without_tool_turns(messages))
         measurement.add_attributes(extract_model_usage(response))
 
     step_count = state.get("step_count", 0) + 1
@@ -118,6 +128,30 @@ async def agent(state: GeneralState, runtime: Runtime[TurnContext]) -> Dict[str,
         "step_count": step_count,
         "status": "agent_completed",
     }
+
+
+def _is_reasoning_rejection(exc: Exception) -> bool:
+    return "reasoning_content" in str(exc)
+
+
+def _without_tool_turns(messages: List[Any]) -> List[Any]:
+    """丢掉 assistant 的 tool_calls 与对应的 tool 消息，只留 system / human。
+
+    thinking 模型拒收的是"带 tool_calls 却缺 reasoning_content"的 assistant 消息；
+    把这段往返删掉就能正常发出去，代价是这一轮不让模型调工具。
+    """
+    kept: List[Any] = []
+    for message in messages:
+        kind = getattr(message, "type", "")
+        if kind == "tool":
+            continue
+        if kind in {"ai", "assistant"}:
+            if getattr(message, "tool_calls", None):
+                continue
+            if (getattr(message, "additional_kwargs", None) or {}).get("tool_calls"):
+                continue
+        kept.append(message)
+    return kept
 
 
 def should_continue(state: GeneralState) -> str:

@@ -180,6 +180,11 @@ class TripFacts(BaseModel):
     lodging_budget: Optional[float] = None
     gear_budget: Optional[float] = None
     budget_scope: str = "all_in"  # all_in / trip_only
+    # 追问里选的分配：预算拆成行程额度 + 装备额度；未选时为空（按总数用）
+    trip_cap: Optional[float] = None
+    gear_cap: Optional[float] = None
+    budget_split_label: str = ""   # 80/20 / 50/50 / 20/80 / 自定义
+    budget_split_source: str = ""  # 用户选择 / 用户原话（装备预算）/ 默认
     start_date: Optional[str] = None
     lodging: str = ""  # camp / hotel
     transport: str = ""  # flight / train / drive

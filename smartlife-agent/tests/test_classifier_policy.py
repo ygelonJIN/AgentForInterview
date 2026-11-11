@@ -74,7 +74,8 @@ def test_confidence_must_be_numeric_not_string_or_boolean():
 
 
 def test_low_confidence_small_model_result_is_arbitrated_by_main_model(monkeypatch):
-    monkeypatch.setattr("app.classifier._keyword_classify", lambda _message: None)
+    # 关键词层的新入口是 _keyword_evidence；只有强证据才短路，这里强制走小模型。
+    monkeypatch.setattr("app.classifier._keyword_evidence", lambda _message: None)
     low = json.dumps(_payload(confidence=0.4, intent="general", retrieval="none"))
     arbitrated = json.dumps(_payload(confidence=0.82, intent="shopping"))
     classifier = _classifier([low], [arbitrated])
@@ -86,7 +87,8 @@ def test_low_confidence_small_model_result_is_arbitrated_by_main_model(monkeypat
 
 
 def test_invalid_small_model_output_is_repaired_once(monkeypatch):
-    monkeypatch.setattr("app.classifier._keyword_classify", lambda _message: None)
+    # 关键词层的新入口是 _keyword_evidence；只有强证据才短路，这里强制走小模型。
+    monkeypatch.setattr("app.classifier._keyword_evidence", lambda _message: None)
     repaired = json.dumps(_payload(intent="travel", retrieval="rag_only", sub_intent="qa"))
     classifier = _classifier(["没有 JSON"], [repaired])
 
@@ -148,7 +150,9 @@ def test_keyword_classifier_keeps_explicit_shopping_and_travel_multi_intent():
     assert result["intent"] in {"shopping", "travel"}
     assert result["route"] == "plan_and_execute"
     assert result["intent_scores"]["shopping"] >= 2
-    assert result["intent_scores"]["travel"] >= 2
+    # 旅行侧只要求"过阈值"：地名 0.8 + 时长 1.0 = 1.8（地名权重下调后
+    # 不再钉死 2 分这种具体权重，避免调参时这条断言反复改）。
+    assert result["intent_scores"]["travel"] >= 1.2
     assert result["retrieval"] == "mixed"
 
 

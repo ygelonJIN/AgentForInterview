@@ -208,6 +208,47 @@ def get_embedding_status():
     else:
         return "missing", "未配置任何模型，RAG检索不可用"
 
+class ReasoningChatOpenAI(ChatOpenAI):
+    """保留并回传第三方推理模型的 ``reasoning_content``。
+
+    为什么需要：``ChatOpenAI`` 只按 OpenAI 官方字段解析响应，第三方（DeepSeek
+    的 thinking 模式）返回的 ``reasoning_content`` 会被丢掉；而这类模型要求
+    下一轮把这段原样带回去，否则直接 400：
+
+        The `reasoning_content` in the thinking mode must be passed back to the API.
+
+    工具循环里 assistant 消息正好要被二次发送，所以必然踩到。这里做两件事：
+    解析响应时抓下来存进 ``additional_kwargs``，发请求时再塞回对应的消息。
+    """
+
+    def _create_chat_result(self, response, generation_info=None):
+        result = super()._create_chat_result(response, generation_info)
+        try:
+            payload = response if isinstance(response, dict) else response.model_dump()
+            for choice, generation in zip(payload.get("choices") or [], result.generations):
+                message = choice.get("message") or {}
+                reasoning = message.get("reasoning_content")
+                if reasoning:
+                    generation.message.additional_kwargs["reasoning_content"] = reasoning
+        except Exception:
+            pass
+        return result
+
+    def _get_request_payload(self, input_, *, stop=None, **kwargs):
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        try:
+            messages = self._convert_input(input_).to_messages()
+            for message_dict, message in zip(payload.get("messages") or [], messages):
+                reasoning = (getattr(message, "additional_kwargs", None) or {}).get(
+                    "reasoning_content"
+                )
+                if reasoning is not None:
+                    message_dict["reasoning_content"] = reasoning
+        except Exception:
+            pass
+        return payload
+
+
 def create_llm(model_name: str = None, temperature: float = 0, max_tokens: int = 4096) -> ChatOpenAI:
     kwargs = {
         "model": model_name or _main["model"],

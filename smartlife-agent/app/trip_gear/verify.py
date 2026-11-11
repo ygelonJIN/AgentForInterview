@@ -486,6 +486,18 @@ def verify(
                 )
             )
 
+    # 按装备额度省略掉的件：不是故障，但必须说清楚"为什么少了这几件"。
+    for item in gear:
+        if item.status != "skipped" or "预算不足" not in (item.reason or ""):
+            continue
+        issues.append(
+            Issue(
+                constraint=f"装备：{item.name} 已按预算省略",
+                hint="装备额度不够；可改选“装备优先”，或调高预算后再补",
+                severity="minor",
+            )
+        )
+
     # 3. 行程自身的时间与结构校验
     issues.extend(validate_itinerary(itinerary))
 

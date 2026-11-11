@@ -19,8 +19,8 @@
 {"id": "composite-explicit-buy", "message": "去上海玩5天，顺便买一件冲锋衣", "today": "2026-11-06", "expect": {"intent": "composite", "destination": "上海", "days": 5}}
 {"id": "service-refund", "message": "退一下订单", "today": "2026-11-06", "expect": {"intent": "customer_service", "route": "react", "gear": false}}
 {"id": "service-single-word", "message": "客服在吗", "today": "2026-11-06", "expect": {"intent": null}, "note": "单个弱客服词（客服 1.0）证据不够，交小模型"}
-{"id": "gear-list", "message": "准备去露营三天，帮我列一份装备清单", "today": "2026-11-06", "expect": {"intent": "travel", "route": "plan_and_execute", "days": 3, "gear": true}}
-{"id": "gear-business", "message": "出差三天带什么", "today": "2026-11-06", "expect": {"intent": "travel", "days": 3, "gear": true}}
+{"id": "gear-list", "message": "准备去露营三天，帮我列一份装备清单", "today": "2026-11-06", "expect": {"intent": null, "route": null, "days": 3, "gear": true}, "note": "装备清单由 is_gear_request 决定进 trip_gear；意图证据只有场景词+时长，交小模型"}
+{"id": "gear-business", "message": "出差三天带什么", "today": "2026-11-06", "expect": {"intent": null, "days": 3, "gear": true}, "note": "同上：场景词+时长，但关键词层不再单独定案"}
 {"id": "gear-with-purchase", "message": "我想买个帐篷，预算600", "today": "2026-11-06", "expect": {"intent": "shopping", "budget": 600.0, "gear": false}}
 {"id": "gear-recommend", "message": "推荐露营装备", "today": "2026-11-06", "expect": {"intent": null, "gear": false}, "note": "有购买动作，不进装备链路"}
 {"id": "gear-buy-what", "message": "去露营要买什么", "today": "2026-11-06", "expect": {"intent": null, "gear": false}}
@@ -41,3 +41,9 @@
 {"id": "misc-weekend-advice", "message": "周末有什么推荐", "today": "2026-11-06", "expect": {"intent": null}}
 {"id": "misc-budget-only", "message": "预算3000", "today": "2026-11-06", "expect": {"intent": null, "budget": 3000.0}, "note": "只有钱数，不能判购物"}
 {"id": "service-express-tracking", "message": "我的快递到哪了", "today": "2026-11-06", "expect": {"intent": "customer_service", "route": "react"}, "note": "快递 + 到哪了 = 1.6，够两个证据"}
+{"id": "adversarial-ship-to", "message": "上海寄到广州的订单", "today": "2026-11-06", "expect": {"intent": null}, "note": "物流动词+地名，旧实现判成 travel（'到'被当成出行语境）"}
+{"id": "adversarial-deliver-to", "message": "这家店能送到汕头吗", "today": "2026-11-06", "expect": {"intent": null}, "note": "同义物流动词，不能靠补词表一个个追"}
+{"id": "adversarial-refund-to", "message": "帮我把上海那单退到广州", "today": "2026-11-06", "expect": {"intent": null}, "note": "售后+两个地名，旧实现判成 travel"}
+{"id": "travel-structure-depart", "message": "杭州出发", "today": "2026-11-06", "expect": {"intent": "travel", "route": "react"}, "note": "地名+出发结构，强证据，可直接定案"}
+{"id": "travel-structure-flight", "message": "上海到广州的机票多少钱", "today": "2026-11-06", "expect": {"intent": "travel"}, "note": "强旅游词（机票）不要求出行结构"}
+{"id": "travel-place-only", "message": "杭州怎么样", "today": "2026-11-06", "expect": {"intent": null}, "note": "只有地名，不给结论"}

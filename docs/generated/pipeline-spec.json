@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-10T18:19:21",
+  "generated_at": "2026-11-11T14:02:47",
   "graphs": [
     {
       "id": "memory",
@@ -307,34 +307,17 @@
           "id": "travel_plan",
           "fn": "",
           "subgraph": "trip_gear"
-        },
-        "travel_chat": {
-          "id": "travel_chat",
-          "fn": "travel_chat",
-          "subgraph": ""
         }
       },
       "edges": [
         {
           "src": "__start__",
           "dst": "travel_plan",
-          "label": "travel_plan",
-          "conditional": true
-        },
-        {
-          "src": "__start__",
-          "dst": "travel_chat",
-          "label": "travel_chat",
-          "conditional": true
-        },
-        {
-          "src": "travel_plan",
-          "dst": "__end__",
           "label": "",
           "conditional": false
         },
         {
-          "src": "travel_chat",
+          "src": "travel_plan",
           "dst": "__end__",
           "label": "",
           "conditional": false
@@ -373,6 +356,11 @@
         "finalize": {
           "id": "finalize",
           "fn": "finalize",
+          "subgraph": ""
+        },
+        "budget_split": {
+          "id": "budget_split",
+          "fn": "budget_split",
           "subgraph": ""
         },
         "gear": {
@@ -416,13 +404,19 @@
         },
         {
           "src": "derive",
-          "dst": "plan",
+          "dst": "budget_split",
           "label": "plan",
           "conditional": true
         },
         {
           "src": "clarify",
-          "dst": "plan",
+          "dst": "clarify",
+          "label": "clarify",
+          "conditional": true
+        },
+        {
+          "src": "clarify",
+          "dst": "budget_split",
           "label": "plan",
           "conditional": true
         },
@@ -431,6 +425,12 @@
           "dst": "__end__",
           "label": "end",
           "conditional": true
+        },
+        {
+          "src": "budget_split",
+          "dst": "plan",
+          "label": "",
+          "conditional": false
         },
         {
           "src": "plan",
@@ -559,7 +559,7 @@
     {
       "name": "_CLASSIFY_PROMPT",
       "module": "app/classifier.py",
-      "lineno": 229,
+      "lineno": 266,
       "messages": [
         {
           "role": "system",
@@ -567,14 +567,14 @@
         },
         {
           "role": "user",
-          "text": "对话上下文：{context}\n\n当前消息：{message}"
+          "text": "对话上下文：{context}\n关键词线索：{keyword_hint}\n\n当前消息：{message}"
         }
       ]
     },
     {
       "name": "_CLASSIFY_ARBITER_PROMPT",
       "module": "app/classifier.py",
-      "lineno": 264,
+      "lineno": 301,
       "messages": [
         {
           "role": "system",
@@ -604,7 +604,7 @@
     {
       "name": "plan_prompt",
       "module": "app/services/travel_service.py",
-      "lineno": 38,
+      "lineno": 37,
       "messages": [
         {
           "role": "system",
@@ -619,7 +619,7 @@
     {
       "name": "reflect_prompt",
       "module": "app/services/travel_service.py",
-      "lineno": 68,
+      "lineno": 67,
       "messages": [
         {
           "role": "system",
@@ -634,7 +634,7 @@
     {
       "name": "revise_prompt",
       "module": "app/services/travel_service.py",
-      "lineno": 86,
+      "lineno": 85,
       "messages": [
         {
           "role": "system",
@@ -643,21 +643,6 @@
         {
           "role": "user",
           "text": "原始请求：{original_request}\n\n上一版计划：{plan}\n\n审核意见：{feedback}\n\n请输出完整改进后的计划。"
-        }
-      ]
-    },
-    {
-      "name": "chat_prompt",
-      "module": "app/services/travel_service.py",
-      "lineno": 91,
-      "messages": [
-        {
-          "role": "system",
-          "text": "你是旅游规划专家。根据用户需求提供目的地推荐、景点介绍、出行建议。\n用中文回复，内容实用、结构清晰。"
-        },
-        {
-          "role": "user",
-          "text": "{input}"
         }
       ]
     },
@@ -762,11 +747,11 @@
     {
       "name": "plan_prompt",
       "module": "app/trip_gear/service.py",
-      "lineno": 122,
+      "lineno": 123,
       "messages": [
         {
           "role": "system",
-          "text": "你是行程规划师。根据给定事实排一份逐日行程。\n\n要求：\n1. 只安排真实可执行的活动，不编造景点、票价或实时信息；\n2. 每天 4-6 个安排，包含用餐和休息，活动时间在 08:00-21:00 之间；\n3. time 用 HH:MM；duration_min 用分钟；cost 用整数元估算，免费或不确定写 0；\n4. 行程要贴合事实：住宿方式、天气、同行人、预算都要考虑；\n5. 天数必须与给定天数一致；\n6. 同时给出这次出行的装备建议（gear）：名称、数量、为什么带，覆盖衣物、鞋、洗护、药品、活动装备，不要列身份证/手机/充电器这类通用物品；\n7. 装备要贴合场景：海边度假要泳衣/防晒，露营要帐篷睡袋，寒冷要羽绒服；\n8. 装备只能从下面的商品库目录里选：目录没有的品类一律不写，写了也买不到；\n9. 命名尽量用目录示例里出现过的词（写\"羽绒服\"而不是\"保暖层\"，写\"登山鞋\"而不是\"防水鞋\"）；\n10. 目录是动态的，以它为准，不要凭常识补充目录外的品类。\n\n{catalog}\n"
+          "text": "你是行程规划师。根据给定事实排一份逐日行程。\n\n要求：\n1. 只安排真实可执行的活动，不编造景点、票价或实时信息；\n2. 每天 4-6 个安排，包含用餐和休息，活动时间在 08:00-21:00 之间；\n3. time 用 HH:MM；duration_min 用分钟；cost 用整数元估算——免费才写 0，有价格但拿不准时按当地一般水平给一个整数，不要因为不确定就写 0；\n4. 行程要贴合事实：住宿方式、天气、同行人、预算都要考虑；逐日花费（餐饮/门票/市内交通）合计要贴进行程预算，不低于七成、不超出；住宿费与城际交通单独给出，不要重复计进每日花费；\n5. 天数必须与给定天数一致；\n6. 同时给出这次出行的装备建议（gear）：名称、数量、为什么带，覆盖衣物、鞋、洗护、药品、活动装备，不要列身份证/手机/充电器这类通用物品；\n7. 装备要贴合场景：海边度假要泳衣/防晒，露营要帐篷睡袋，寒冷要羽绒服；\n8. 装备只能从下面的商品库目录里选：目录没有的品类一律不写，写了也买不到；\n9. 命名尽量用目录示例里出现过的词（写\"羽绒服\"而不是\"保暖层\"，写\"登山鞋\"而不是\"防水鞋\"）；\n10. 目录是动态的，以它为准，不要凭常识补充目录外的品类。\n\n{catalog}\n"
         },
         {
           "role": "user",

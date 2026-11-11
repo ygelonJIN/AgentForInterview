@@ -797,6 +797,11 @@ def _timing_summary_html(events):
     )
 
 
+# 分类卡片的人话映射：显示值不再直接裸露 react / rag_only 这类内部枚举。
+_ROUTE_LABELS = {"react": "单步", "plan_and_execute": "先规划"}
+_RETRIEVAL_LABELS = {"sql_only": "SQL", "rag_only": "RAG", "mixed": "混合", "none": "不检索"}
+
+
 def _fmt_event_html(evt):
     """把单个过程事件渲染成统一的 HTML 过程卡片。"""
     et = evt.get("event", "")
@@ -804,18 +809,23 @@ def _fmt_event_html(evt):
     if et == "thinking":
         return ""
     if et == "classify":
-        route = data.get("route", "") or "—"
-        intent = data.get("intent", "") or "—"
+        # 四个信号各管一件事（architecture「顶层路由」）：intent 选 Agent、
+        # route 选执行范式、retrieval 选数据源、sub_intent 是细标签。
+        # 以前把 route 摆在第一位且不写标签，看着像"Agent 叫 react"。
+        intents = data.get("intents") or []
+        agent = " + ".join(str(item) for item in intents) if intents else data.get("intent", "")
+        agent = agent or "—"
+        route = _ROUTE_LABELS.get(str(data.get("route") or ""), data.get("route") or "—")
+        retr = _RETRIEVAL_LABELS.get(str(data.get("retrieval") or ""), data.get("retrieval") or "—")
         sub = data.get("sub_intent", "") or "—"
-        retr = data.get("retrieval", "") or "—"
         conf = data.get("confidence", "") or "—"
         reason = data.get("reason", data.get("reasoning", "")) or "—"
         method = data.get("method", "") or "—"
         return (
             '<div class="process-card completed">'
             '<div class="process-title">已识别任务意图</div>'
-            f'<div class="process-copy">路由 {_esc(route)} · {_esc(intent)} · {_esc(sub)}<br>'
-            f'检索 {_esc(retr)} · 置信度 {_esc(conf)} · {_esc(method)}<br>'
+            f'<div class="process-copy">Agent {_esc(agent)} · 策略 {_esc(route)} · 检索 {_esc(retr)}<br>'
+            f'子意图 {_esc(sub)} · 置信度 {_esc(conf)} · {_esc(method)}<br>'
             f'{_esc(reason)}</div></div>'
         )
     if et == "step":

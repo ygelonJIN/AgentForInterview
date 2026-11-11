@@ -50,3 +50,28 @@ class OrderRepository:
             connection.row_factory = sqlite3.Row
             rows = connection.execute(sql, tuple(params)).fetchall()
         return [dict(row) for row in rows]
+
+    def purchased_items(self, user_id: str, *, limit: int = 50) -> List[Dict[str, Any]]:
+        """这个用户买过的东西（名称 + 品类 + 数量），用来判断"这次还缺不缺"。
+
+        只算会到手的：取消/退款/退货的不算——否则用户退了货，系统还以为他有。
+        与 ``get_order_status`` 共用同一套身份校验：订单只按当前用户查。
+        """
+        principal = self._validate_principal(user_id)
+        if limit <= 0 or limit > 200:
+            raise ValueError("limit 必须在 1 到 200 之间")
+        sql = """
+            SELECT p.name AS name, p.category AS category,
+                   p.subcategory AS subcategory, o.quantity AS quantity,
+                   o.status AS status, o.created_at AS created_at
+            FROM orders o
+            JOIN products p ON p.id = o.product_id
+            WHERE o.user_id = ?
+              AND o.status NOT IN ('cancelled', 'canceled', 'refunded', 'returned')
+            ORDER BY o.created_at DESC, o.id DESC
+            LIMIT ?
+        """
+        with sqlite3.connect(self.db_path) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(sql, (principal, limit)).fetchall()
+        return [dict(row) for row in rows]

@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from datetime import date
@@ -20,7 +21,7 @@ from app.observability import extract_model_usage, log_exception, timed_span
 from app.retrieval.repositories import ProductRepository
 from app.tools.travel_executor import TravelToolExecutor
 from app.trip_gear.catalog import catalog_digest
-from app.trip_gear.itinerary import assign_cities, fallback_itinerary
+from app.trip_gear.itinerary import assign_cities, fallback_itinerary, lodging_cost_for
 from app.trip_gear.models import (
     Constraint,
     DayPlan,
@@ -125,8 +126,8 @@ class TripGearService:
 要求：
 1. 只安排真实可执行的活动，不编造景点、票价或实时信息；
 2. 每天 4-6 个安排，包含用餐和休息，活动时间在 08:00-21:00 之间；
-3. time 用 HH:MM；duration_min 用分钟；cost 用整数元估算，免费或不确定写 0；
-4. 行程要贴合事实：住宿方式、天气、同行人、预算都要考虑；
+3. time 用 HH:MM；duration_min 用分钟；cost 用整数元估算——免费才写 0，有价格但拿不准时按当地一般水平给一个整数，不要因为不确定就写 0；
+4. 行程要贴合事实：住宿方式、天气、同行人、预算都要考虑；逐日花费（餐饮/门票/市内交通）合计要贴进行程预算，不低于七成、不超出；住宿费与城际交通单独给出，不要重复计进每日花费；
 5. 天数必须与给定天数一致；
 6. 同时给出这次出行的装备建议（gear）：名称、数量、为什么带，覆盖衣物、鞋、洗护、药品、活动装备，不要列身份证/手机/充电器这类通用物品；
 7. 装备要贴合场景：海边度假要泳衣/防晒，露营要帐篷睡袋，寒冷要羽绒服；
@@ -162,6 +163,10 @@ class TripGearService:
                 f"人数：{facts.people if facts.people is not None else '未指定（按 1 人计）'}",
                 f"预算：{facts.budget if facts.budget is not None else '未指定'}"
                 f"（{'含装备' if facts.budget_scope == 'all_in' else '不含装备'}）",
+                *(
+                    [f"行程预算上限：{facts.trip_cap:g} 元（装备另分 {facts.gear_cap:g} 元）"]
+                    if facts.trip_cap is not None else []
+                ),
                 f"住宿：{facts.lodging or '未指定'}",
                 f"交通：{facts.transport or '未指定'}",
                 f"同行儿童：{'有' if facts.with_kids else '无'}",
@@ -247,6 +252,10 @@ class TripGearService:
                     if str(item.activity or "").strip()
                 ],
                 lodging=facts.lodging,
+                # 住宿费必须落进 itinerary：以前模型路径只写 lodging 字段、
+                # 不写金额，住宿一分钱不进预算，"5000 只用掉 2000"有一半来自这里。
+                # 认不出的住宿方式按 0（不替用户假设高价），但会由约束清单提示。
+                lodging_cost=lodging_cost_for(facts.lodging, facts.effective_people),
             )
             for day in result.days
         ]
@@ -364,6 +373,12 @@ class TripGearService:
         return await self._call_tool(
             get_public_holidays, {"country": country, "year": int(year)}
         )
+
+    async def _purchases(self, user_id: str) -> List[Dict[str, Any]]:
+        """历史订单里买过的东西，用于判断"这次还缺不缺"。"""
+        from app.retrieval.order_repository import OrderRepository
+
+        return await asyncio.to_thread(OrderRepository().purchased_items, user_id)
 
     async def _memories(self, user_id: str, query: str) -> List[Dict[str, Any]]:
         memory = self.memory

@@ -161,6 +161,11 @@ def render(
         else:
             tail = f"超出 {_money(-remaining)}"
         if with_gear:
+            if facts.trip_cap is not None:
+                lines.append(
+                    f"预算分配：行程 {_money(facts.trip_cap)} / 装备 {_money(facts.gear_cap)}"
+                    f"（{facts.budget_split_label or '未分配'}，{facts.budget_split_source or '默认'}）"
+                )
             lines.append(
                 f"行程 {_money(trip)} + 装备 {equipment_label} = {_money(total)}"
                 f" / 预算 {_money(facts.budget)}（含装备），{tail}"

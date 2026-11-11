@@ -22,6 +22,7 @@ _ANSWER_PREFIX = {
     "people": "人数",
     "budget": "预算",
     "start_date": "出发日期",
+    "budget_split": "预算分配",
 }
 
 _TITLES = {
@@ -62,6 +63,21 @@ _VERIFY_OPTIONS = {
     "温标": ("-5℃", "0℃", "10℃"),
     "预算口径": ("含装备", "不含装备"),
 }
+
+
+def budget_split_questions(budget: float) -> List[Dict[str, Any]]:
+    """预算到位后问一次"行程和装备各拿多少"。
+
+    这不是缺信息，是取舍：trip_gear 里两边都要，比例只能用户定。三档都是
+    "两边都要"前提下的倾斜，不提供"只排行程"（那是 travel）。
+    """
+    from app.trip_gear.split import options as split_options
+
+    return [_question(
+        "budget_split",
+        f"预算 {float(budget):g} 元怎么分？",
+        split_options(),
+    )]
 
 
 def build_questions(

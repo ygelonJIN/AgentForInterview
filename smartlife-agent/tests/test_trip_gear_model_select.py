@@ -2,6 +2,9 @@
 
 import asyncio
 
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
+
 import pytest
 
 from app.trip_gear import select_by_model
@@ -183,10 +186,17 @@ def test_shop_node_uses_model_choice_and_keeps_budget():
         product_search=search,
         product_select=product_select,
     )
-    result = asyncio.run(build_trip_gear_graph().ainvoke(
-        {"user_message": "周末两个人去莫干山露营，预算3000", "user_id": "u1", "thread_id": "t"},
-        context=ctx,
-    ))
+    async def _drive():
+        graph = build_trip_gear_graph(checkpointer=InMemorySaver())
+        config = {"configurable": {"thread_id": "t"}}
+        payload = {"user_message": "周末两个人去莫干山露营，预算3000", "user_id": "u1", "thread_id": "t"}
+        state = await graph.ainvoke(payload, config, context=ctx)
+        # 有预算会先停在"预算怎么分"，测试里当作已选各半。
+        if (state.get("__interrupt__") or [{}])[0].value.get("type") == "trip_gear_budget_split":
+            state = await graph.ainvoke(Command(resume="装备 3000 元"), config, context=ctx)
+        return state
+
+    result = asyncio.run(_drive())
 
     assert seen.get("executed") is True
     products = result["products"]

@@ -149,6 +149,27 @@ def _dedupe(items: List[OwnedItem]) -> List[OwnedItem]:
     return list(merged.values())
 
 
+def owned_from_purchases(rows: Iterable[Dict[str, Any]]) -> List[OwnedItem]:
+    """历史订单里买过的商品 → 已有装备。
+
+    只认商品名：叫"双人防水帐篷"的商品就是帐篷，和 ``_names_match`` 的词形
+    包含是同一套口径，不再维护第二张别名表。取消/退款单在查询层就被排除了。
+    """
+    found: List[OwnedItem] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "").strip()
+        if len(name) < 2:
+            continue
+        try:
+            qty = max(1, int(row.get("quantity") or 1))
+        except (TypeError, ValueError):
+            qty = 1
+        found.append(OwnedItem(name=name, qty=qty, source="历史订单"))
+    return _dedupe(found)
+
+
 def merge_owned(*groups: Iterable[OwnedItem]) -> List[OwnedItem]:
     """合并多段来源（本轮、上文、记忆），同名取最大数量。"""
     return _dedupe([item for group in groups for item in (group or [])])

@@ -71,7 +71,9 @@ _PLACE_BEFORE_DURATION = re.compile(
 # 人数
 _PEOPLE_BIG_SMALL = re.compile(rf"(?P<big>{_NUM})\s*(?:个)?\s*(?:大人|成人)?\s*大\s*(?P<small>{_NUM})\s*(?:个)?\s*小")
 _PEOPLE_FAMILY = re.compile(rf"一家\s*(?P<n>{_NUM})\s*口")
-_PEOPLE_COUNT = re.compile(rf"(?P<n>{_NUM})\s*(?:个|名|位)?\s*(?:人|位|口)")
+# 数字和"人"之间不允许换行：多轮拼接的历史里"预算5000\n人数：1 人"
+# 会被读成"5000 人"，于是一次单人出行按 5000 人算预算和住宿。
+_PEOPLE_COUNT = re.compile(rf"(?P<n>{_NUM})[ \t]*(?:个|名|位)?[ \t]*(?:人|位|口)")
 _PEOPLE_PAIR_WORDS = ("我俩", "我们俩", "两人", "二人世界", "情侣", "夫妻", "两口子", "小两口", "双人")
 _PEOPLE_ALONE_WORDS = ("独自", "一个人", "单人", "自己去", "就我一个", "一个人去")
 _PEOPLE_RELATION = re.compile(
@@ -408,7 +410,8 @@ def parse_people(text: str) -> Optional[int]:
     match = _PEOPLE_COUNT.search(source)
     if match:
         value = cn_or_arabic(match.group("n"))
-        if value:
+        # 超出规划范围的数字不是人数（"5000 元""2026 年"都出现过），当作没抽到
+        if value and 0 < int(value) <= 100:
             return int(value)
 
     extras = _relation_extras(source)

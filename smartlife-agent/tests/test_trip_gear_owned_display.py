@@ -73,7 +73,9 @@ def test_shopper_keeps_affordable_items_and_marks_budget_blocked():
 
     GearShopper(lambda **_: rows).fill(gear, products, remaining_budget=100)
 
-    assert gear and "预算不足，未选款" in gear[0].reason
+    # 额度内买不起的件标成"已省略"，不留"未选款"这种半截状态
+    assert gear and gear[0].status == "skipped"
+    assert "已按额度省略" in gear[0].reason
     assert products == {}
 
 

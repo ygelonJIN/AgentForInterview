@@ -1,7 +1,13 @@
-"""旅行子图：问答走 chat，规划走 trip_gear 的无装备版本。
+"""旅行子图：行程图去掉装备段，只有这一条路。
 
-travel 不是第二条链路：它就是 ``trip_gear`` 剥掉装备段（gear / owned / shop）
-之后的同一张图、同一套面板。两个节点共用一套实现，差别只在 ``with_gear``。
+``travel`` 不是第二条链路：它就是 ``build_trip_gear_graph(with_gear=False)``，
+与 trip_gear 共用 ``derive → plan → verify → repair → finalize``，差别只有一个参数——
+不推导装备、不检索商品、不输出装备分区。
+
+早先这里另有一条 ``travel_chat``：不进规划，直接把问题丢给大模型写正文。
+结果是同一句话有时出 01–05 面板、有时出一整篇 Markdown，而且缺天数/人数/日期时
+模型会自己替用户定（"8天7晚"）。现在删掉：所有 travel 请求都进这张图，
+缺信息由 ``clarify`` 追问，结构化结果只有一处产生。
 """
 from __future__ import annotations
 
@@ -28,42 +34,16 @@ class TravelState(TypedDict, total=False):
     status: str
 
 
-async def travel_chat(state: TravelState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
-    """单点问答（"杭州适合几月去"）：不进规划链路，直接流式回答。"""
-    ctx = runtime.context
-    response = await ctx.services.travel_service.chat_streaming(
-        state.get("user_message", ""),
-        state.get("user_id", ""),
-        ctx.sink_for(runtime),
-    )
-    try:
-        from app.ui.blocks import text_only
-
-        await ctx.sink_for(runtime).emit("answer_blocks", {
-            "agent": "travel",
-            "blocks": text_only(response),
-        }, step="generate")
-    except Exception:
-        pass
-    return {"response": response, "status": "generated"}
-
-
-def _needs_plan(state: TravelState) -> str:
-    route = str((state.get("classification") or {}).get("route") or "react")
-    return "travel_plan" if route == "plan_and_execute" else "travel_chat"
-
-
 def build_travel_graph(checkpointer: Optional[Any] = None):
-    """按 route 分流：单点问答走 chat，多天规划走无装备版 trip_gear。"""
+    """旅行 = 无装备版行程图；没有第二条"直接问大模型"的分支。
+
+    保留这一层单节点包装而不是直接返回子图，是为了让
+    ``scripts/build_pipeline_spec.py`` 的静态解析仍能从 AST 读出
+    "travel 节点挂了哪张图"。
+    """
     plan_graph = build_trip_gear_graph(with_gear=False)
     graph = StateGraph(TravelState, context_schema=TurnContext)
     graph.add_node("travel_plan", plan_graph)
-    graph.add_node("travel_chat", travel_chat, timeout=120)
-    graph.add_conditional_edges(
-        START,
-        _needs_plan,
-        {"travel_plan": "travel_plan", "travel_chat": "travel_chat"},
-    )
+    graph.add_edge(START, "travel_plan")
     graph.add_edge("travel_plan", END)
-    graph.add_edge("travel_chat", END)
     return graph.compile(checkpointer=checkpointer)
