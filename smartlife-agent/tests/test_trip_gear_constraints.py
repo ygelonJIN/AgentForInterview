@@ -116,3 +116,22 @@ def test_province_cities_never_drop_named_cities_when_they_outnumber_the_cap():
 
     named = ["汕头", "潮州", "揭阳", "梅州"]
     assert merge_province_cities("广东", named, 7) == named
+
+
+def test_ensure_budget_rewrites_the_entry_when_user_raises_budget():
+    from app.trip_gear.constraints import ensure_budget
+    from app.trip_gear.models import Constraint, TripFacts
+
+    constraints = [
+        Constraint(text="人数：2 人", key="people"),
+        Constraint(text="预算：5000 元", key="budget"),
+        Constraint(text="预算口径：含装备", key="budget_scope"),
+    ]
+    facts = TripFacts(budget=6000)
+
+    rewritten = ensure_budget(facts, constraints, source="追问补充")
+
+    budgets = [c for c in rewritten if c.key == "budget"]
+    assert len(budgets) == 1
+    assert budgets[0].text == "预算：6000 元"
+    assert budgets[0].source == "追问补充"

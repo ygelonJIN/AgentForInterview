@@ -24,6 +24,7 @@ from app.trip_gear.constraints import (
     apply_assisted,
     derive_constraints,
     drop_owned_duplicates,
+    ensure_budget,
     ensure_destination,
     ensure_people,
     ensure_start_date,
@@ -53,6 +54,7 @@ from app.trip_gear.repair import RepairAction, apply_action, repair_candidates
 from app.trip_gear.shopping import GearShopper
 from app.trip_gear.preferences import extract_preferences
 from app.trip_gear import split as budget_split_util
+from app.trip_gear.estimates import apply_estimates, intercity_estimate, lodging_estimate
 from app.trip_gear.spend import upgrade_within_budget
 from app.trip_gear.spec_match import parse_specs
 from app.trip_gear.verdict import judge
@@ -487,6 +489,12 @@ async def derive(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[st
         if not facts.with_kids and prior.with_kids:
             facts.with_kids = True
             inherited.append("同行：有儿童")
+        # 点名购买是自由文本，不在槽位里；追问一轮后 user_message 只剩
+        # "预算分配：90"，不从上一轮补回来，gear 就永远看不到"一套衣服"。
+        if not facts.purchase_items and prior.purchase_items:
+            facts.purchase_items = list(prior.purchase_items)
+            if not any(item.key == "purchase" for item in constraints):
+                inherited.append("点名购买：" + "；".join(facts.purchase_items))
         date_source = ""
         if not facts.start_date and prior.start_date:
             facts.start_date = prior.start_date
@@ -616,6 +624,9 @@ async def plan(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str,
         for day in itinerary.days:
             if not day.city:
                 day.city = assignment.get(day.day, "")
+    # 住宿与城际交通按披露的单价补进行程：不补的话，5000 元的预算只算了
+    # 地面花费，"剩余 1176"是假的。清单/面板会带"估算"字样。
+    itinerary = apply_estimates(itinerary, facts)
     # travel 不推导装备，"7 条装备建议"这种话在那边是假的。
     plan_message = f"已生成 {len(itinerary.days)} 天行程"
     if bool(state.get("with_gear", True)):
@@ -634,6 +645,14 @@ async def gear(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str,
     derived = derive_gear(facts, itinerary, extra_text=state["user_message"])
     suggestions = [GearItem.model_validate(item) for item in state.get("suggestions", [])]
     derived = merge_suggestions(derived, suggestions)
+    # 用户点名了"一套衣服"后，模型再补"连衣裙/半裙/上衣"就是同一件事说两遍。
+    # 保留用户点名的那条（检索时已经给女装候选），其余同类建议丢掉。
+    if any(item.user_requested for item in derived):
+        clothing = {"女装", "连衣裙", "裙子", "半裙", "上衣", "一套衣服", "穿搭"}
+        derived = [
+            item for item in derived
+            if item.user_requested or item.name not in clothing
+        ]
     await _notify(state, runtime, "gear", f"已推导 {len(derived)} 项装备")
     return {"gear": [item.model_dump() for item in derived], "status": "gear_ready"}
 
@@ -996,6 +1015,25 @@ async def verify_clarify(state: TripGearState, runtime: Runtime[TurnContext]) ->
     missing = list(ask.get("missing") or [])
     question = str(ask.get("question") or "还差一点信息才能判断，能补充一下吗？")
     rounds = int(state.get("clarify_rounds", 0))
+    facts = TripFacts.model_validate(state["facts"])
+    questions = build_questions(missing, facts)
+    # 预算缺口是"放宽多少"的选择题：给三档金额，点一下就能重算，
+    # 不用让用户自己想"填多少才够"。
+    gap = float(ask.get("gap") or 0)
+    if gap > 0 and facts.budget:
+        need = float(facts.budget) + gap
+
+        def _ceil500(value: float) -> int:
+            return int((value + 499) // 500 * 500)
+
+        amounts = [_ceil500(need), _ceil500(need + 1000), _ceil500(need + 2000)]
+        questions.insert(0, {
+            "key": "budget",
+            "title": f"预算还差 {gap:.0f} 元，放宽到多少？",
+            "answer_prefix": "预算",
+            "options": [{"label": f"{amount} 元", "value": f"{amount} 元"} for amount in amounts],
+            "allow_custom": True,
+        })
 
     answer = interrupt(
         {
@@ -1004,7 +1042,9 @@ async def verify_clarify(state: TripGearState, runtime: Runtime[TurnContext]) ->
             "question": question,
             "verdict": verdict,
             "round": rounds,
-            "questions": build_questions(missing),
+            # 已知道的人数/预算/日期不能再问一遍：facts 传空时 build_questions
+            # 会把这三项当"顺手补充"塞进来，用户刚说过预算又被问一次。
+            "questions": questions,
         }
     )
 
@@ -1023,22 +1063,50 @@ async def verify_clarify(state: TripGearState, runtime: Runtime[TurnContext]) ->
     )
     # 这一问可能就是在改期，日期要跟着改，清单里的占位也要换掉。
     constraints = ensure_start_date(merged, constraints, source="追问补充")
+    budget_changed = merged.budget is not None and merged.budget != facts.budget
+    if budget_changed:
+        constraints = ensure_budget(merged, constraints, source="追问补充")
+        # 预算变了，原来的 90/10 额度和按旧额度排的行程都不再成立：
+        # 清掉分成，回到 budget_split 重新问一次并重排，不能只改 facts。
+        merged.trip_cap = None
+        merged.gear_cap = None
+        merged.budget_split_label = ""
+        merged.budget_split_source = ""
+        constraints = [item for item in constraints if item.key != "budget_split"]
     items = _gear_items(state)
     _apply_specs_from_text(items, text)
 
     await _notify(state, runtime, "verify", f"已收到补充，重新校验（第 {rounds + 1} 轮）")
-    return {
+    payload = {
         "facts": merged.model_dump(),
         "constraints": [item.model_dump() for item in constraints],
         "gear": [item.model_dump() for item in items],
         "clarify_rounds": rounds + 1,
-        "status": "verify_clarified",
+        "status": "budget_changed" if budget_changed else "verify_clarified",
+        "budget_split": {} if budget_changed else state.get("budget_split"),
     }
+    if budget_changed:
+        # 预算变了，旧商品/旧修复/旧结论全部作废：不清理的话新额度 700
+        # 会沿用旧方案里 1106 的商品，shop 看到 name 已存在就不再校验额度。
+        payload.update({
+            "products": {},
+            "spend": {},
+            "issues": [],
+            "verdict": {},
+            "repair_options": [],
+            "confirm_options": [],
+        })
+    return payload
 
 
 def after_verify_clarify(state: TripGearState) -> str:
-    """补充了就回校验复审；没补充就结束本轮，把问题直接回给用户。"""
-    return "verify" if state.get("status") == "verify_clarified" else "end"
+    """补充了就回校验复审；改了预算就重新分额度重排；没补充就结束本轮。"""
+    status = state.get("status")
+    if status == "budget_changed":
+        return "budget_split"
+    if status == "verify_clarified":
+        return "verify"
+    return "end"
 
 
 async def repair(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
@@ -1087,6 +1155,7 @@ async def finalize(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[
         spend=state.get("spend") or {},
         with_gear=with_gear,
         with_itinerary=bool(state.get("itinerary")),
+        verdict=state.get("verdict") or {},
     )
     await _notify(state, runtime, "finalize", "完成")
     sink = runtime.context.sink_for(runtime)
@@ -1156,6 +1225,11 @@ def _merge_facts(base: TripFacts, extra: TripFacts, overwrite: bool = False) -> 
         merged.transport = extra.transport
     if extra.with_kids and (not merged.with_kids or overwrite):
         merged.with_kids = True
+    if extra.purchase_items:
+        merged.purchase_items = list(dict.fromkeys([
+            *(merged.purchase_items or []),
+            *(extra.purchase_items or []),
+        ]))
     return merged
 
 
@@ -1252,13 +1326,15 @@ async def budget_split(state: TripGearState, runtime: Runtime[TurnContext]) -> D
         else:
             from app.services.clarify_questions import budget_split_questions
 
+            nights = max(0, int(facts.days or 0) - 1)
+            estimate = intercity_estimate(facts)[0] + lodging_estimate(facts, nights)[0]
             question = f"预算 {float(facts.budget):g} 元：想怎么分给行程和装备？"
             answer = interrupt({
                 "type": "trip_gear_budget_split",
                 "missing": ["预算分配"],
                 "question": question,
                 "facts": facts.model_dump(),
-                "questions": budget_split_questions(float(facts.budget)),
+                "questions": budget_split_questions(float(facts.budget), estimate=estimate),
             })
             chosen = budget_split_util.parse(str(answer or ""), float(facts.budget)) or {
                 "gear_cap": round(float(facts.budget) * budget_split_util.GEAR_RATIOS[
@@ -1499,7 +1575,7 @@ def build_trip_gear_plan_graph(checkpointer: Optional[Any] = None, *, with_gear:
     graph.add_conditional_edges(
         "verify_clarify",
         after_verify_clarify,
-        {"verify": "verify", "end": END},
+        {"verify": "verify", "budget_split": "budget_split", "end": END},
     )
     graph.add_edge("repair", "verify")
     graph.add_edge("finalize", END)

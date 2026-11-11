@@ -196,3 +196,90 @@ def test_card_does_not_ask_what_the_user_already_said():
     questions = build_questions(["出发日期"], facts)
 
     assert [q["key"] for q in questions] == ["start_date"]
+
+
+def test_share_helper_reports_both_sides_in_amounts_and_percent():
+    """滑块只回一个 90，界面上必须同时看得到装备那端拿了多少。"""
+    from app.trip_gear.split import shares
+
+    split = shares(5000, 90)
+    assert split["trip_pct"] == 90
+    assert split["gear_pct"] == 10
+    assert split["trip_cap"] == 4500
+    assert split["gear_cap"] == 500
+
+
+def test_budget_split_question_carries_budget_for_the_slider():
+    from app.services.clarify_questions import budget_split_questions
+
+    question = budget_split_questions(5000)[0]
+    assert question["budget"] == 5000
+    assert question["type"] == "slider"
+
+
+def test_panel_shows_both_sides_with_their_caps():
+    """04 面板只写"行程 3480 · 装备 343.7"不够，必须给出 90% / 10% 与额度。"""
+    from app.ui.theme import plan_panels_html
+
+    payload = {
+        "facts": {
+            "budget": 5000, "destination": "广东", "people": 2,
+            "budget_scope": "all_in", "trip_cap": 4500, "gear_cap": 500,
+        },
+        "itinerary": {"destination": "广东", "days": [
+            {"day": 1, "items": [{"time": "09:00", "activity": "小公园", "cost": 3480}],
+             "lodging_cost": 0},
+        ]},
+        "gear": [], "products": {}, "issues": [], "constraints": [],
+    }
+
+    html = plan_panels_html(payload)
+
+    assert "行程 ¥3480（额度 ¥4500 · 分配 90% · 已用 77%）" in html
+    assert "装备 ¥0（额度 ¥500 · 分配 10% · 已用 0%）" in html
+
+
+def test_gear_panel_shows_the_product_name_not_just_the_need_name():
+    """03 面板只写"速干衣 / 女装"用户不知道买的是哪件，必须露商品名。"""
+    from app.ui.theme import plan_panels_html
+
+    html = plan_panels_html({
+        "facts": {"budget": 5000, "destination": "广东", "people": 2,
+                  "budget_scope": "all_in"},
+        "itinerary": {"destination": "广东", "days": [
+            {"day": 1, "items": [{"time": "09:00", "activity": "海边", "cost": 0}],
+             "lodging_cost": 0},
+        ]},
+        "gear": [{
+            "name": "女装", "qty": 1, "status": "need_buy",
+            "reason": "用户点名：女生想买一套衣服带去海边", "user_requested": True,
+        }],
+        "products": {"女装": {
+            "name": "碎花雪纺连衣裙", "brand": "ZARA", "price": 299,
+            "match": {"kind": "substitute", "query": "女装"},
+        }},
+        "issues": [], "constraints": [],
+    })
+
+    assert "碎花雪纺连衣裙" in html
+    assert "同类款" in html
+    assert "需求：女装" in html
+
+
+def test_over_budget_shows_real_percentage_not_100():
+    """超支 44% 不能写成"已花 100%"；进度条截断可以，文字不行。"""
+    from app.ui.theme import plan_panels_html
+
+    html = plan_panels_html({
+        "facts": {"budget": 5000, "destination": "广东", "people": 2,
+                  "budget_scope": "all_in", "trip_cap": 4500, "gear_cap": 500},
+        "itinerary": {"destination": "广东", "days": [
+            {"day": 1, "items": [{"time": "09:00", "activity": "行程", "cost": 6735}],
+             "lodging_cost": 0},
+        ]},
+        "gear": [], "products": {}, "issues": [], "constraints": [],
+    })
+
+    assert "已用 135%" in html
+    assert "已用 100%" not in html.split("已用 135%")[0][-40:]
+    assert "已用 150%" in html  # 6735 / 4500

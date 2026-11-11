@@ -406,16 +406,55 @@ def render_clarify_card() -> None:
             )
             choice = ""
             if str(question.get("type") or "") == "slider":
-                # 预算分配用滑条：0 = 只买装备（shopping），100 = 只排行程（travel）
-                value = st.slider(
-                    question.get("title") or key,
-                    min_value=int(question.get("min", 0)),
-                    max_value=int(question.get("max", 100)),
-                    value=int(question.get("default", 80)),
-                    step=int(question.get("step", 10)),
-                    key=f"clarify_slider_{key}",
-                    label_visibility="collapsed",
+                # 预算分配用滑条：0 = 只买商品（装备），100 = 只排行程。
+                # 两端不写裸 0/100：左侧固定是"行程"，右侧固定是"商品"，
+                # 百分比和金额跟着滑块实时变；原生刻度/拇指数字藏掉，避免
+                # 左边只剩一个 0，用户看不出这是哪一端。
+                from app.trip_gear.split import shares
+
+                left, middle, right = st.columns(
+                    [1.0, 2.4, 1.0], vertical_alignment="center", gap="small"
                 )
+                left_slot = left.empty()
+                right_slot = right.empty()
+                with middle:
+                    value = st.slider(
+                        question.get("title") or key,
+                        min_value=int(question.get("min", 0)),
+                        max_value=int(question.get("max", 100)),
+                        value=int(question.get("default", 80)),
+                        step=int(question.get("step", 10)),
+                        key=f"clarify_slider_{key}",
+                        label_visibility="collapsed",
+                    )
+                budget = question.get("budget")
+                if isinstance(budget, (int, float)) and budget > 0:
+                    split = shares(float(budget), int(value))
+                    left_slot.markdown(
+                        '<div class="sl-split-side">'
+                        "<span>行程</span>"
+                        f'<b>{split["trip_pct"]:.0f}%</b>'
+                        f'<small>¥{split["trip_cap"]:,.0f}</small>'
+                        "</div>",
+                        unsafe_allow_html=True,
+                    )
+                    right_slot.markdown(
+                        '<div class="sl-split-side sl-split-side--right">'
+                        "<span>商品（装备）</span>"
+                        f'<b>{split["gear_pct"]:.0f}%</b>'
+                        f'<small>¥{split["gear_cap"]:,.0f}</small>'
+                        "</div>",
+                        unsafe_allow_html=True,
+                    )
+                    estimate = question.get("estimate")
+                    if (
+                        isinstance(estimate, (int, float))
+                        and estimate > float(split["trip_cap"]) + 1e-6
+                    ):
+                        st.caption(
+                            f"机票+住宿估算约 ¥{estimate:,.0f}，已超过当前行程额度 "
+                            f"¥{split['trip_cap']:,.0f}；这部分还没算地面花费。"
+                        )
                 hint = str(question.get("hint") or "").strip()
                 if hint:
                     st.caption(hint)
@@ -996,11 +1035,23 @@ def _plan_lead_html(payload):
     if facts.get("destination"):
         parts.append(str(facts["destination"]))
     head = " · ".join(parts) if parts else "方案"
+    hard = [
+        issue for issue in issues
+        if str(issue.get("severity") or "") != "minor"
+    ]
     tail = f"约束 {len(constraints)} 条 · 装备 {len(gear)} 项"
-    if issues:
-        tail += f" · {len(issues)} 处未满足"
+    if hard:
+        tail += f" · 硬冲突 {len(hard)}"
+    if len(issues) > len(hard):
+        tail += f" · 提示 {len(issues) - len(hard)}"
+    state = str((payload.get("verdict") or {}).get("state") or "")
+    lead = {
+        "infeasible": "当前条件不可行",
+        "needs_input": "需要你确认",
+        "repairable": "可调整",
+    }.get(state, "方案已生成")
     return (
-        '<div class="sl-lead">方案已生成：'
+        f'<div class="sl-lead">{lead}：'
         f'<em>{head}</em>，{tail}。'
         '<span>逐项可回溯到约束来源与工具结果。</span></div>'
     )

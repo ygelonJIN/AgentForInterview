@@ -296,3 +296,26 @@ def test_recent_thread_tip_renders_for_each_row():
     tips = [item.value for item in app.sidebar.markdown if "sl-thread-tip" in item.value]
     assert tips
     assert "sl-thread-tip" in tips[0]
+
+
+def test_budget_slider_labels_both_sides_with_names_not_bare_zero():
+    """滑块两端要写“行程/商品（装备）”，不能左边只剩一个 0。"""
+    app = _run()
+    app.session_state["pending_clarify"] = {
+        "thread_id": "ui-slider",
+        "missing": ["预算分配"],
+        "questions": [{
+            "key": "budget_split", "type": "slider",
+            "title": "行程和装备怎么分这 5000 元？",
+            "answer_prefix": "预算分配", "budget": 5000,
+            "min": 0, "max": 100, "step": 10, "default": 90,
+            "hint": "0 = 只买商品（装备），100 = 只排行程",
+            "options": [], "allow_custom": False, "estimate": 5480,
+        }],
+    }
+    app.run()
+
+    assert not app.exception
+    bodies = [m.proto.body for m in app.markdown]
+    assert any("sl-split-side" in body and "行程" in body and "90%" in body for body in bodies)
+    assert any("商品（装备）" in body and "10%" in body for body in bodies)

@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import re
 from datetime import date
 from typing import Iterable, List, Optional, Tuple
 
@@ -27,9 +28,36 @@ _VAGUE_CITY_WORDS = (
     "你安排", "你看着", "不知道", "不限", "任意", "帮我选", "挑几个",
 )
 
+# 用户点名要买衣服：走显式购买需求，不从"海边"反推。没有这条，
+# "女生想买一套衣服"只会在追问边界丢成"预算分配：90"。
+_FEMALE_WORDS = ("女生", "女孩", "女的", "女朋友", "老婆", "闺蜜", "她")
+_OUTFIT_WORDS = ("一套衣服", "一套穿搭", "穿搭", "连衣裙", "裙子", "半裙", "女装")
+_DRESS_WORDS = ("连衣裙", "裙子", "半裙", "女装")
+_PURCHASE_CLAUSE_RE = re.compile(
+    r"[^，。；;！？\n]{0,24}(?:一套衣服|一套穿搭|连衣裙|裙子|半裙|女装|穿搭)[^，。；;！？\n]{0,24}"
+)
+
 
 def _vague_city_request(text: str) -> bool:
     return any(word in str(text or "") for word in _VAGUE_CITY_WORDS)
+
+
+def parse_purchase_items(text: str) -> List[str]:
+    """抽出用户点名要买的衣服，保留原话片段。
+
+    规则只认"女性 + 衣服"或明确的裙装；不把"男生买衣服"猜成女装。
+    返回的是原话里的一个短句（最多 24 字），后面既当约束也当装备理由。
+    """
+    raw = str(text or "")
+    if not raw or not any(word in raw for word in _OUTFIT_WORDS):
+        return []
+    female = any(word in raw for word in _FEMALE_WORDS) or "女装" in raw
+    explicit_dress = any(word in raw for word in _DRESS_WORDS)
+    if not female and not explicit_dress:
+        return []
+    match = _PURCHASE_CLAUSE_RE.search(raw)
+    clause = (match.group(0) if match else "一套衣服").strip(" ，。；;\t")
+    return [clause] if clause else []
 
 
 def merge_province_cities(
@@ -111,6 +139,28 @@ def ensure_start_date(
     return kept
 
 
+def ensure_budget(
+    facts: TripFacts,
+    constraints: List[Constraint],
+    source: str = "用户原话",
+) -> List[Constraint]:
+    """预算追问里改了金额：重写清单那条，不能两条并存。
+
+    和出发日期同理：``verify_clarify`` 的回复是"改条件"，不是追加；
+    只改 facts 不改清单，面板会写"预算 5000"、实际按 6000 算。
+    """
+    kept = [item for item in constraints if item.key != "budget"]
+    if facts.budget is None:
+        return kept
+    entry = Constraint(text=f"预算：{facts.budget:g} 元", source=source, key="budget")
+    position = next(
+        (index + 1 for index, item in enumerate(kept) if item.key == "people"),
+        len(kept),
+    )
+    kept.insert(position, entry)
+    return kept
+
+
 def derive_constraints(
     message: str,
     shared: Optional[SharedConstraints] = None,
@@ -170,6 +220,7 @@ def derive_constraints(
         with_kids=slots.with_kids,
         fixed_events=[FixedEvent(**event) for event in (slots.fixed_events or [])],
         wants_activity=bool(slots.wants_activity),
+        purchase_items=parse_purchase_items(text),
     )
 
     constraints: List[Constraint] = []
@@ -193,6 +244,13 @@ def derive_constraints(
             source="用户原话",
             hard=False,
             key="wants_activity",
+        ))
+    if facts.purchase_items:
+        constraints.append(Constraint(
+            text="点名购买：" + "；".join(facts.purchase_items),
+            source="用户原话",
+            hard=False,
+            key="purchase",
         ))
     # 用户点名的固定活动：已订是硬约束，其它安排要让路；约见只锁"哪天要有"，
     # 哪天排由排程决定，因此是软约束。

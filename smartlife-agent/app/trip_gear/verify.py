@@ -226,6 +226,7 @@ def _check_purchases(
     products: Dict[str, Dict[str, Any]],
     today: Optional[Any] = None,
     find_alternatives: Optional[Any] = None,
+    itinerary: Optional[Any] = None,
 ) -> List[Issue]:
     """采购可履约：买得到、来得及；赶不上就给替代链，而不是只报错。
 
@@ -238,8 +239,24 @@ def _check_purchases(
         return []
 
     issues: List[Issue] = []
-    for result in purchase.check_purchases(gear, products, facts, today=today):
+    pickup_days = purchase.shopping_days(itinerary)
+    for result in purchase.check_purchases(
+        gear, products, facts, today=today, self_pickup_days=pickup_days
+    ):
         product = products.get(result.gear) or {}
+
+        if result.status == purchase.STATUS_SELF_PICKUP:
+            # 线上赶不上，但行程里有商场：这不是"不可行"，是一条要到店买的提示。
+            issues.append(
+                Issue(
+                    constraint=f"装备：{result.gear}（{result.product}）可到店自提",
+                    actual=result.product,
+                    hint=result.hint,
+                    severity="minor",
+                    blocking_risk=False,
+                )
+            )
+            continue
 
         if result.status == purchase.STATUS_UNKNOWN:
             # 离出发还远时，缺时效几乎不会造成"赶不上"，不值得为它打断用户。
@@ -291,7 +308,7 @@ def _check_purchases(
             hint += "；或到店自提（该商品有货，假设同城）"
         issues.append(
             Issue(
-                constraint=f"装备：{result.gear} 到货赶不上出发",
+                constraint=f"装备：{result.gear}（{result.product}）到货赶不上出发",
                 actual=f"需 {result.lead_time_days} 天",
                 limit=f"距出发 {result.days_left} 天",
                 hint=hint,
@@ -498,6 +515,27 @@ def verify(
             )
         )
 
+    # 用户点名"一套衣服"但只选到半裙/上衣：不是漏识别，是额度不够。
+    # 把取舍说清楚，别让"已按预算省略"一句话把连衣裙藏过去。
+    requested_outfit = any(
+        item.user_requested and "女装" in (item.name or "") for item in gear
+    )
+    dress_skipped = any(
+        item.status == "skipped" and "连衣裙" in (item.name or "") for item in gear
+    )
+    if requested_outfit and dress_skipped:
+        cap = f"装备额度 {facts.gear_cap:g} 元" if facts.gear_cap is not None else "当前装备额度"
+        issues.append(
+            Issue(
+                constraint="装备：女装 未选到连衣裙",
+                hint=(
+                    f"{cap}装不下“连衣裙 + 泳衣 + 防晒霜”；把装备占比调高（如 20%），"
+                    "或去掉雨伞/防晒再试"
+                ),
+                severity="minor",
+            )
+        )
+
     # 3. 行程自身的时间与结构校验
     issues.extend(validate_itinerary(itinerary))
 
@@ -525,6 +563,21 @@ def verify(
                     )
                 )
 
+    # 行程分配额度：总预算没超、但行程这一端超了，也要单独说；
+    # 否则 04 写"额度 4500"、实际 6735，用户只能自己看脚注。
+    if itinerary.days and facts.trip_cap is not None:
+        trip_total = total_cost(itinerary)
+        if trip_total > float(facts.trip_cap) + 1e-6:
+            issues.append(
+                Issue(
+                    constraint="行程超出分配额度",
+                    actual=round(trip_total, 2),
+                    limit=round(float(facts.trip_cap), 2),
+                    hint="把装备占比调低、提高行程额度，或减少收费项目",
+                    severity="minor",
+                )
+            )
+
     if with_gear:
         # 6. 规格核对：有这件东西不等于够用
         issues.extend(_check_specs(facts, gear, products, constraints))
@@ -532,7 +585,12 @@ def verify(
         # 7. 采购可履约：买得到、来得及
         issues.extend(
             _check_purchases(
-                facts, gear, products, today=today, find_alternatives=find_alternatives
+                facts,
+                gear,
+                products,
+                today=today,
+                find_alternatives=find_alternatives,
+                itinerary=itinerary,
             )
         )
 

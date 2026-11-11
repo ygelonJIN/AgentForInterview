@@ -37,13 +37,15 @@ def activities_text(itinerary: Itinerary) -> str:
 
 
 def total_cost(itinerary: Itinerary) -> float:
-    """行程总费用 = 条目花费 + 住宿费。
+    """行程总费用 = 条目花费 + 住宿费 + 城际交通估算。
 
     住宿单列一项而不是摊进条目里：换住宿时要能单独算出"这一项变了多少"。
+    城际交通也单列：它不落在某一天，摊进条目会让当天小计对不上。
     """
     items = sum(float(item.cost or 0) for day in itinerary.days for item in day.items)
     lodging = sum(float(day.lodging_cost or 0) for day in itinerary.days)
-    return round(items + lodging, 2)
+    intercity = float(getattr(itinerary, "intercity_cost", 0) or 0)
+    return round(items + lodging + intercity, 2)
 
 
 def _parse_time(value: str) -> Optional[int]:

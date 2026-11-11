@@ -47,6 +47,23 @@ def caps(budget: float, gear_cap: float) -> Tuple[float, float]:
     return round(total - gear, 2), round(gear, 2)
 
 
+def shares(budget: float, trip_pct: float) -> Dict[str, float]:
+    """滑动条的单一百分比 → 两端各自的占比与金额。
+
+    滑块只回一个整数（行程占比），但界面上必须同时看得到装备那一端：
+    否则用户选了 90 只知道"行程 90%"，不知道装备只剩 500 元。
+    """
+    total = max(0.0, float(budget or 0))
+    trip = max(0.0, min(100.0, float(trip_pct or 0)))
+    trip_cap = round(total * trip / 100, 2)
+    return {
+        "trip_pct": trip,
+        "gear_pct": round(100.0 - trip, 2),
+        "trip_cap": trip_cap,
+        "gear_cap": round(total - trip_cap, 2),
+    }
+
+
 def parse(text: str, budget: float) -> Optional[Dict[str, Any]]:
     """解析用户的答案；认不出来返回 None（调用方回落到默认档）。
 

@@ -227,3 +227,24 @@ class TestVerifyAlternatives:
         )
         target = next(issue for issue in issues if "无货" in str(issue.constraint))
         assert target.alternatives[0]["name"] == "速开帐篷"
+
+
+def test_shopping_day_turns_late_delivery_into_self_pickup():
+    """明天出发、线上 3 天，但行程第 2 天有商场：可到店买，不能判不可行。"""
+    from app.trip_gear.models import DayPlan, Itinerary, ItineraryItem
+
+    facts = TripFacts(start_date="2026-11-12")
+    gear = [GearItem(name="女装", status="need_buy", user_requested=True)]
+    products = {"女装": {"name": "碎花雪纺连衣裙", "price": 299, "stock": 10, "lead_time_days": 3}}
+    itinerary = Itinerary(destination="汕头", days=[
+        DayPlan(day=1, items=[ItineraryItem(time="10:00", activity="到达", duration_min=60)]),
+        DayPlan(day=2, items=[ItineraryItem(time="14:00", activity="商场逛街，挑一套衣服", duration_min=90)]),
+    ])
+
+    results = purchase.check_purchases(
+        gear, products, facts, today=date(2026, 11, 11),
+        self_pickup_days=purchase.shopping_days(itinerary),
+    )
+
+    assert results[0].status == purchase.STATUS_SELF_PICKUP
+    assert "第 2 天" in results[0].hint

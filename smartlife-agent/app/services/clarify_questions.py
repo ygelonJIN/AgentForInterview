@@ -65,26 +65,36 @@ _VERIFY_OPTIONS = {
 }
 
 
-def budget_split_questions(budget: float) -> List[Dict[str, Any]]:
+def budget_split_questions(
+    budget: float,
+    estimate: Optional[float] = None,
+) -> List[Dict[str, Any]]:
     """预算到位后问一次"行程和装备各拿多少"，用滑动条。
 
     0 和 100 是两个端点：0 = 只买装备（走 shopping），100 = 只排行程（走 travel），
     中间才是 trip_gear。滑条比三个选项更能表达"偏一点"这种诉求。
+
+    ``estimate`` 是机票+住宿的估算；界面用它提示"行程额度还不够覆盖这两块"，
+    免得用户选完 90% 才发现机票住宿已经超过行程额度。
     """
-    return [{
+    question = {
         "key": "budget_split",
         "type": "slider",
         # 标题要跟"预算多少"区分开：金额已经记下了，这里只问比例
         "title": f"行程和装备怎么分这 {float(budget):g} 元？",
         "answer_prefix": "预算分配",
+        "budget": float(budget),
         "min": 0,
         "max": 100,
         "step": 10,
         "default": 80,
-        "hint": "只定比例，不改金额：0 = 只买装备，100 = 只排行程",
+        "hint": "只定比例，不改金额：0 = 只买商品（装备），100 = 只排行程",
         "options": [],
         "allow_custom": False,
-    }]
+    }
+    if estimate is not None:
+        question["estimate"] = round(float(estimate), 2)
+    return [question]
 
 
 def build_questions(

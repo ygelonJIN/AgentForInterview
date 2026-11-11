@@ -104,3 +104,27 @@ def test_memory_ownership_keeps_its_source():
     names = {item.name: item for item in owned}
     assert set(names) == {"帐篷", "登山杖"}
     assert names["帐篷"].source.startswith("记忆:abcd1234")
+
+
+def test_explicit_outfit_request_becomes_a_women_clothing_need():
+    """用户点名"女生一套衣服"要进装备清单，而不是等海边规则顺手补泳衣。"""
+    from app.trip_gear.constraints import parse_purchase_items
+
+    items = parse_purchase_items("上海出发去广东，女生想买一套衣服带去海边")
+    assert items == ["女生想买一套衣服带去海边"]
+
+    facts = TripFacts(
+        origin="上海", destination="广东", cities=["汕头"],
+        days=7, people=2, purchase_items=items,
+    )
+    gear = _by_name(derive_gear(facts, fallback_itinerary(facts)))
+
+    assert "女装" in gear
+    assert gear["女装"].user_requested is True
+    assert "女生想买一套衣服" in gear["女装"].reason
+
+
+def test_male_outfit_request_does_not_become_women_clothing():
+    from app.trip_gear.constraints import parse_purchase_items
+
+    assert parse_purchase_items("男生想买一套衣服带去海边") == []

@@ -40,7 +40,13 @@ UNKNOWN_MARKERS = ("未知", "未定", "未标注", "不明", "无法判断")
 
 # 这些约束"没自动校验"是设计如此（本来就不好判），不是信息缺失，
 # 拿去问用户只会显得系统没听懂他刚说的话。对应 verify 里的 _NOT_AUTO/_INFORMATIONAL。
-NON_BLOCKING_KEYS = {"people", "transport", "budget_scope", "weather"}
+NON_BLOCKING_KEYS = {
+    "people", "transport", "budget_scope", "weather",
+    # 只做展示、没有确定性判定对象的条目：不要把它们塞进"还判断不了"的追问，
+    # 用户刚说过"上海/汕头/买衣服/预算怎么分"，再问一遍等于没听懂。
+    "origin", "cities", "purchase", "budget_split",
+    "wants_activity", "fixed_event", "appointment", "start_date",
+}
 
 
 def _num(raw: Any) -> Optional[float]:
@@ -133,6 +139,8 @@ def gaps(constraints: Iterable[Constraint], issues: Iterable[Issue]) -> List[Dic
 
 def _ask_payload(items: List[Dict[str, Any]]) -> Dict[str, Any]:
     subjects = [item["subject"] for item in items][:3]
+    if not subjects:
+        return {"question": "", "missing": []}
     return {
         "question": "这几项目前还判断不了，补一句就能定：" + "、".join(subjects),
         "missing": subjects,

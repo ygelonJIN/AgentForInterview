@@ -954,6 +954,13 @@ section[data-testid="stSidebar"] .st-key-thread_delete_confirm [data-testid="stH
 .sl-ask-kicker {{ font-family: var(--font-display); font-size: var(--fs-sm); font-weight: var(--fw-bold); color: var(--c-accent-text); }}
 .sl-ask-tip {{ font-size: var(--fs-2xs); color: var(--c-text-muted); }}
 .sl-ask-q {{ margin: var(--space-3) 0 var(--space-1); font-size: var(--fs-sm); font-weight: var(--fw-semibold); color: var(--c-text); }}
+.sl-split-side {{ display: flex; flex-direction: column; gap: 1px; line-height: 1.15; min-width: 0; }}
+.sl-split-side span {{ font-family: var(--font-display); font-size: var(--fs-2xs); color: var(--c-text-muted); white-space: nowrap; }}
+.sl-split-side b {{ font-family: var(--font-mono); font-size: var(--fs-lg); color: var(--c-accent-text); font-variant-numeric: tabular-nums; }}
+.sl-split-side small {{ font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-text-faint); font-variant-numeric: tabular-nums; }}
+.sl-split-side--right {{ align-items: flex-end; text-align: right; }}
+.st-key-clarify_card [data-testid="stSliderTickBar"],
+.st-key-clarify_card [data-testid="stSliderThumbValue"] {{ display: none; }}
 
 .st-key-clarify_card [data-testid="stForm"] {{ border: none; padding: 0; }}
 .st-key-clarify_card [role="radiogroup"] {{ display: flex; flex-wrap: wrap; gap: var(--space-2); }}
@@ -1315,18 +1322,30 @@ def _gear_columns(gear: Sequence[Dict[str, Any]], products: Dict[str, Any]) -> t
         for item in items:
             product = (products.get(item.get("name")) or {}) if key == "need_buy" else {}
             extra = ""
+            title = str(item.get("name", ""))
+            note = ""
             if product.get("price"):
-                extra = f'<span class="sl-gear-price">{_money(product.get("price"))}</span>'
+                product_name = str(product.get("name") or "")
                 brand = str(product.get("brand") or "")
-                if brand:
+                if product_name:
+                    title = product_name
+                extra = f'<span class="sl-gear-price">{_money(product.get("price"))}</span>'
+                if brand and brand not in product_name:
                     extra += f"<small>{_e(brand)}</small>"
+                match = product.get("match") or {}
+                if product_name and product_name != item.get("name"):
+                    note = f"需求：{item.get('name', '')}"
+                if match.get("kind") == "substitute":
+                    query = match.get("query") or ""
+                    note = (note + " · " if note else "") + f"按「{query}」检索到的同类款"
             reason = item.get("reason") or ""
             qty = item.get("qty") or 1
             chips.append(
                 '<span class="sl-gear-item">'
-                f'<b>{_e(item.get("name", ""))}</b>'
+                f'<b>{_e(title)}</b>'
                 f'<span class="qty">×{_e(qty)}</span>'
                 f"{extra}"
+                + (f"<small>{_e(note)}</small>" if note else "")
                 + (f"<small>{_e(reason)}</small>" if reason else "")
                 + "</span>"
             )
@@ -1343,6 +1362,12 @@ def _gear_columns(gear: Sequence[Dict[str, Any]], products: Dict[str, Any]) -> t
         foot_lines.append(f"预算内没选到：{names}（共 {len(budget_blocked)} 项，未计入预算）")
     if skipped:
         foot_lines.append("已按预算省略：" + "、".join(str(item.get("name", "")) for item in skipped))
+    skipped_names = {str(item.get("name") or "") for item in skipped}
+    wanted = [name for name in ("连衣裙", "泳衣") if name in skipped_names]
+    if wanted:
+        foot_lines.append(
+            f"想保留{'/'.join(wanted)}：把装备占比调高（如 20%），或去掉雨伞/防晒再试"
+        )
     foot = "".join(f'<div class="sl-gear-foot">{_e(line)}</div>' for line in foot_lines)
     return html, foot
 
@@ -1358,7 +1383,7 @@ def plan_panels_html(payload: Dict[str, Any]) -> str:
     ambiguous = payload.get("owned_ambiguous") or []
 
     days = itinerary.get("days") or []
-    # 行程合计必须和 verify 用同一个口径：条目花费 + 住宿费。
+    # 行程合计必须和 verify 用同一个口径：条目花费 + 住宿费 + 城际交通估算。
     # 以前只加条目花费，于是面板写"没超预算"、05 却报"超出预算"。
     trip_total = 0.0
     for day in days:
@@ -1371,6 +1396,11 @@ def plan_panels_html(payload: Dict[str, Any]) -> str:
             trip_total += float(day.get("lodging_cost") or 0)
         except (TypeError, ValueError):
             pass
+    try:
+        intercity_total = float(itinerary.get("intercity_cost") or 0)
+    except (TypeError, ValueError):
+        intercity_total = 0.0
+    trip_total += intercity_total
 
     gear_total = 0.0
     for item in gear:
@@ -1388,9 +1418,11 @@ def plan_panels_html(payload: Dict[str, Any]) -> str:
     budget = facts.get("budget")
     has_budget = isinstance(budget, (int, float))
     remaining = (float(budget) - total) if has_budget else None
-    pct = 0.0
+    raw_pct = 0.0
     if has_budget and budget:
-        pct = max(0.0, min(100.0, total / float(budget) * 100))
+        raw_pct = max(0.0, total / float(budget) * 100)
+    # 进度条截在 100%，但文字必须显示真实百分比（超支 144% 不能写成 100%）。
+    pct = min(100.0, raw_pct)
 
     parts = [
         panel_html(
@@ -1404,11 +1436,12 @@ def plan_panels_html(payload: Dict[str, Any]) -> str:
 
     if days:
         day_html = "".join(_day_html(day) for day in days)
+        intercity_note = f"（含城际估算 {_money(intercity_total)}）" if intercity_total else ""
         parts.append(
             panel_html(
                 "02",
                 "逐日行程",
-                f"{len(days)} 天 · 行程合计 {_money(trip_total)}",
+                f"{len(days)} 天 · 行程合计 {_money(trip_total)}{intercity_note}",
                 f'<div class="sl-days">{day_html}</div>',
             )
         )
@@ -1437,9 +1470,38 @@ def plan_panels_html(payload: Dict[str, Any]) -> str:
         delta_label, delta_text = "剩余", f"+{_money(remaining)}"
     scope = "含装备" if (facts.get("budget_scope") or "trip_and_gear") != "trip_only" else "不含装备"
     # 明细压到脚注：上面一行只留"花了多少 / 剩多少"。
-    foot = f"行程 {_money(trip_total)} · 装备 {_money(gear_total)} · 口径 {scope}"
+    # 两端的"额度 + 占比"必须写在脚注里：滑块上只回一个百分比，用户看不出
+    # 行程和装备各拿了多少钱；这里和滑块用同一套 split 口径。
+    trip_foot = f"行程 {_money(trip_total)}"
+    gear_foot = f"装备 {_money(gear_total)}"
+    trip_cap = facts.get("trip_cap")
+    gear_cap = facts.get("gear_cap")
+
+    def _share(part: float, whole: float) -> str:
+        return f"{part / whole:.0%}" if whole else "—"
+
+    if has_budget and budget:
+        if isinstance(trip_cap, (int, float)):
+            trip_foot += (
+                f"（额度 {_money(trip_cap)} · 分配 {_share(float(trip_cap), float(budget))}"
+                f" · 已用 {_share(trip_total, float(trip_cap))}）"
+            )
+        if isinstance(gear_cap, (int, float)):
+            gear_foot += (
+                f"（额度 {_money(gear_cap)} · 分配 {_share(float(gear_cap), float(budget))}"
+                f" · 已用 {_share(gear_total, float(gear_cap))}）"
+            )
+    foot = f"{trip_foot} · {gear_foot} · 口径 {scope}"
     if has_budget:
-        foot += f" · 已花 {pct:.0f}%"
+        foot += f" · 已用 {raw_pct:.0f}%"
+    estimate_notes = itinerary.get("estimate_notes") or []
+    estimate_html = ""
+    if estimate_notes:
+        estimate_html = (
+            '<div class="sl-budget-foot sl-budget-estimate">'
+            + _e("；".join(str(note) for note in estimate_notes))
+            + "</div>"
+        )
     parts.append(
         panel_html(
             "04",
@@ -1454,6 +1516,7 @@ def plan_panels_html(payload: Dict[str, Any]) -> str:
                 <div class="{delta_class}"><span>{delta_label}</span><b>{_e(delta_text)}</b></div>
               </div>
               <div class="sl-budget-foot">{_e(foot)}</div>
+              {estimate_html}
             </div>
             """,
         )
@@ -1470,6 +1533,21 @@ def plan_panels_html(payload: Dict[str, Any]) -> str:
     ]
 
     alerts = []
+    pickup = [
+        issue for issue in issues
+        if "可到店自提" in str(issue.get("constraint") or "")
+    ]
+    if pickup:
+        names = "、".join(
+            str(issue.get("constraint", "")).replace("装备：", "")
+            for issue in pickup[:6]
+        )
+        more = f" 等 {len(pickup)} 项" if len(pickup) > 6 else ""
+        alerts.append(alert_html(
+            "warn",
+            "可到店自提（不判不可行）",
+            f"{names}{more}；行程里已有商场/到店窗口，按同城有货假设，到店买即可。",
+        ))
     for issue in hard[:4]:
         detail = issue.get("hint") or ""
         if issue.get("actual") is not None and issue.get("limit") is not None:
@@ -1487,9 +1565,43 @@ def plan_panels_html(payload: Dict[str, Any]) -> str:
         alerts.append(alert_html("warn", "待确认", f"你提到过「{phrase}」，但没说具体物品，暂未算作已有。"))
     if alerts:
         parts.append(panel_html("05", "校验结果", "确定性规则 · 不依赖模型自审", "".join(alerts)))
+    # 结论放在最前面：不能等用户自己从 05 的几条 critical 里推断"不可行"。
+    banner = _verdict_banner(payload.get("verdict") or {})
+    if banner:
+        parts.insert(0, banner)
     # 默认值不是告警，但必须说出口：人数、出发日期都可能只是"先这么算"。
     parts.append(_defaults_note_html(facts))
     return "".join(parts)
+
+
+def _verdict_banner(verdict: Dict[str, Any]) -> str:
+    state = str(verdict.get("state") or "")
+    blocking = [str(item) for item in (verdict.get("blocking") or [])]
+    ask = verdict.get("ask") or {}
+    if state == "infeasible":
+        detail = "；".join(blocking[:3])
+        return alert_html(
+            "danger",
+            "当前条件不可行",
+            (detail + "。" if detail else "")
+            + "先改预算/日期/交通，或按下面的放弃清单重排；不要直接照这份方案执行。",
+        )
+    if state == "needs_input":
+        question = str(ask.get("question") or "")
+        detail = question or "；".join(blocking[:3])
+        return alert_html(
+            "warn",
+            "需要你确认",
+            (detail + "。" if detail else "")
+            + "这不是系统故障，是当前条件下只能二选一。",
+        )
+    if state == "repairable":
+        return alert_html(
+            "warn",
+            "可以按代价调整",
+            "有能消除硬冲突的改法；确认后我会按代价从小到大执行。",
+        )
+    return ""
 
 
 def _defaults_note_html(facts: Dict[str, Any]) -> str:

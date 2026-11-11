@@ -185,3 +185,22 @@ class TestNeedsInputAsk:
         assert verdict.state == "needs_input"
         assert "人数" not in verdict.ask["question"]
         assert "睡袋温标" in verdict.ask["question"]
+
+
+def test_display_only_constraints_are_not_asked_again():
+    """出发地/城市/点名购买/预算分配是展示项，不该出现在 verify 追问里。"""
+    from app.trip_gear.models import Constraint
+    from app.trip_gear.verdict import gaps
+
+    constraints = [
+        Constraint(text="出发地：上海", key="origin", status="unverified"),
+        Constraint(text="串联城市：汕头 → 广州 → 深圳", key="cities", status="unverified"),
+        Constraint(text="点名购买：女生想买一套衣服", key="purchase", status="unverified"),
+        Constraint(text="预算分配：行程 4500 / 装备 500", key="budget_split", status="unverified"),
+        Constraint(text="目的地：广东", key="destination", status="unverified"),
+    ]
+
+    subjects = [item["subject"] for item in gaps(constraints, [])]
+
+    assert "目的地：广东" in subjects
+    assert not any("出发地" in s or "串联城市" in s or "点名购买" in s or "预算分配" in s for s in subjects)

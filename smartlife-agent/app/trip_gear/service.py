@@ -21,6 +21,7 @@ from app.observability import extract_model_usage, log_exception, timed_span
 from app.retrieval.repositories import ProductRepository
 from app.tools.travel_executor import TravelToolExecutor
 from app.trip_gear.catalog import catalog_digest
+from app.trip_gear.estimates import intercity_estimate, lodging_estimate
 from app.trip_gear.itinerary import assign_cities, fallback_itinerary, lodging_cost_for
 from app.trip_gear.models import (
     Constraint,
@@ -127,7 +128,7 @@ class TripGearService:
 1. 只安排真实可执行的活动，不编造景点、票价或实时信息；
 2. 每天 4-6 个安排，包含用餐和休息，活动时间在 08:00-21:00 之间；
 3. time 用 HH:MM；duration_min 用分钟；cost 用整数元估算——免费才写 0，有价格但拿不准时按当地一般水平给一个整数，不要因为不确定就写 0；
-4. 行程要贴合事实：住宿方式、天气、同行人、预算都要考虑；逐日花费（餐饮/门票/市内交通）合计要贴进行程预算，不低于七成、不超出；住宿费与城际交通单独给出，不要重复计进每日花费；
+4. 行程要贴合事实：住宿方式、天气、同行人、预算都要考虑；逐日花费（餐饮/门票/市内交通）合计要贴进【地面可花上限】（若给出）或行程预算，不低于七成、不超出；住宿费与城际交通已按估算单独给出，不要重复计进每日花费；
 5. 天数必须与给定天数一致；
 6. 同时给出这次出行的装备建议（gear）：名称、数量、为什么带，覆盖衣物、鞋、洗护、药品、活动装备，不要列身份证/手机/充电器这类通用物品；
 7. 装备要贴合场景：海边度假要泳衣/防晒，露营要帐篷睡袋，寒冷要羽绒服；
@@ -154,6 +155,12 @@ class TripGearService:
         facts: TripFacts,
         constraints: List[Constraint],
     ) -> tuple[Itinerary, List[GearItem]]:
+        nights = max(0, int(facts.days or 0) - 1)
+        intercity, _ = intercity_estimate(facts)
+        lodging, _ = lodging_estimate(facts, nights)
+        ground_cap = None
+        if facts.trip_cap is not None:
+            ground_cap = max(0.0, float(facts.trip_cap) - intercity - lodging)
         facts_text = "\n".join(
             [
                 f"出发地：{facts.origin or '未指定'}",
@@ -166,6 +173,19 @@ class TripGearService:
                 *(
                     [f"行程预算上限：{facts.trip_cap:g} 元（装备另分 {facts.gear_cap:g} 元）"]
                     if facts.trip_cap is not None else []
+                ),
+                *(
+                    [f"城际交通估算：{intercity:g} 元（机票/高铁，已含往返与城市之间）",
+                     f"住宿估算：{lodging:g} 元（{nights} 晚，按间估算/经济型）"]
+                    if facts.destination and facts.origin else []
+                ),
+                *(
+                    [f"地面可花上限：{ground_cap:g} 元（= 行程预算上限 − 住宿 − 城际估算）"]
+                    if ground_cap is not None else []
+                ),
+                *(
+                    [f"点名购买：{'；'.join(facts.purchase_items)}"]
+                    if facts.purchase_items else []
                 ),
                 f"住宿：{facts.lodging or '未指定'}",
                 f"交通：{facts.transport or '未指定'}",

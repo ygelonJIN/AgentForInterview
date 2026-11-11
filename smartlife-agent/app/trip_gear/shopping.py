@@ -54,6 +54,19 @@ def canonical_gear_name(name: str) -> str:
     return strip_modifiers(name)
 
 
+def _is_kids_product(row: Dict[str, Any]) -> bool:
+    """童装/儿童用品：成人行程不选，只有 with_kids 时才放开。"""
+    category = str(row.get("category") or "")
+    subcategory = str(row.get("subcategory") or "")
+    name = str(row.get("name") or "")
+    return (
+        "童" in category
+        or "童" in subcategory
+        or "儿童" in name
+        or "童装" in name
+    )
+
+
 class GearShopper:
     def __init__(
         self,
@@ -98,13 +111,22 @@ class GearShopper:
         # 末尾那几件才是可以不要的。
         keep = list(pending)
         dropped: set = set()
+        # 用户点名的先保住：额度不够时先砍可选装备，不能把"女生要的一套衣服"
+        # 从清单末尾静默删掉。真装不下时留在清单里标"额度不足"，交给 verify。
+        protected = {item.name for item in pending if item.user_requested}
         total_floor = sum(floor_by_name[name] or 0.0 for name in floor_by_name)
         while (
             remaining_budget is not None
             and keep
             and total_floor > remaining_budget + 1e-6
         ):
-            item = keep.pop()
+            item = next(
+                (candidate for candidate in reversed(keep) if candidate.name not in protected),
+                None,
+            )
+            if item is None:
+                break
+            keep.remove(item)
             dropped.add(item.name)
             total_floor -= floor_by_name.get(item.name) or 0.0
         reserve = total_floor if remaining_budget is not None else 0.0
@@ -131,10 +153,16 @@ class GearShopper:
                 kept.append(item)
                 continue
             if reason == "budget":
-                # 额度是用户选的，就该在额度内给结论：买不起的件标成"已省略"，
-                # 不再留一条"未选款"——那个状态既没买到、也不算结束，只会被当成故障。
-                item.status = "skipped"
-                item.reason = (item.reason + "；预算不足，已按额度省略").strip("；")
+                if item.user_requested:
+                    # 用户点名的不能悄悄消失：留在清单里、写明额度不够，
+                    # 由 verify 披露，用户再决定提高装备占比还是换款。
+                    item.status = "need_buy"
+                    item.reason = (item.reason + "；预算不足，用户点名需保留").strip("；")
+                else:
+                    # 额度是用户选的，就该在额度内给结论：买不起的件标成"已省略"，
+                    # 不再留一条"未选款"——那个状态既没买到、也不算结束，只会被当成故障。
+                    item.status = "skipped"
+                    item.reason = (item.reason + "；预算不足，已按额度省略").strip("；")
                 kept.append(item)
             # reason == "no_match"：库里没有，直接不进清单
         gear[:] = kept
@@ -143,7 +171,7 @@ class GearShopper:
     def _min_price(self, item: GearItem) -> Optional[float]:
         """这件装备"还能满足规格"的最低价；没有可用候选返回 None。"""
         return cheapest_scored(
-            self._candidates(item),
+            self._pick_candidates(item),
             category=item.name,
             gear_name=item.name,
             facts=self.facts,
@@ -153,6 +181,28 @@ class GearShopper:
     def candidates_for(self, item: GearItem) -> List[Dict[str, Any]]:
         """公开候选集（模型挑款复用同一批候选，避免两套检索）。"""
         return self._candidates(item)
+
+    def _pick_candidates(
+        self,
+        item: GearItem,
+        remaining: Optional[float] = None,
+    ) -> List[Dict[str, Any]]:
+        """用户点名"一套衣服"时，跌落打分也要优先连衣裙。
+
+        模型挑款走 ``candidates_for`` 仍能看到全部女装候选；只有打分兜底
+        这条路径在预算够连衣裙时收敛到一件套，避免"一套"变成半裙。
+        """
+        rows = self._candidates(item)
+        if not (item.user_requested and "一套" in (item.reason or "")):
+            return rows
+        dresses = [row for row in rows if "连衣裙" in str(row.get("name") or "")]
+        if not dresses:
+            return rows
+        if remaining is not None:
+            qty = max(1, int(item.qty or 1))
+            if not any(float(row.get("price") or 0) * qty <= remaining + 1e-6 for row in dresses):
+                return rows
+        return dresses
 
     def _queries(self, item: GearItem) -> List[str]:
         """检索词顺序：原名 → 规范化短名 → 剥修饰短名。"""
@@ -192,6 +242,11 @@ class GearShopper:
             if len(rows) >= 40:
                 break
 
+        # 成人行程不推童装：T恤 这类通用词会同时命中儿童款，按价格挑会
+        # 先选到 59 元的儿童T恤。用户没说带孩子，就不该出现儿童用品。
+        if self.facts is not None and not getattr(self.facts, "with_kids", False):
+            rows = [row for row in rows if not _is_kids_product(row)]
+
         subcategory = subcategory_for(item.name)
         if subcategory:
             narrowed = [row for row in rows if row.get("subcategory") == subcategory]
@@ -204,7 +259,7 @@ class GearShopper:
         remaining_budget: Optional[float],
     ) -> Tuple[Optional[Dict[str, Any]], str]:
         """返回 (商品, 原因)。原因只用于区分"库里没有"和"买不起"。"""
-        candidates = self._candidates(item)
+        candidates = self._pick_candidates(item, remaining_budget)
         if not candidates:
             return None, "no_match"
 

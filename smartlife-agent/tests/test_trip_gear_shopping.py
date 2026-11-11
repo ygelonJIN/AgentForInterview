@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 
-from app.trip_gear.models import GearItem
+from app.trip_gear.models import GearItem, TripFacts
 from app.trip_gear.shopping import GearShopper
 
 
@@ -97,3 +97,67 @@ class TestBrandPreference:
         shopper.fill([GearItem(name="帐篷", status="need_buy")], products)
         assert products["帐篷"]["price"] == 589
         assert products["帐篷"]["match"]["by_preference"] is False
+
+
+class TestRequestedItems:
+    def test_user_requested_item_survives_a_tight_budget(self):
+        by_query = {
+            "女装": _rows({"name": "碎花雪纺连衣裙", "price": 299, "stock": 5}),
+            "防晒霜": _rows({"name": "防晒霜SPF50+", "price": 89, "stock": 5}),
+        }
+        gear = [
+            GearItem(name="女装", status="need_buy", user_requested=True),
+            GearItem(name="防晒霜", status="need_buy"),
+        ]
+        products = {}
+
+        GearShopper(lambda query, **_: by_query.get(query, []), facts=TripFacts()).fill(
+            gear, products, remaining_budget=300
+        )
+
+        assert products.get("女装"), "点名的衣服不能被预算静默省掉"
+        assert gear[1].status == "skipped"
+
+    def test_requested_item_that_still_does_not_fit_stays_visible(self):
+        by_query = {"女装": _rows({"name": "碎花雪纺连衣裙", "price": 299, "stock": 5})}
+        gear = [GearItem(name="女装", status="need_buy", user_requested=True)]
+        products = {}
+
+        GearShopper(lambda query, **_: by_query.get(query, []), facts=TripFacts()).fill(
+            gear, products, remaining_budget=100
+        )
+
+        assert gear[0].status == "need_buy"
+        assert "预算不足" in gear[0].reason and "用户点名" in gear[0].reason
+
+    def test_adult_trip_does_not_pick_kids_clothing(self):
+        rows = _rows(
+            {"name": "儿童T恤", "price": 59, "stock": 5, "category": "童装", "subcategory": "童装"},
+            {"name": "纯棉圆领T恤", "price": 89, "stock": 5, "category": "服装", "subcategory": "男装"},
+        )
+
+        products = {}
+        GearShopper(lambda **_: rows, facts=TripFacts()).fill(
+            [GearItem(name="T恤", status="need_buy")], products
+        )
+
+        assert products["T恤"]["name"] == "纯棉圆领T恤"
+
+
+def test_requested_one_piece_prefers_dress_when_budget_fits():
+    """女生点名"一套衣服"：预算够连衣裙时，打分兜底不能退回半裙。"""
+    rows = [
+        {"name": "高腰A字半裙", "price": 229, "stock": 5, "category": "服装",
+         "subcategory": "女装", "rating": 4.8},
+        {"name": "碎花雪纺连衣裙", "price": 299, "stock": 5, "category": "服装",
+         "subcategory": "女装", "rating": 4.6},
+    ]
+    gear = [GearItem(name="女装", status="need_buy", user_requested=True,
+                    reason="用户点名：女生想买一套衣服")]
+    products = {}
+
+    GearShopper(lambda query, **_: rows, facts=TripFacts()).fill(
+        gear, products, remaining_budget=700
+    )
+
+    assert products["女装"]["name"] == "碎花雪纺连衣裙"

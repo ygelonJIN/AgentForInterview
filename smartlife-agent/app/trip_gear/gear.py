@@ -57,6 +57,14 @@ def derive_gear(
             return
         items[name] = GearItem(name=name, qty=qty, reason=reason)
 
+    # 用户点名的衣服优先于从场景反推：名字用商品库里的类目"女装"，
+    # 检索会把连衣裙/半裙/上衣都作为候选，由选品模型按场景挑。
+    for wanted in facts.purchase_items or []:
+        if not any(word in wanted for word in ("衣服", "穿搭", "连衣裙", "裙子", "半裙", "女装")):
+            continue
+        add("女装", 1, f"用户点名：{wanted}")
+        items["女装"].user_requested = True
+
     people = facts.effective_people
     if facts.is_camping:
         add("帐篷", math.ceil(people / 2), f"露营过夜，{people} 人")

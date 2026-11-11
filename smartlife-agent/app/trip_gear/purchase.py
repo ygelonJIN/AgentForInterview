@@ -16,15 +16,20 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional
 
-from app.trip_gear.models import GearItem, TripFacts
+from app.trip_gear.models import GearItem, Itinerary, TripFacts
 
 STATUS_OK = "ok"
 STATUS_LATE = "late"
 STATUS_OUT_OF_STOCK = "out_of_stock"
 STATUS_UNKNOWN = "unknown"
+STATUS_SELF_PICKUP = "self_pickup"
 
 # 收货日与出发日同一天算来得及，所以比较用"到货日 <= 出发日"。
 DELIVERY_MARGIN_DAYS = 0
+
+# 行程里出现这些词，说明有到店买/商场的机会；线上赶不上时可以走自提。
+# 只做词面识别，不建模门店位置——文案里必须写"假设同城/有货"。
+SHOPPING_WORDS = ("商场", "逛街", "购物", "到店", "自提", "超市", "免税店", "买衣", "挑衣")
 
 
 @dataclass
@@ -94,10 +99,26 @@ def _as_int(raw: Any) -> Optional[int]:
         return None
 
 
+def shopping_days(itinerary: Optional[Itinerary]) -> List[int]:
+    """行程里哪些天有商场/到店购物，可当作自提窗口。"""
+    if itinerary is None:
+        return []
+    days: List[int] = []
+    for day in itinerary.days:
+        if any(
+            word in str(item.activity or "")
+            for item in day.items
+            for word in SHOPPING_WORDS
+        ):
+            days.append(int(day.day))
+    return days
+
+
 def delivery_check(
     gear: str,
     product: Dict[str, Any],
     days_left: Optional[int],
+    self_pickup_days: Optional[List[int]] = None,
 ) -> PurchaseResult:
     """单件装备的履约判定。"""
     name = str(product.get("name") or "")
@@ -138,6 +159,21 @@ def delivery_check(
         )
 
     if lead > days_left + DELIVERY_MARGIN_DAYS:
+        pickup_days = [day for day in (self_pickup_days or []) if day]
+        if pickup_days and pickup_available(product):
+            day = min(pickup_days)
+            return PurchaseResult(
+                gear=gear,
+                product=name,
+                status=STATUS_SELF_PICKUP,
+                lead_time_days=lead,
+                days_left=days_left,
+                stock=stock,
+                hint=(
+                    f"{gear} 线上到货需 {lead} 天，赶不上；行程第 {day} 天有商场，"
+                    "可到店买（该商品有货，假设同城）；更早要用需提前买"
+                ),
+            )
         return PurchaseResult(
             gear=gear,
             product=name,
@@ -164,6 +200,7 @@ def check_purchases(
     products: Dict[str, Dict[str, Any]],
     facts: TripFacts,
     today: Optional[date] = None,
+    self_pickup_days: Optional[List[int]] = None,
 ) -> List[PurchaseResult]:
     """逐条核对"待购件"能不能在出发前到手。已有/自备的件不参与。"""
     left = days_until(departure_date(facts), today)
@@ -175,7 +212,9 @@ def check_purchases(
         if not product:
             # 没匹配到商品由校验器的"库未覆盖"负责，这里不重复报。
             continue
-        results.append(delivery_check(item.name, product, left))
+        results.append(
+            delivery_check(item.name, product, left, self_pickup_days=self_pickup_days)
+        )
     return results
 
 

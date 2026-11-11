@@ -3,7 +3,7 @@
 刻意保持字段少而稳定：
 - 约束 4 个字段：内容、来源、硬度、状态
 - 行程条目 4 个字段：时间、活动、时长、花费
-- 装备条目 4 个字段：名称、数量、理由、状态
+- 装备条目核心 4 字段：名称、数量、理由、状态；user_requested 标记用户点名，不参与预算省略
 
 新增场景不需要新增字段；场景只是行程条目的自然语言描述。
 """
@@ -49,6 +49,11 @@ class DayPlan(BaseModel):
 class Itinerary(BaseModel):
     destination: str = ""
     days: List[DayPlan] = Field(default_factory=list)
+    # 城际交通估算（机票/高铁）。单列而不是摊进某一天：返程与去程不在同一天，
+    # 摊进去会让"第 1 天花了多少"和实际对不上。
+    intercity_cost: float = 0.0
+    # 住宿/城际估算口径，展示层原样贴给用户；空表示没有估算。
+    estimate_notes: List[str] = Field(default_factory=list)
 
 
 class GearItem(BaseModel):
@@ -56,6 +61,9 @@ class GearItem(BaseModel):
 
     ``specs`` 存这件东西的规格（温标、容量等），来源可能是商品库、用户
     自述或解析出的描述文本；空字典表示"规格未知"，由规格核对单独处理。
+
+    ``user_requested`` 是用户点名要买的（"女生想买一套衣服"）。它不进
+    预算省略的候选：宁可少买一件可选装备，也不能把用户点名的需求静默丢掉。
     """
 
     name: str
@@ -63,6 +71,7 @@ class GearItem(BaseModel):
     reason: str = ""
     status: str = "need_buy"
     specs: Dict[str, Any] = Field(default_factory=dict)
+    user_requested: bool = False
 
 
 class OwnedItem(BaseModel):
@@ -202,6 +211,9 @@ class TripFacts(BaseModel):
     fixed_events: List[FixedEvent] = Field(default_factory=list)
     # 用户表达了"想参加活动"的意向（没说具体哪场），影响行程内容取向
     wants_activity: bool = False
+    # 用户点名要买的物品（"女生想买一套衣服带去海边"）。存原始描述，
+    # 由装备规则映射到商品库品类；追问轮要合并，不能只剩最后一句"预算分配：90"。
+    purchase_items: List[str] = Field(default_factory=list)
 
     @property
     def is_camping(self) -> bool:

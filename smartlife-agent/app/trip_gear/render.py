@@ -62,6 +62,25 @@ def _gear_line(item: GearItem, products: Dict[str, Dict[str, Any]]) -> str:
     return head
 
 
+def _verdict_note(verdict: Optional[Dict[str, Any]]) -> str:
+    """把结论放在正文最前面，不让用户自己从 05 里推断。"""
+    if not verdict:
+        return ""
+    state = str(verdict.get("state") or "")
+    blocking = [str(item) for item in (verdict.get("blocking") or [])]
+    if state == "infeasible":
+        detail = "；".join(blocking[:3])
+        return "> **当前条件不可行**：" + (detail or "硬冲突无法消除") + "。先改条件再执行。"
+    if state == "needs_input":
+        ask = verdict.get("ask") or {}
+        question = str(ask.get("question") or "")
+        detail = question or "；".join(blocking[:3])
+        return "> **需要你确认**：" + (detail or "当前条件下只能二选一") + "。"
+    if state == "repairable":
+        return "> **可以按代价调整**：有能消除硬冲突的改法，确认后按代价从小到大执行。"
+    return ""
+
+
 def render(
     facts: TripFacts,
     constraints: List[Constraint],
@@ -74,8 +93,12 @@ def render(
     *,
     with_gear: bool = True,
     with_itinerary: bool = True,
+    verdict: Optional[Dict[str, Any]] = None,
 ) -> str:
     lines: List[str] = []
+    conclusion = _verdict_note(verdict)
+    if conclusion:
+        lines.append(conclusion)
 
     # 只留"内容 + 来源"：硬/软与校验状态是系统内部口径，展示在 05 里说结果就够了。
     lines.append("## 约束清单")
@@ -191,17 +214,27 @@ def render(
                 f"预算还剩 {remaining_ratio_text(snap)}（{_money(remaining)}），"
                 f"但{reason}。"
             )
+        notes = list(getattr(itinerary, "estimate_notes", []) or [])
+        if notes:
+            lines.append("估算口径：" + "；".join(notes))
 
-    if issues:
+    pickup = [issue for issue in issues if "可到店自提" in (issue.constraint or "")]
+    normal = [issue for issue in issues if issue not in pickup]
+    if normal:
         lines.append("")
         lines.append("## 未满足的约束")
-        for issue in issues:
+        for issue in normal:
             detail = issue.hint or ""
             if issue.actual is not None and issue.limit is not None:
                 detail = f"实际 {issue.actual}，上限 {issue.limit}。{detail}"
             lines.append(f"- {issue.constraint}：{detail}".rstrip("："))
-    else:
+    elif not pickup:
         lines.append("未发现约束冲突。")
+    if pickup:
+        lines.append("")
+        lines.append("## 到店自提")
+        for issue in pickup:
+            lines.append(f"- {issue.constraint}：{issue.hint or ''}".rstrip("："))
 
     note = _defaults_note(facts)
     if note:
