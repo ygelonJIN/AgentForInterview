@@ -859,8 +859,59 @@ def _timing_summary_html(events):
 _ROUTE_LABELS = {"react": "单步", "plan_and_execute": "先规划"}
 _RETRIEVAL_LABELS = {"sql_only": "SQL", "rag_only": "RAG", "mixed": "混合", "none": "不检索"}
 
+# 过程卡片三态：事件里的状态枚举 → (卡片 class, 状态签文案, 签色)。
+# 只有这三态有明显的视觉差：运行中赭色实线、已完成橄榄绿、待执行虚线压暗。
+_PROCESS_STATES = {
+    "completed": ("completed", "已完成", "ok"),
+    "active": ("active", "进行中", "hard"),
+    "running": ("active", "进行中", "hard"),
+    "in_progress": ("active", "进行中", "hard"),
+    "waiting": ("waiting", "待确认", "warn"),
+    "pending": ("pending", "待执行", "muted"),
+}
 
-def _fmt_event_html(evt):
+
+def _process_state(status):
+    """未知状态一律当待执行：宁可显示"还没轮到"，也不假装成功。"""
+    return _PROCESS_STATES.get(
+        str(status or "").strip().lower(),
+        ("pending", "待执行", "muted"),
+    )
+
+
+def _state_tag(label, tone):
+    return f'<span class="sl-tag sl-tag--{tone} sl-tag--pill">{label}</span>'
+
+
+def _step_counter(step_num, total):
+    """编号统一成 01/04 的台账写法；脏数据原样显示，不让界面抛异常。"""
+    try:
+        number, total_number = int(step_num), int(total)
+    except (TypeError, ValueError):
+        return _esc(f"{step_num}/{total}" if total else step_num)
+    if total_number > 0:
+        return f"{number:02d}/{total_number:02d}"
+    return f"{number:02d}"
+
+
+def _latest_action(events):
+    """流式期间"正在干什么"只有一条：取最新的思考或进行中的工具调用。"""
+    for evt in reversed(events or []):
+        event_type = evt.get("event")
+        data = evt.get("data") or {}
+        if event_type == "thinking":
+            message = str(data.get("message") or "").strip()
+            if message:
+                return message
+            continue
+        if event_type == "tool_call" and not data.get("status"):
+            tool = str(data.get("tool") or "").strip()
+            if tool and tool not in {"行程执行", "计划自检", "计划审核"}:
+                return f"正在调用 {tool}"
+    return ""
+
+
+def _fmt_event_html(evt, live_action=""):
     """把单个过程事件渲染成统一的 HTML 过程卡片。"""
     et = evt.get("event", "")
     data = evt.get("data", {}) or {}
@@ -881,7 +932,9 @@ def _fmt_event_html(evt):
         method = data.get("method", "") or "—"
         return (
             '<div class="process-card completed">'
-            '<div class="process-title">已识别任务意图</div>'
+            '<div class="process-head">'
+            '<span class="process-title">已识别任务意图</span>'
+            f'{_state_tag("已完成", "ok")}</div>'
             f'<div class="process-copy">Agent {_esc(agent)} · 策略 {_esc(route)} · 检索 {_esc(retr)}<br>'
             f'子意图 {_esc(sub)} · 置信度 {_esc(conf)} · {_esc(method)}<br>'
             f'{_esc(reason)}</div></div>'
@@ -892,12 +945,21 @@ def _fmt_event_html(evt):
         name = data.get("name", "")
         desc = data.get("description", "")
         source = data.get("source", "")
-        status = data.get("status", "active")
+        state_class, state_label, tone = _process_state(data.get("status", "active"))
         source_label = f" · 来源 {_esc(source)}" if source else ""
+        live_html = (
+            f'<div class="process-live">{_esc(live_action)}</div>'
+            if live_action and state_class == "active"
+            else ""
+        )
         return (
-            f'<div class="process-card {_esc(status)}">'
-            f'<div class="process-title">{step_num}/{total} · {_esc(name)}</div>'
-            f'<div class="process-copy">{_esc(desc)}{source_label}</div></div>'
+            f'<div class="process-card {state_class}">'
+            '<div class="process-head">'
+            f'<span class="process-no">{_step_counter(step_num, total)}</span>'
+            f'<span class="process-title">{_esc(name)}</span>'
+            f'{_state_tag(state_label, tone)}</div>'
+            f'<div class="process-copy">{_esc(desc)}{source_label}</div>'
+            f'{live_html}</div>'
         )
     if et == "tool_call":
         tn = data.get("tool", "")
@@ -905,30 +967,38 @@ def _fmt_event_html(evt):
             return ""
         ti = (data.get("input", "") or "").replace("\n", " ").strip()
         is_completed = data.get("status") == "completed"
-        status = "completed" if is_completed else "active"
+        state_class, state_label, tone = _process_state(
+            "completed" if is_completed else "active"
+        )
+        tag = _state_tag(state_label, tone)
         tool_output = (data.get("output", "") or "").replace("\n", " ").strip()
+        output_html = f"<br>{_esc(tool_output)}" if tool_output else ""
         if tn == "nl2sql":
             short_sql = ti if len(ti) <= 160 else ti[:160] + "…"
             action = "结构化查询已完成" if is_completed else "正在执行结构化查询"
             return (
-                f'<div class="process-card {status}">'
-                '<div class="process-title">商品数据检索</div>'
+                f'<div class="process-card {state_class}">'
+                '<div class="process-head">'
+                '<span class="process-title">商品数据检索</span>'
+                f'{tag}</div>'
                 f'<div class="process-copy">{action}<br><code>{_esc(short_sql)}</code>'
-                f'{f"<br>{_esc(tool_output)}" if tool_output else ""}</div></div>'
+                f'{output_html}</div></div>'
             )
         if tn == "rag":
             action = "检索已完成" if is_completed else "正在检索"
             return (
-                f'<div class="process-card {status}">'
-                '<div class="process-title">评价与攻略检索</div>'
+                f'<div class="process-card {state_class}">'
+                '<div class="process-head">'
+                '<span class="process-title">评价与攻略检索</span>'
+                f'{tag}</div>'
                 f'<div class="process-copy">{action} · {_esc(ti)}'
-                f'{f"<br>{_esc(tool_output)}" if tool_output else ""}</div></div>'
+                f'{output_html}</div></div>'
             )
         return (
-            f'<div class="process-card {status}">'
-            f'<div class="process-title">{_esc(tn)}{" · 已完成" if is_completed else ""}</div>'
-            f'<div class="process-copy">{_esc(ti)}'
-            f'{f"<br>{_esc(tool_output)}" if tool_output else ""}</div></div>'
+            f'<div class="process-card {state_class}">'
+            '<div class="process-head">'
+            f'<span class="process-title">{_esc(tn)}</span>{tag}</div>'
+            f'<div class="process-copy">{_esc(ti)}{output_html}</div></div>'
         )
     if et == "tool_result":
         tn = data.get("tool", "")
@@ -937,13 +1007,17 @@ def _fmt_event_html(evt):
         output = (data.get("output", "") or "").replace("\n", " ").strip()
         return (
             '<div class="process-card completed">'
-            f'<div class="process-title">{_esc(tn)} · 已完成</div>'
+            '<div class="process-head">'
+            f'<span class="process-title">{_esc(tn)}</span>'
+            f'{_state_tag("已完成", "ok")}</div>'
             f'<div class="process-copy">{_esc(output)}</div></div>'
         )
     if et == "error":
         return (
             '<div class="process-card error">'
-            '<div class="process-title">处理失败</div>'
+            '<div class="process-head">'
+            '<span class="process-title">处理失败</span>'
+            f'{_state_tag("失败", "danger")}</div>'
             f'<div class="process-copy">{_esc(data.get("message", ""))}</div></div>'
         )
     return ""
@@ -971,9 +1045,17 @@ def _process_events_html(events, include_transient=False, active_step=None, coll
         ),
         active_step=normalized_active_step,
     )
+    # 「当前动作」只挂在唯一的运行中卡片上，且只在流式期间显示。
+    live_action = _latest_action(events) if include_transient else ""
+    live_rendered = False
     cards = []
     for evt in source_events:
-        h = _fmt_event_html(evt)
+        live = ""
+        if live_action and not live_rendered and evt.get("event") == "step":
+            state_class, _, _ = _process_state((evt.get("data") or {}).get("status", "active"))
+            if state_class == "active":
+                live, live_rendered = live_action, True
+        h = _fmt_event_html(evt, live_action=live)
         if h:
             cards.append(h)
     body = "".join(cards) + _timing_summary_html(events) + _execution_logs_html(persistent)
@@ -1140,13 +1222,10 @@ def _run_streaming_impl(async_gen_factory, *, postprocess=None):
     bg = threading.Thread(target=_bg_worker, daemon=True)
     bg.start()
 
-    loading = st.empty()
-    loading.markdown("⏳ 正在思考，正在规划处理步骤…")
-
     # 单一 empty 占位符每次整块替换，避免流式刷新累积旧 DOM。
+    # 启动态由下面这张初始面板承担（1/4 已经是"进行中"），不再单起一行文字。
     process_panel = st.empty()
     response_container = st.empty()
-    first_event = True
     rendered_active_step = 1
     last_response_render = 0.0
     _render_process_panel(
@@ -1171,10 +1250,6 @@ def _run_streaming_impl(async_gen_factory, *, postprocess=None):
             all_events.append(evt)
             event_type = evt.get("event", "")
             data = evt.get("data", {}) or {}
-
-            if first_event:
-                loading.empty()
-                first_event = False
 
             if _is_revision_signal(evt):
                 response_container.empty()
@@ -1221,9 +1296,6 @@ def _run_streaming_impl(async_gen_factory, *, postprocess=None):
             rendered_active_step = current_active_step
     finally:
         stop_event.set()
-
-    if first_event:
-        loading.empty()
 
     final_response = response_buffer.text
     _render_process_panel(

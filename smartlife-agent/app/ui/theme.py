@@ -867,19 +867,80 @@ section[data-testid="stSidebar"] .st-key-thread_delete_confirm [data-testid="stH
 [data-baseweb="popover"] [data-baseweb="menu"] {{ background: var(--c-surface) !important; border: var(--border-w) solid var(--c-line) !important; }}
 [data-baseweb="popover"] li {{ font-size: var(--fs-sm) !important; }}
 
-/* 过程步骤：与右轨同构的紧凑时间线 */
+/* 过程步骤：台账三态 —— 运行中（赭）/ 已完成（绿）/ 待执行（虚线圈）。
+   三态必须一眼分开：运行中实线+底色+实心点，已完成绿线绿点，待执行虚线空心点并压暗。 */
 .process-card {{
-  margin: 0 0 2px;
-  padding: 2px 0 2px var(--space-3);
-  border-left: var(--timeline-w) solid var(--c-line-strong);
+  position: relative;
+  margin: 0 0 3px;
+  padding: 3px 0 4px var(--space-3);
+  border-left: 3px solid var(--c-line-strong);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}}
+/* 竖线上的状态点：中心压在 3px 线宽上 */
+.process-card::before {{
+  content: ""; position: absolute; top: 5px; left: -6px;
+  width: 9px; height: 9px; border-radius: var(--radius-pill);
+  background: var(--c-surface); border: 1.5px solid var(--c-line-strong);
+}}
+.process-card .process-head {{
+  display: flex; flex-wrap: wrap; align-items: center;
+  gap: var(--space-1) var(--space-2);
+}}
+.process-card .process-no {{
+  font-family: var(--font-mono); font-size: var(--fs-2xs);
+  letter-spacing: 0.06em; color: var(--c-text-faint);
+  font-variant-numeric: tabular-nums;
 }}
 .process-card .process-title {{
   font-family: var(--font-mono); font-size: var(--fs-2xs);
   letter-spacing: 0.06em; text-transform: uppercase; color: var(--c-text-faint);
 }}
+.process-card .process-head .sl-tag {{ margin-left: auto; }}
 .process-card .process-copy {{ font-size: var(--fs-xs); color: var(--c-text-muted); line-height: var(--lh-tight); }}
+/* 运行中卡片里的「当前动作」：不算正式步骤，只报这一秒在干什么 */
+.process-card .process-live {{
+  margin-top: 3px; padding-left: var(--space-2);
+  border-left: 2px solid var(--c-accent-line);
+  font-size: var(--fs-2xs); line-height: var(--lh-tight);
+  color: var(--c-accent-text);
+}}
+
+/* 运行中：强调色实线 + 左侧渐隐底色 + 实心点带光晕 */
+.process-card.active {{
+  border-left-color: var(--c-accent);
+  background: linear-gradient(90deg, var(--c-accent-soft), transparent 78%);
+}}
+.process-card.active::before {{
+  background: var(--c-accent); border-color: var(--c-accent);
+  box-shadow: 0 0 0 3px var(--c-accent-soft);
+}}
+.process-card.active .process-no {{ color: var(--c-accent); font-weight: var(--fw-bold); }}
+.process-card.active .process-title {{ color: var(--c-text); font-weight: var(--fw-semibold); }}
+.process-card.active .process-copy {{ color: var(--c-text); }}
+/* 运行中的状态签做实体填充，别和卡片的浅赭底糊成一片 */
+.process-card.active .sl-tag--hard {{
+  background: var(--c-accent); border-color: var(--c-accent);
+  color: var(--c-accent-ink); font-weight: var(--fw-semibold);
+}}
+
+/* 已完成：橄榄绿实线 + 实心点，标题转绿、描述自然回落到次级色 */
+.process-card.completed {{ border-left-color: var(--c-ok-line); }}
+.process-card.completed::before {{ background: var(--c-ok); border-color: var(--c-ok); }}
 .process-card.completed .process-title {{ color: var(--c-ok); }}
-.process-card.warning .process-title {{ color: var(--c-warn); }}
+
+/* 待执行：虚线 + 空心点，整体压暗，不抢运行中的注意力 */
+.process-card.pending {{
+  border-left-style: dashed; border-left-color: var(--c-line);
+  opacity: 0.55;
+}}
+.process-card.pending::before {{ background: var(--c-surface); border-color: var(--c-line-strong); }}
+
+/* 警告 / 待确认 / 失败 */
+.process-card.warning, .process-card.waiting {{ border-left-color: var(--c-warn); }}
+.process-card.warning::before, .process-card.waiting::before {{ background: var(--c-warn); border-color: var(--c-warn); }}
+.process-card.warning .process-title, .process-card.waiting .process-title {{ color: var(--c-warn); }}
+.process-card.error {{ border-left-color: var(--c-danger); }}
+.process-card.error::before {{ background: var(--c-danger); border-color: var(--c-danger); }}
 .process-card.error .process-title {{ color: var(--c-danger); }}
 
 /* 运行过程折叠条 */
