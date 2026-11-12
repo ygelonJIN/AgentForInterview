@@ -82,3 +82,14 @@ def test_order_repository_always_scopes_queries_to_current_user():
 
     with pytest.raises(OrderAuthorizationError):
         repository.get_order_status("")
+
+
+def test_order_repository_returns_product_names_with_each_order():
+    """订单行必须带商品名：客服回答"我买了哪些商品"只能靠这一列，不能是 None。"""
+    from app.retrieval.order_repository import OrderRepository
+
+    rows = OrderRepository(DB_PATH).get_order_status("user_001")
+
+    assert rows
+    assert all(row.get("product_name") for row in rows)
+    assert all(row.get("user_id") == "user_001" for row in rows)

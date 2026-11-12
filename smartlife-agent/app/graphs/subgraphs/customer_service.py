@@ -33,9 +33,24 @@ async def load_orders(state: CustomerServiceState, runtime: Runtime[TurnContext]
 async def generate(state: CustomerServiceState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
     sink = runtime.context.sink_for(runtime)
     orders = state.get("orders") or []
+    # 结构化卡片在生成前就定稿：它的数据来自订单表，跟正文写什么无关。
+    # 先发出去，前端跑的时候就能把卡片画出来，不必等模型写完再整块替换。
+    try:
+        from app.ui.blocks import order_blocks
+
+        blocks = order_blocks(orders, "")
+        if blocks:
+            await sink.emit("answer_blocks", {
+                "agent": "customer_service",
+                "blocks": blocks,
+            }, step="generate")
+    except Exception:
+        pass
+
     order_text = "\n".join(
         f"- id={item.get('id')} product={item.get('product_name')} "
-        f"status={item.get('status')} total={item.get('total_price')}"
+        f"quantity={item.get('quantity')} status={item.get('status')} "
+        f"total={item.get('total_price')} date={str(item.get('created_at') or '')[:10]}"
         for item in orders[:20]
     ) or "当前用户暂无订单记录。"
     prompt = ChatPromptTemplate.from_messages([
@@ -50,15 +65,6 @@ async def generate(state: CustomerServiceState, runtime: Runtime[TurnContext]) -
         if chunk.content:
             full += str(chunk.content)
             await sink.emit_token(str(chunk.content), step="generate")
-    try:
-        from app.ui.blocks import order_blocks
-
-        await sink.emit("answer_blocks", {
-            "agent": "customer_service",
-            "blocks": order_blocks(orders, full),
-        }, step="generate")
-    except Exception:
-        pass
     return {"response": full, "status": "generated"}
 
 

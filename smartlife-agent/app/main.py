@@ -39,6 +39,7 @@ from app.ui.content import filter_travel_resources, load_orders, load_product, l
 from app.ui.theme import (
     NAV_ITEMS,
     alert_html,
+    answer_blocks_html,
     brand_html,
     inject_theme,
     metric_columns,
@@ -1147,15 +1148,19 @@ def render_assistant_message(msg, key: str = "assistant"):
         payload = _plan_payload(events)
         resp = msg.get("response", "")
         if payload:
-            st.markdown(_plan_lead_html(payload), unsafe_allow_html=True)
-            st.markdown(plan_panels_html(payload), unsafe_allow_html=True)
+            # 和流式期间逐字节一致：一次 markdown、同一段 HTML，结束时不再重排。
+            st.markdown(_plan_lead_html(payload) + plan_panels_html(payload), unsafe_allow_html=True)
             if resp:
                 with st.expander("查看 Markdown 原文"):
                     st.markdown(resp)
         elif blocks := _answer_blocks(events):
             # 五个 Agent 共用一套纸面：lead / stats / cards / table / timeline / text。
-            render_answer_blocks(blocks, key=key)
-            if resp:
+            # 有结构化块时，正文块不再铺在卡片下面，原文只进折叠区（与 trip_gear
+            # 的「01–05 面板 + 折叠原文」同口径）；只有纯正文回答才直接显示。
+            # 这里也过滤旧会话里已经存进库的 text 块，重开历史不会又看到两份。
+            structured = [block for block in blocks if str(block.get("type")) != "text"]
+            render_answer_blocks(structured or blocks, key=key)
+            if resp and structured:
                 with st.expander("查看 Markdown 原文"):
                     st.markdown(resp)
         elif resp:
@@ -1175,6 +1180,38 @@ def _render_process_panel(panel, events, include_transient=False, active_step=No
         panel.markdown(html, unsafe_allow_html=True)
     else:
         panel.empty()
+
+
+def _structured_answer_html(evt):
+    """结构化事件 → 能整块塞进占位符的 HTML；没有结构化内容返回空串。
+
+    ``plan_result``（trip_gear / travel）出 01–05 面板，``answer_blocks``
+    （客服 / 购物）出 lead / stats / cards / table。只有正文块时返回空串，
+    让正文照常流式显示，别把纯文本回答藏起来。
+    """
+    if evt.get("event") == "plan_result":
+        payload = evt.get("data") or {}
+        if not isinstance(payload, dict) or not payload:
+            return ""
+        return _plan_lead_html(payload) + plan_panels_html(payload)
+    if evt.get("event") == "answer_blocks":
+        blocks = (evt.get("data") or {}).get("blocks") or []
+        structured = [
+            block for block in blocks
+            if isinstance(block, dict) and str(block.get("type") or "") != "text"
+        ]
+        return answer_blocks_html(structured) if structured else ""
+    return ""
+
+
+def _writing_hint_html(kind: str = "answer_blocks") -> str:
+    """结构化块已经到了、正文还在写：这里只报状态，不铺 Markdown。
+
+    客服 / 购物是真的在调模型写补充说明；trip_gear / travel 的正文是模板
+    一次算好的，只是还没收尾，别写成"正在补充"。
+    """
+    text = "正在补充文字说明…" if kind == "answer_blocks" else "正在收尾…"
+    return f'<div class="process-hint">{text}</div>'
 
 
 def _is_revision_signal(evt):
@@ -1223,9 +1260,13 @@ def _run_streaming_impl(async_gen_factory, *, postprocess=None):
     bg.start()
 
     # 单一 empty 占位符每次整块替换，避免流式刷新累积旧 DOM。
-    # 启动态由下面这张初始面板承担（1/4 已经是"进行中"），不再单起一行文字。
+    # 版式顺序固定：过程步骤 → 结构化答案（卡片 / 01–05 面板）→ 正文。
+    # 结构化答案在生成前就发出来了，所以跑的时候卡片先到，正文只报状态。
     process_panel = st.empty()
+    answer_panel = st.empty()
     response_container = st.empty()
+    structured_seen = False
+    hint_html = _writing_hint_html("answer_blocks")
     rendered_active_step = 1
     last_response_render = 0.0
     _render_process_panel(
@@ -1251,12 +1292,24 @@ def _run_streaming_impl(async_gen_factory, *, postprocess=None):
             event_type = evt.get("event", "")
             data = evt.get("data", {}) or {}
 
-            if _is_revision_signal(evt):
+            if event_type in {"plan_result", "answer_blocks"} and not structured_seen:
+                structured_html = _structured_answer_html(evt)
+                if structured_html:
+                    answer_panel.markdown(structured_html, unsafe_allow_html=True)
+                    hint_html = _writing_hint_html(event_type)
+                    response_container.markdown(hint_html, unsafe_allow_html=True)
+                    structured_seen = True
+                    last_response_render = time.monotonic()
+
+            if _is_revision_signal(evt) and not structured_seen:
                 response_container.empty()
 
             response_buffer.handle_event(evt)
 
             if event_type == "token":
+                if structured_seen:
+                    # 结构化答案已经画好，正文只是补充说明：不铺 Markdown。
+                    continue
                 now = time.monotonic()
                 if now - last_response_render >= 0.05:
                     response_container.markdown(response_buffer.text)
@@ -1273,7 +1326,9 @@ def _run_streaming_impl(async_gen_factory, *, postprocess=None):
                 continue
 
             if event_type == "response_reset":
-                if response_buffer.text:
+                if structured_seen:
+                    response_container.markdown(hint_html, unsafe_allow_html=True)
+                elif response_buffer.text:
                     response_container.markdown(response_buffer.text)
                 else:
                     response_container.empty()
@@ -1281,7 +1336,7 @@ def _run_streaming_impl(async_gen_factory, *, postprocess=None):
                 continue
 
             if event_type == "done":
-                if response_buffer.text:
+                if not structured_seen and response_buffer.text:
                     response_container.markdown(response_buffer.text)
                     last_response_render = time.monotonic()
                 continue

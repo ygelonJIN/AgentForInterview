@@ -104,6 +104,23 @@ async def retrieve(state: ShoppingState, runtime: Runtime[TurnContext]) -> Dict[
 
 async def generate(state: ShoppingState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
     ctx = runtime.context
+    # 商品/预算卡片只依赖检索结果，生成前就能定稿：先发出去，
+    # 前端在正文写之前就把卡片画好，结束时不再整块换版式。
+    try:
+        from app.ui.blocks import shopping_blocks
+
+        blocks = shopping_blocks(
+            state.get("retrieval") or {},
+            "",
+            query=state["user_message"],
+        )
+        if blocks:
+            await ctx.sink_for(runtime).emit("answer_blocks", {
+                "agent": "shopping",
+                "blocks": blocks,
+            }, step="generate")
+    except Exception:
+        pass
     response = await ctx.services.generate_shopping_response(
         state["user_message"],
         state["user_id"],
@@ -172,20 +189,6 @@ async def validate(state: ShoppingState, runtime: Runtime[TurnContext]) -> Dict[
             max_iterations=1,
             message="回答一次校验通过",
         )
-    # 结构化回答块：前端据此渲染 stats/cards/table，不必解析 Markdown。
-    try:
-        from app.ui.blocks import shopping_blocks
-
-        await sink.emit("answer_blocks", {
-            "agent": "shopping",
-            "blocks": shopping_blocks(
-                state.get("retrieval") or {},
-                response,
-                query=state["user_message"],
-            ),
-        }, step="generate")
-    except Exception:
-        pass
     return {"response": response, "status": "validated"}
 
 

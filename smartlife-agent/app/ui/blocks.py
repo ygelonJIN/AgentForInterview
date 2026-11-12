@@ -70,7 +70,12 @@ def clean(blocks: Iterable[Optional[Dict[str, Any]]]) -> List[Dict[str, Any]]:
 
 
 def shopping_blocks(retrieval: Dict[str, Any], response: str, query: str = "") -> List[Dict[str, Any]]:
-    """商品推荐：stat 条 + 商品卡 + 预算表，最后接正文。"""
+    """商品推荐：stat 条 + 商品卡 + 预算表。
+
+    正文不当可见块：结构块已经表达清楚时，模型的 Markdown 原文只进
+    「查看 Markdown 原文」折叠区（与 trip_gear 的 01–05 面板同口径）。
+    有结构块才省略正文；一件商品都没检索到，退回纯正文，别给空纸面。
+    """
     products = [item for item in (retrieval or {}).get("products") or [] if isinstance(item, dict)]
     blocks: List[Dict[str, Any]] = []
     if products:
@@ -113,12 +118,16 @@ def shopping_blocks(retrieval: Dict[str, Any], response: str, query: str = "") -
             blocks.append(table_block("预算占用", f"按检索结果前 {len(rows) - 1} 件估算", [
                 {"label": "商品"}, {"label": "单价", "num": True}, {"label": "数量", "num": True}, {"label": "小计", "num": True},
             ], rows))
-    blocks.append(text_block(response))
+    if not blocks:
+        return clean([text_block(response)])
     return clean(blocks)
 
 
 def order_blocks(orders: List[Dict[str, Any]], response: str) -> List[Dict[str, Any]]:
-    """订单客服：指标格 + 订单轨迹行 + 正文。"""
+    """订单客服：指标格 + 订单轨迹行。
+
+    同 shopping：有订单行就不再铺正文，原文进折叠区；没有订单才退回纯正文。
+    """
     rows = [item for item in orders or [] if isinstance(item, dict)]
     if not rows:
         return clean([text_block(response)])
@@ -149,7 +158,6 @@ def order_blocks(orders: List[Dict[str, Any]], response: str) -> List[Dict[str, 
             }
             for item in rows[:5]
         ]),
-        text_block(response),
     ]
     return clean(blocks)
 

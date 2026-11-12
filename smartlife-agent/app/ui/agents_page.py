@@ -22,11 +22,11 @@ from app.tools.custom import CUSTOM_DIR, custom_tool_names
 from app.ui import theme
 
 _OUTPUT_STYLE = {
-    "shopping": "lead · stats · cards · table · text",
+    "shopping": "lead · stats · cards · table（正文进折叠原文）",
     "travel": "问答走 text 块；多天规划走 01–05 面板",
     "trip_gear": "01–05 面板（约束 / 行程 / 装备 / 预算 / 校验）",
     "general": "text 块",
-    "customer_service": "lead · stats · timeline · text",
+    "customer_service": "lead · stats · timeline（正文进折叠原文）",
 }
 
 _ENTRY_HINT = {

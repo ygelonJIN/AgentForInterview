@@ -961,6 +961,19 @@ section[data-testid="stSidebar"] .st-key-thread_delete_confirm [data-testid="stH
 .process-panel[open] summary::before {{ content: "－ "; }}
 .process-panel > .process-card {{ margin-top: var(--space-2); }}
 
+/* 结构化答案已经出来、正文还在写：只报状态，不铺 Markdown */
+.process-hint {{
+  display: flex; align-items: center; gap: var(--space-2);
+  margin: var(--space-1) 0 var(--space-2);
+  font-family: var(--font-mono); font-size: var(--fs-2xs);
+  letter-spacing: 0.04em; color: var(--c-text-muted);
+}}
+.process-hint::before {{
+  content: ""; flex: 0 0 auto;
+  width: 6px; height: 6px; border-radius: var(--radius-pill);
+  background: var(--c-accent); box-shadow: 0 0 0 3px var(--c-accent-soft);
+}}
+
 /* 执行日志折叠条 */
 .execution-log-panel {{
   margin-top: var(--space-3);

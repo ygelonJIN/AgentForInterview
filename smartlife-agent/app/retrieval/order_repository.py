@@ -33,17 +33,22 @@ class OrderRepository:
         principal = self._validate_principal(user_id)
         if limit <= 0 or limit > 100:
             raise ValueError("limit 必须在 1 到 100 之间")
-        clauses = ["user_id = ?"]
+        clauses = ["o.user_id = ?"]
         params: List[Any] = [principal]
         if order_id is not None and str(order_id).strip():
-            clauses.append("id = ?")
+            clauses.append("o.id = ?")
             params.append(str(order_id).strip())
         params.append(limit)
+        # 订单行必须带商品名：客服回答"我买了哪些商品"只能靠这一列，
+        # 裸 product_id 到 prompt 里就是 None。用 LEFT JOIN，脏外键也别把订单丢掉。
         sql = f"""
-            SELECT id, user_id, product_id, quantity, status, total_price, created_at
-            FROM orders
+            SELECT o.id, o.user_id, o.product_id, o.quantity, o.status,
+                   o.total_price, o.created_at,
+                   p.name AS product_name, p.category AS product_category
+            FROM orders o
+            LEFT JOIN products p ON p.id = o.product_id
             WHERE {' AND '.join(clauses)}
-            ORDER BY created_at DESC, id DESC
+            ORDER BY o.created_at DESC, o.id DESC
             LIMIT ?
         """
         with sqlite3.connect(self.db_path) as connection:

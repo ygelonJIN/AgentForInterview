@@ -1182,8 +1182,9 @@ async def finalize(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[
         }, step="finalize")
     except Exception:
         pass
-    for start in range(0, len(text), 80):
-        await sink.emit_token(text[start:start + 80], step="generate")
+    # 正文不再按 80 字切块冒充流式：这段文字是模板一次算出来的，没有等待价值，
+    # 切块只会让界面先闪一遍裸 Markdown 再换成面板。正文由 done 事件带回，
+    # 「查看 Markdown 原文」照旧能展开。
     return {"response": text, "status": "ok"}
 
 
