@@ -175,7 +175,10 @@ def test_graph_records_suit_jacket_as_owned_and_drops_duplicate_constraint():
     )
     result = asyncio.run(build_trip_gear_graph().ainvoke(
         {
-            "user_message": "下周三我一个人去上海出差两天，我有一件西装外套，帮我看看带什么",
+            "user_message": (
+                "下周三我一个人从北京出发去上海出差两天，坐高铁，住酒店每晚300元，"
+                "我有一件西装外套，帮我看看带什么"
+            ),
             "user_id": "u1",
             "thread_id": "t1",
         },

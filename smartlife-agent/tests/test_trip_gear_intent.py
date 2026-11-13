@@ -154,7 +154,11 @@ def test_trip_gear_subgraph_inherits_previous_user_turns():
         product_search=lambda query="", limit=5: [],
     )
     result = asyncio.run(build_trip_gear_graph().ainvoke(
-        {"user_message": "那装备清单呢", "user_id": "user-1", "thread_id": "thread-1"},
+        {
+            "user_message": "那装备清单呢，从上海出发，坐高铁",
+            "user_id": "user-1",
+            "thread_id": "thread-1",
+        },
         context=ctx,
     ))
 

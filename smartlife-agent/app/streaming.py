@@ -11,6 +11,47 @@ def _event_type_value(event_type: Any) -> str:
     return str(getattr(event_type, "value", event_type))
 
 
+# 过程展示的"人话"词表。事件里存的是内部枚举（react / rag_only / llm_arbitration），
+# 界面和过程卡片直接显示这些词等于让用户读代码。词表只放展示用文案，
+# 不参与任何判定；分发逻辑仍看原始枚举。
+ROUTE_LABELS = {"react": "单步", "plan_and_execute": "先规划"}
+INTENT_LABELS = {
+    "shopping": "购物",
+    "travel": "旅行",
+    "customer_service": "客服",
+    "general": "通用",
+}
+RETRIEVAL_LABELS = {
+    "sql_only": "SQL",
+    "rag_only": "RAG",
+    "mixed": "混合",
+    "none": "无需检索",
+}
+RETRIEVAL_SCOPE = {
+    "sql_only": "查商品属性",
+    "rag_only": "查评价/攻略",
+    "mixed": "商品属性 + 评价/攻略",
+    "none": "纯对话",
+}
+# "这条链路是怎么定下来的"：关键词直通 / 沿用上一轮 / 小模型 / 主模型仲裁
+CLASSIFY_METHOD_LABELS = {
+    "keyword": "关键词直通（强证据）",
+    "context": "沿用上一轮意图",
+    "llm": "小模型判定",
+    "llm_arbitration": "低置信 → 主模型仲裁",
+    "llm_low_confidence": "仲裁失败，保留低置信结果",
+    "llm_repair": "输出格式异常 → 主模型修复",
+    "policy": "场景策略纠正",
+    "fallback": "兜底默认值",
+}
+
+
+def describe_classification_method(method: Any) -> str:
+    """分类来源的内部枚举 → 一句人话；认不出就原样显示，不吞掉证据。"""
+    text = str(method or "").strip()
+    return CLASSIFY_METHOD_LABELS.get(text, text or "未知")
+
+
 class EventType(str, Enum):
     """事件类型枚举"""
     THINKING = "thinking"          # 模型正在思考
@@ -26,6 +67,50 @@ class EventType(str, Enum):
     EXECUTION_LOG = "execution_log"  # 分支、重试、循环、降级日志
     ERROR = "error"                # 错误
     DONE = "done"                  # 完成
+
+
+# 入库前丢掉的事件：token 是逐字一条（一轮回答上千条、几十上百 KB），
+# thinking 是瞬时的"正在干什么"，done/reset 只是控制信号。它们撑不起面板，
+# 却足以把整份事件顶过体积上限，触发"只留 plan_result"的降级，
+# 于是历史回看只剩四行默认阶段——过程"消失"的真正原因。
+STORAGE_SKIP_KINDS = {"token", "thinking", "response_reset", "done", "memory_extraction"}
+MAX_TURN_EVENT_BYTES = 256 * 1024
+
+
+def turn_events_for_storage(
+    events: Any,
+    *,
+    max_bytes: int = MAX_TURN_EVENT_BYTES,
+) -> List[Dict[str, Any]]:
+    """历史回看只需要能撑起面板的事件；先去噪，仍超量才退化成只留方案事件。"""
+    kept = [
+        dict(event)
+        for event in (events or [])
+        if isinstance(event, dict) and event.get("event") not in STORAGE_SKIP_KINDS
+    ]
+    if not kept:
+        return []
+    try:
+        import json
+
+        if len(json.dumps(kept, ensure_ascii=False)) <= max_bytes:
+            return kept
+    except (TypeError, ValueError):
+        pass
+    return [event for event in kept if event.get("event") == "plan_result"]
+
+
+def find_clarify_event(events: Any, since: int = 0) -> Any:
+    """在这一段**新产生**的事件里找中断事件。
+
+    续跑时事件列表前面还铺着上一段（`since` 之前）的事件，里面本来就有那条旧的
+    `clarify`。在整份列表里找，每次续跑都会把上次的追问当成"这次又问了"：
+    同一句追问被重复输出、追问卡片赖着不走、过程区永远不收起。
+    """
+    for event in list(events or [])[max(0, int(since or 0)):]:
+        if isinstance(event, dict) and event.get("event") == "clarify":
+            return event
+    return None
 
 
 def deduplicate_process_events(events: Any) -> List[Dict[str, Any]]:

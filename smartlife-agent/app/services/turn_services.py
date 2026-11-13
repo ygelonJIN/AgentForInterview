@@ -19,7 +19,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from app.config import create_llm
 from app.services.travel_service import TravelService
-from app.classifier import ClassificationResult, get_classifier
+from app.classifier import ClassificationResult, get_classifier, keyword_display
 from app.memory.short_term import ShortTermMemory
 
 # 记忆提取窗口：只取游标之后的用户消息，按条数和字数双重封顶。
@@ -43,6 +43,61 @@ from app.streaming import EventType
 from app.nlu import lexicon, signals
 from app.trip_gear.intent import is_gear_request
 from app.observability import extract_model_usage, log_exception, timed_span
+
+
+# 检索选择的人话文案。事件里存的是 strategy 枚举（mixed / rag_only / …），
+# 界面直接显示枚举等于让用户读代码；"选了 RAG"必须能一眼看出来。
+_DECISION_SOURCE_LABEL = {
+    'keyword': '关键词（本句原话）',
+    'prior': '分类器的检索先验',
+    'none': '无检索需求',
+}
+
+_RETRIEVAL_TEXT = {
+    "mixed": "混合检索（商品属性 + 评价/攻略）",
+    "sql_only": "SQL（商品属性）",
+    "rag_only": "RAG（评价/攻略）",
+    "none": "无需检索（纯对话）",
+}
+
+
+def describe_retrieval(strategy: Any) -> str:
+    text = str(strategy or "")
+    return _RETRIEVAL_TEXT.get(text, text or "——")
+
+
+async def _emit_tool_event(queue: Any, payload: Dict[str, Any], step: str = "retrieval") -> None:
+    """发一条带细节的工具事件；只有"名字 + 一句话"的工具出口也能用。
+
+    ``EventSink`` 有 ``emit``，测试里的轻量队列往往只实现了
+    ``emit_tool_call``。细节字段（命中数、耗时）在这些队列上没地方放，
+    就退回原来的一句话写法——展示层永远不该成为调用链的硬依赖。
+    """
+    emit = getattr(queue, "emit", None)
+    if callable(emit):
+        await emit(EventType.TOOL_CALL, payload, step=step)
+        return
+    detail = payload.get("input") or payload.get("output") or ""
+    await queue.emit_tool_call(payload.get("tool", ""), detail, step=step)
+
+
+def _ms(value: Any) -> Optional[float]:
+    """耗时字段可能是 None、字符串或 float；只把能用的数交给界面。"""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return round(number, 1)
+
+
+def describe_needs(needs: Dict[str, Any]) -> str:
+    """`需要商品 / 需要评价` 两个布尔 → 一句能读的话。"""
+    parts = []
+    if needs.get("needs_product"):
+        parts.append("查商品库")
+    if needs.get("needs_review"):
+        parts.append("查评价库")
+    return " + ".join(parts) if parts else "两库都不查"
 
 
 class TurnServices:
@@ -242,7 +297,9 @@ class TurnServices:
         await queue.emit(EventType.STEP, {
             "step": 1, "total": 4,
             "name": "统一分类",
-            "description": "小模型分析任务类型和路由策略"
+            # 这里只描述"将要走的判定顺序"，定案方法等分类结束由
+            # `_emit_classify_step` 回写——关键词直通的轮次不该写着"小模型分析"。
+            "description": "关键词层打分 → 小模型判定（证据不够硬时）→ 主模型仲裁（低置信时）"
         }, step="classify")
 
         history_for_classification = self.short_term_memory.get_history(thread_id, last_n=11)[:-1]
@@ -273,7 +330,8 @@ class TurnServices:
                     "retrieval": "mixed",
                     "confidence": classification.confidence,
                     "reason": "安全网：检测到产品关键词",
-                    "method": "keyword"
+                    "method": "keyword",
+                    **keyword_display(user_message),
                 }, step="classify")
                 self._last_classifications[thread_id] = classification
 
@@ -296,6 +354,7 @@ class TurnServices:
                 "confidence": classification.confidence,
                 "reason": classification.reason,
                 "method": "keyword",
+                **keyword_display(user_message),
             }, step="classify")
 
         return classification
@@ -312,11 +371,14 @@ class TurnServices:
         """购物子图节点：确定 SQL/RAG 需求和检索策略。"""
         needs = self._classify_data_needs(user_message, classification)
         planned_strategy = needs["strategy"]
+        # 卡片上写"选了哪条检索"以及"凭什么选它"：RAG 还是 SQL 是这一轮最关键
+        # 的一个决定，用户看不到就说不清"为什么只给了评价没有价格"。
         await queue.emit(EventType.STEP, {
             "step": 2, "total": 4,
             "name": "数据检索",
-            "description": (f"检索策略: {planned_strategy} | 需要商品: {needs['needs_product']} "
-                            f"| 需要评价: {needs['needs_review']}")
+            "description": (f"策略 {describe_retrieval(planned_strategy)}"
+                            f"｜{describe_needs(needs)}"
+                            f"｜依据 {needs.get('decision_source_label', '规则')}"),
         }, step="retrieval")
         return needs, planned_strategy
 
@@ -394,9 +456,10 @@ class TurnServices:
         await queue.emit(EventType.STEP, {
             "step": 3, "total": 4,
             "name": "生成回复",
-            "description": "大模型流式生成购物建议"
+            # 不逐字输出：结论已经由 answer_blocks 画成卡片了，正文只是备份
+            "description": "生成文字说明（结构化卡片已先出）"
         }, step="generate")
-        await queue.emit_thinking("🧠 正在生成购物建议...", step="generate")
+        await queue.emit_thinking("🧠 正在补充文字说明…", step="generate")
 
         prompt = ChatPromptTemplate.from_messages([
             ('system', '''你是一个智能导购助手，帮用户找到最合适的商品。
@@ -423,21 +486,19 @@ class TurnServices:
             ("user", "{input}")
         ])
         chain = prompt | self.llm
-        full_response = ""
         with timed_span(
             "model.shopping_generate",
             trace_id=getattr(queue, "trace_id", ""),
             attributes={"user_id": user_id},
         ) as measurement:
-            async for chunk in chain.astream({
+            # 不要 astream + emit_token：商品卡片（answer_blocks）已经先画出来了，
+            # 逐字正文只会先闪一遍、再被结构化版式盖掉。正文随 done 一次带回。
+            message = await chain.ainvoke({
                 "chat_history": chat_history,
-                "input": full_input
-            }):
-                if chunk.content:
-                    full_response += chunk.content
-                    await queue.emit_token(chunk.content, step="generate")
-                measurement.add_attributes(extract_model_usage(chunk))
-        return full_response
+                "input": full_input,
+            })
+            measurement.add_attributes(extract_model_usage(message))
+        return str(getattr(message, "content", "") or "")
 
     @staticmethod
     def validate_shopping_response(response: str, retrieval: Dict[str, Any]) -> None:
@@ -524,13 +585,17 @@ class TurnServices:
             needs_review = False
 
         # 关键词没给出任何需求时，采信分类器先验（模型读懂了而词表没覆盖）
+        decision_source = 'keyword'
         if not needs_product and not needs_review:
+            decision_source = 'none'
             prior = str(getattr(classification, 'retrieval', '') or '')
             if classification.intent not in ('customer_service', 'general'):
                 if prior in {'sql_only', 'mixed'}:
                     needs_product = True
                 if prior in {'rag_only', 'mixed'}:
                     needs_review = True
+                if needs_product or needs_review:
+                    decision_source = 'prior'
 
         if needs_product and needs_review:
             strategy = 'mixed'
@@ -558,6 +623,17 @@ class TurnServices:
             'optional_sources': [],
             'allow_partial': True,
             'source_policy': 'independent_not_fallback',
+            # 只用于展示："选了 RAG"要能追到依据。`signals` 是命中的需求词次数，
+            # `decision_source` 说明是词表定的还是采信了分类先验。
+            'signals': {
+                'review': review_signals,
+                'attribute': attribute_signals,
+                'product_action': product_action_signals,
+            },
+            'decision_source': decision_source,
+            'decision_source_label': _DECISION_SOURCE_LABEL.get(
+                decision_source, decision_source
+            ),
         }
 
     async def _emit_retrieval_plan(self, queue: 'EventSink', strategy: str, needs: dict, source: str = 'policy'):
@@ -612,14 +688,32 @@ class TurnServices:
             )
 
         selected_sources = set(retrieval.get("selected_sources") or [])
+        # 工具卡片写"查了什么、命中多少、花了多久"，而不是只写一个"正在检索"。
+        # 检索在这一步已经跑完（事件是补发的），所以状态直接标 completed，
+        # 免得卡片停在"正在检索"然后突然跳成完成。
+        timings = retrieval.get("source_timings_ms") or {}
         if "sql" in selected_sources:
-            await queue.emit_tool_call("nl2sql", retrieval.get("sql", ""), step="retrieval")
+            products = retrieval.get("products") or []
+            await _emit_tool_event(queue, {
+                "tool": "nl2sql",
+                "input": str(retrieval.get("sql") or "").strip(),
+                "query": query,
+                "status": "completed",
+                "output": f"命中 {len(products)} 件商品",
+                "rows": len(products),
+                "elapsed_ms": _ms(timings.get("sql")),
+            })
         if "rag" in selected_sources:
-            await queue.emit_tool_call(
-                "rag",
-                f"返回 {len(retrieval.get('documents', []))} 条文档",
-                step="retrieval",
-            )
+            documents = retrieval.get("documents") or []
+            await _emit_tool_event(queue, {
+                "tool": "rag",
+                "input": f"查询「{query}」",
+                "query": query,
+                "status": "completed",
+                "output": f"命中 {len(documents)} 条评价/攻略",
+                "docs": len(documents),
+                "elapsed_ms": _ms(timings.get("rag")),
+            })
 
         product_parts = []
         if retrieval.get("products"):

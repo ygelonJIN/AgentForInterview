@@ -69,7 +69,20 @@ class _Services:
         return self._history
 
 
-def _run(message: str, history_text: str = "", chat_history=None, **kwargs):
+# 追问卡片的"标准答法"：出发地/交通/住宿现在都是阻塞项，绝大多数用例关心的是
+# 补完之后的行为，不是追问本身。想验追问的用例传 `answer_gaps=False`。
+# 用"自驾 + 经济型 300"作答：自驾不计城际估算（只写"未估算"），住宿沿用
+# 经济型单价，这样大多数用例的预算口径与追问改版前一致，断言不会被无关地推高。
+_GAP_ANSWER = "出发地：上海；交通：自驾；住宿：酒店，每晚300元"
+
+
+def _run(
+    message: str,
+    history_text: str = "",
+    chat_history=None,
+    answer_gaps: bool = True,
+    **kwargs,
+):
     extra = {"product_search": _search}
     extra.update(kwargs)
     services = _Services(chat_history)
@@ -82,13 +95,18 @@ def _run(message: str, history_text: str = "", chat_history=None, **kwargs):
         graph = build_trip_gear_graph(checkpointer=InMemorySaver())
         config = {"configurable": {"thread_id": "trip-gear"}}
         state = await graph.ainvoke(payload, config, context=ctx)
-        # 有预算的行程现在会先停在"预算怎么分"；测试里当作已选"行程优先"。
-        for _ in range(2):
+        # 有预算的行程会先停在"预算怎么分"；缺槽位会停在追问卡片。
+        for _ in range(4):
             payload_interrupt = (state.get("__interrupt__") or [{}])[0]
             value = getattr(payload_interrupt, "value", payload_interrupt) or {}
-            if not isinstance(value, dict) or value.get("type") != "trip_gear_budget_split":
-                return state
-            state = await graph.ainvoke(Command(resume="50/50"), config, context=ctx)
+            kind = value.get("type") if isinstance(value, dict) else ""
+            if kind == "trip_gear_budget_split":
+                state = await graph.ainvoke(Command(resume="50/50"), config, context=ctx)
+                continue
+            if answer_gaps and kind == "trip_gear_clarify":
+                state = await graph.ainvoke(Command(resume=_GAP_ANSWER), config, context=ctx)
+                continue
+            return state
         return state
 
     return asyncio.run(_drive())
@@ -172,12 +190,16 @@ def test_over_budget_items_are_left_unbought_instead_of_overspending():
 
 
 def test_missing_core_fields_are_asked_back():
-    state = _run("帮我列个装备清单")
+    state = _run("帮我列个装备清单", answer_gaps=False)
 
     interrupts = state.get("__interrupt__") or []
     assert interrupts, "缺少核心信息时应中断并追问"
     payload = interrupts[0].value
-    assert payload["missing"] == ["目的地", "天数", "人数", "出发日期"]
+    # 出发地、交通、住宿和目的地/天数/人数/日期一样是必问项：缺了出发地就没有
+    # 大交通估算，缺了住宿就只能编一个每晚价。
+    assert payload["missing"] == [
+        "出发地", "目的地", "天数", "人数", "出发日期", "交通", "住宿",
+    ]
     assert "目的地" in payload["question"]
     assert "天数" in payload["question"]
 
@@ -203,7 +225,16 @@ def test_clarify_resume_fills_missing_fields_and_continues():
     assert first.get("__interrupt__"), "第一轮应停下等补充"
 
     second = asyncio.run(
-        graph.ainvoke(Command(resume="去杭州玩两天，我一个人，2026-11-10 出发"), cfg, context=ctx)
+        graph.ainvoke(
+            Command(
+                resume=(
+                    "去杭州玩两天，我一个人，2026-11-10 出发，"
+                    "从上海出发，坐高铁，住酒店每晚300元"
+                )
+            ),
+            cfg,
+            context=ctx,
+        )
     )
     assert second["status"] == "ok"
     assert "## 行程" in second["response"]
@@ -354,6 +385,11 @@ def test_tight_budget_omits_gear_instead_of_leaving_it_unbought():
         cfg,
         context=ctx,
     ))
+    # 露营行程只缺出发地和交通方式，先补这两项再谈预算怎么分
+    assert state["__interrupt__"][0].value["type"] == "trip_gear_clarify"
+    state = asyncio.run(
+        graph.ainvoke(Command(resume="出发地：上海；交通：自驾"), cfg, context=ctx)
+    )
     assert state["__interrupt__"][0].value["type"] == "trip_gear_budget_split"
     state = asyncio.run(graph.ainvoke(Command(resume="20/80"), cfg, context=ctx))
 
@@ -387,6 +423,11 @@ def test_verify_clarify_gives_up_after_round_limit():
                "thread_id": "trip-gear-verify-limit"}
 
     state = asyncio.run(graph.ainvoke(payload, cfg, context=ctx))
+    # 第一站是补槽位（出发地/交通）；露营所以不问住宿类型。
+    assert state["__interrupt__"][0].value["type"] == "trip_gear_clarify"
+    state = asyncio.run(
+        graph.ainvoke(Command(resume="出发地：上海；交通：自驾"), cfg, context=ctx)
+    )
     for _ in range(3):
         if not state.get("__interrupt__"):
             break
@@ -625,7 +666,11 @@ def test_vague_answer_to_province_question_still_moves_forward():
     ))
     assert first.get("__interrupt__"), "省份应先反问具体城市"
 
-    second = asyncio.run(graph.ainvoke(Command(resume="广东的很多城市，两个人，2026-11-10 出发"), cfg, context=ctx))
+    second = asyncio.run(graph.ainvoke(
+        Command(resume="目的地：广州、深圳、珠海；两个人；2026-11-10 出发；"
+                       "出发地：上海；交通：自驾；住宿：酒店，每晚300元"),
+        cfg, context=ctx,
+    ))
     assert second["status"] == "ok"
     assert "串联城市：广州 → 深圳 → 珠海" in second["response"]
 
@@ -649,10 +694,69 @@ def test_single_city_answer_replaces_the_province():
         {"user_message": "去广东玩一周", "user_id": "user-1", "thread_id": "trip-gear-onecity"},
         cfg, context=ctx,
     ))
-    second = asyncio.run(graph.ainvoke(Command(resume="只去广州，两个人，2026-11-10 出发"), cfg, context=ctx))
+    second = asyncio.run(graph.ainvoke(
+        Command(resume="目的地：广州；两个人；2026-11-10 出发；"
+                       "出发地：上海；交通：自驾；住宿：酒店，每晚300元"),
+        cfg, context=ctx,
+    ))
 
     assert second["status"] == "ok"
     assert "目的地：广州" in second["response"]
+
+
+def test_province_clarify_cities_question_is_multi_select():
+    """"去哪几个城市"的答案是集合：这一题必须多选，其余题不能跟着变成多选。"""
+    # 没说人数：同一张卡会一起问人数/预算/出发日期，用来对照"哪些题不能多选"
+    state = _run("从上海去广东玩一周")
+
+    payload = (state.get("__interrupt__") or [])[0].value
+    by_key = {item["key"]: item for item in payload["questions"]}
+
+    assert by_key["cities"]["multi"] is True
+    assert by_key["cities"]["options"]
+    assert {"people", "budget", "start_date"} <= set(by_key)
+    for key, question in by_key.items():
+        if key == "cities":
+            continue
+        assert question["multi"] is False, f"{key} 不该多选"
+
+
+def test_multi_city_clarify_answer_keeps_the_selected_order():
+    """多选拼出的"目的地：广州、珠海"要按选中的顺序串成行程。"""
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.types import Command
+
+    from app.services.clarify_questions import compose_answer
+
+    graph = build_trip_gear_graph(checkpointer=InMemorySaver())
+    cfg = {"configurable": {"thread_id": "trip-gear-multicity"}}
+    ctx = TurnContext(services=_Services(None), trace_id="trip-gear").with_extra(
+        product_search=_search,
+        planner=_Planner("城市漫步"),
+        weather_lookup=lambda _destination, _date: {
+            "temperature_min": 18, "temperature_max": 25,
+            "condition": "多云", "precipitation_probability": 10,
+        },
+    )
+    first = asyncio.run(graph.ainvoke(
+        {"user_message": "两个人从上海去广东玩一周", "user_id": "user-1", "thread_id": "trip-gear-multicity"},
+        cfg, context=ctx,
+    ))
+    assert first.get("__interrupt__"), "省份应先反问具体城市"
+
+    answer = compose_answer([
+        {"prefix": "目的地", "value": ["珠海", "广州"]},
+        {"prefix": "人数", "value": "2 人"},
+        {"prefix": "出发日期", "value": "2026-11-10"},
+        {"prefix": "出发地", "value": "上海"},
+        {"prefix": "交通", "value": "自驾"},
+        {"prefix": "住宿", "value": "酒店，每晚300元"},
+    ])
+    second = asyncio.run(graph.ainvoke(Command(resume=answer), cfg, context=ctx))
+
+    assert second["status"] == "ok"
+    # 顺序照用户选的来，不被地名表顺序改写成"广州 → 珠海"
+    assert "串联城市：珠海 → 广州" in second["response"]
 
 
 def test_clarify_payload_offers_selectable_options():
@@ -689,10 +793,13 @@ def test_answering_with_chosen_options_resumes_the_plan():
     ))
 
     answer = compose_answer([
+        {"prefix": "出发地", "value": "上海"},
         {"prefix": "目的地", "value": "杭州"},
         {"prefix": "天数", "value": "3 天"},
         {"prefix": "人数", "value": "2 人"},
         {"prefix": "出发日期", "value": "2026-11-10"},
+        {"prefix": "交通", "value": "自驾"},
+        {"prefix": "住宿", "value": "酒店，每晚300元"},
     ])
     second = asyncio.run(graph.ainvoke(Command(resume=answer), cfg, context=ctx))
 
@@ -745,11 +852,20 @@ def test_partial_answer_asks_again_for_what_is_still_missing():
         cfg,
         context=ctx,
     ))
-    assert first["__interrupt__"][0].value["missing"] == ["人数", "出发日期"]
+    assert first["__interrupt__"][0].value["missing"] == [
+        "出发地", "人数", "出发日期", "交通", "住宿",
+    ]
 
-    # 人数答了、日期给了个解析不出来的"1"
+    # 出发地/交通/住宿答了；人数答了；日期给了个解析不出来的"1"
     second = asyncio.run(graph.ainvoke(
-        Command(resume="人数：1 人；出发日期：1"), cfg, context=ctx
+        Command(
+            resume=(
+                "出发地：上海；交通：自驾；住宿：酒店，每晚300元；"
+                "人数：1 人；出发日期：1"
+            )
+        ),
+        cfg,
+        context=ctx,
     ))
     interrupts = second.get("__interrupt__") or []
     assert interrupts, "还缺出发日期，应当继续问"
@@ -842,3 +958,121 @@ def test_followup_message_keeps_the_trip_context():
     assert facts["start_date"]
     assert facts["budget"] == 5000
     assert "汕头" in facts["cities"]
+
+
+def test_each_phase_reports_what_it_is_doing_before_it_finishes():
+    """过程区要能看到"这一秒在干什么"，不能只有一个通用兜底。
+
+    每个阶段开始时先发一条 `active` 的 step + 一条 thinking（具体动作），
+    结束时再发 `completed`。这样排行程、挑款这些几秒级的阶段在界面上
+    有可读的进行中状态。
+    """
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.types import Command
+
+    events = []
+    graph = build_trip_gear_graph(checkpointer=InMemorySaver())
+    cfg = {"configurable": {"thread_id": "trip-gear-progress"}}
+    ctx = TurnContext(services=_Services(None), trace_id="trip-gear").with_extra(
+        product_search=_search,
+        planner=_Planner("城市漫步"),
+        weather_lookup=lambda _destination, _date: {
+            "temperature_min": 12, "temperature_max": 18,
+            "condition": "晴", "precipitation_probability": 0,
+        },
+    ).bind_writer(events.append)
+
+    state = asyncio.run(graph.ainvoke(
+        {
+            "user_message": "两个人2026-11-10去杭州玩三天，预算5000",
+            "user_id": "user-1",
+            "thread_id": "trip-gear-progress",
+        },
+        cfg,
+        context=ctx,
+    ))
+    if (state.get("__interrupt__") or [{}])[0].value.get("type") == "trip_gear_clarify":
+        state = asyncio.run(graph.ainvoke(Command(
+            resume="出发地：上海；交通：自驾；住宿：酒店，每晚300元",
+        ), cfg, context=ctx))
+    if (state.get("__interrupt__") or [{}])[0].value.get("type") == "trip_gear_budget_split":
+        state = asyncio.run(graph.ainvoke(Command(resume="90"), cfg, context=ctx))
+
+    active_steps = [
+        event["data"]
+        for event in events
+        if event.get("event") == "step" and event["data"].get("status") == "active"
+    ]
+    # 每个阶段都要有一条"开始时"的播报，且文案是具体动作而不是"进行中"
+    assert active_steps, "阶段开始时应当先发一条 active 播报"
+    assert any("逐日行程" in str(item.get("description")) for item in active_steps)
+    assert any("核对" in str(item.get("description")) for item in active_steps)
+
+    live = [
+        event["data"].get("message", "")
+        for event in events
+        if event.get("event") == "thinking"
+    ]
+    assert any("正在生成" in message and "天逐日行程" in message for message in live)
+    assert any("住宿" in message and "总预算" in message for message in live)
+
+
+def test_waiting_for_the_user_is_reported_as_waiting_not_running():
+    """停在追问/等比例时，阶段卡片要写"等你确认"，不能一直"进行中"。
+
+    以前 `_progress` 先播一条 active，中断后没人收尾：收尾渲染只能把它当成
+    "进行中"（或归一成"已完成"），两种都不对——它其实在等人。
+    """
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    events = []
+    graph = build_trip_gear_graph(checkpointer=InMemorySaver())
+    cfg = {"configurable": {"thread_id": "trip-gear-waiting"}}
+    ctx = TurnContext(services=_Services(None), trace_id="trip-gear").with_extra(
+        product_search=_search,
+    ).bind_writer(events.append)
+
+    state = asyncio.run(graph.ainvoke(
+        {"user_message": "去广州玩五天", "user_id": "user-1", "thread_id": "trip-gear-waiting"},
+        cfg, context=ctx,
+    ))
+    assert (state["__interrupt__"][0].value or {}).get("type") == "trip_gear_clarify"
+
+    steps = [
+        event["data"] for event in events if event.get("event") == "step"
+    ]
+    last = steps[-1]
+    assert last["status"] == "waiting"
+    assert "等你补充" in last["description"]
+
+
+def test_budget_split_waiting_state_names_the_choice():
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    events = []
+    graph = build_trip_gear_graph(checkpointer=InMemorySaver())
+    cfg = {"configurable": {"thread_id": "trip-gear-split-wait"}}
+    ctx = TurnContext(services=_Services(None), trace_id="trip-gear").with_extra(
+        product_search=_search,
+        weather_lookup=lambda _destination, _date: {
+            "temperature_min": 22, "temperature_max": 30,
+            "condition": "晴", "precipitation_probability": 0,
+        },
+    ).bind_writer(events.append)
+
+    state = asyncio.run(graph.ainvoke(
+        {
+            "user_message": (
+                "两个人2026-11-10去广州玩三天，预算6000，"
+                "从上海出发，坐高铁，住酒店每晚300元"
+            ),
+            "user_id": "user-1",
+            "thread_id": "trip-gear-split-wait",
+        },
+        cfg, context=ctx,
+    ))
+    assert (state["__interrupt__"][0].value or {}).get("type") == "trip_gear_budget_split"
+
+    waiting = [event["data"] for event in events
+               if event.get("event") == "step" and event["data"].get("status") == "waiting"]
+    assert waiting and "等你定比例" in waiting[-1]["description"]

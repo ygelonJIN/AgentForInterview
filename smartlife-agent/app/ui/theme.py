@@ -507,6 +507,16 @@ section[data-testid="stSidebar"] .st-key-thread_delete_confirm [data-testid="stH
   font-family: var(--font-mono); font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums; white-space: nowrap;
 }}
+/* 住宿与城际交通不是"活动"，但每天都要看得见：用虚线竖条 + 空心点区分，
+   既在大交通上标明"估算"，也不和当天真正的安排混成一条。 */
+.sl-tl-item--stay, .sl-tl-item--transport {{
+  border-left-style: dashed; border-left-color: var(--c-line);
+  color: var(--c-text-muted);
+}}
+.sl-tl-item--stay::before, .sl-tl-item--transport::before {{
+  background: var(--c-surface); border: var(--timeline-w) solid var(--c-line-strong);
+}}
+.sl-tl-item--stay .sl-tl-act, .sl-tl-item--transport .sl-tl-act {{ font-size: var(--fs-xs); }}
 
 /* ---------- 装备清单（按状态分组的横排 chips） ---------- */
 .sl-gear {{ display: flex; flex-direction: column; }}
@@ -896,7 +906,20 @@ section[data-testid="stSidebar"] .st-key-thread_delete_confirm [data-testid="stH
   letter-spacing: 0.06em; text-transform: uppercase; color: var(--c-text-faint);
 }}
 .process-card .process-head .sl-tag {{ margin-left: auto; }}
-.process-card .process-copy {{ font-size: var(--fs-xs); color: var(--c-text-muted); line-height: var(--lh-tight); }}
+.process-card .process-copy {{ font-size: var(--fs-xs); color: var(--c-text-muted); line-height: var(--lh-normal); }}
+/* 过程卡片里的"字段名"：命中关键词 / 关键词得分 / 结果。
+   用等宽小字压低存在感，让后面跟着的值（词、数字）成为视觉主体。 */
+.process-card .process-kv {{
+  display: inline-block; margin-right: var(--space-2);
+  font-family: var(--font-mono); font-size: var(--fs-2xs);
+  letter-spacing: var(--tracking-caps); color: var(--c-text-faint);
+}}
+.process-card .process-copy .sl-tag {{ margin-right: 3px; }}
+.process-card .process-none {{ font-size: var(--fs-2xs); color: var(--c-text-faint); }}
+.process-card .process-copy code {{
+  display: inline-block; max-width: 100%; overflow-wrap: anywhere;
+  font-size: var(--fs-2xs); color: var(--c-text-muted);
+}}
 /* 运行中卡片里的「当前动作」：不算正式步骤，只报这一秒在干什么 */
 .process-card .process-live {{
   margin-top: 3px; padding-left: var(--space-2);
@@ -1052,6 +1075,45 @@ section[data-testid="stSidebar"] .st-key-thread_delete_confirm [data-testid="stH
   color: var(--c-accent-text); font-weight: var(--fw-semibold);
 }}
 .st-key-clarify_card [role="radiogroup"] input[type="radio"] {{ display: none; }}
+
+/* 多选题（答案是集合的题才用）：药丸多选，和单选题同一套外观，
+   差别只是能同时点亮多个。
+
+   选中态按 Streamlit 真实渲染出来的属性认（见下面几条规则的注释）；
+   按 `kind=` 认是最早写错的那一版：那个属性不一定落进 DOM，结果是
+   "选中的和没选中的长得一模一样"，用户看不到自己选了哪几个。 */
+.st-key-clarify_card [data-testid="stButtonGroup"] {{
+  display: flex; flex-wrap: wrap; gap: var(--space-2);
+}}
+/* 药丸本体。用 `[data-testid^="stBaseButton-pills"]` 匹配：Streamlit 给未选中的
+   打 stBaseButton-pills、选中的换成 stBaseButton-pillsActive，元素是 div 还是
+   button 随版本变，按 testid 前缀认最稳。 */
+.st-key-clarify_card [data-testid="stButtonGroup"] [data-testid^="stBaseButton-pills"] {{
+  margin: 0; padding: 5px 12px; cursor: pointer;
+  background: var(--c-ask-option-bg);
+  border: var(--border-w) solid var(--c-line) !important;
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-xs); color: var(--c-text); box-shadow: none;
+}}
+.st-key-clarify_card [data-testid="stButtonGroup"] [data-testid^="stBaseButton-pills"]:hover {{
+  border-color: var(--c-ask-option-active-line) !important;
+}}
+/* 已选：实心强调色 + 反白字 + 前置对勾。
+   浅底 + 细边在深色背景上几乎看不出差别，选中和没选中只差一点灰度，等于没反馈；
+   `[data-selected]` 是 Streamlit 选中态一定带的属性（未选中时不渲染该属性）。 */
+.st-key-clarify_card [data-testid="stButtonGroup"] [data-selected],
+.st-key-clarify_card [data-testid="stButtonGroup"] [data-testid="stBaseButton-pillsActive"],
+.st-key-clarify_card [data-testid="stButtonGroup"] button[kind="pillsActive"],
+.st-key-clarify_card [data-testid="stButtonGroup"] button[aria-checked="true"],
+.st-key-clarify_card [data-testid="stButtonGroup"] button[aria-pressed="true"] {{
+  background: var(--c-accent) !important;
+  border-color: var(--c-accent-strong) !important;
+  color: var(--c-accent-ink) !important;
+  font-weight: var(--fw-bold);
+}}
+.st-key-clarify_card [data-testid="stButtonGroup"] [data-selected]::before {{
+  content: "✓ "; font-weight: var(--fw-bold);
+}}
 .st-key-clarify_card .stButton > button {{
   background: var(--c-accent); color: var(--c-accent-ink);
   border: var(--border-w) solid var(--c-accent-strong);
@@ -1322,7 +1384,12 @@ def _constraint_rows(constraints: Sequence[Dict[str, Any]]) -> str:
     return f'<div class="sl-rows">{"".join(rows)}</div>'
 
 
-def _day_html(day: Dict[str, Any]) -> str:
+def _day_html(
+    day: Dict[str, Any],
+    *,
+    intercity_cost: float = 0.0,
+    is_first: bool = False,
+) -> str:
     items = []
     subtotal = 0.0
     for entry in day.get("items", []) or []:
@@ -1341,11 +1408,30 @@ def _day_html(day: Dict[str, Any]) -> str:
             + "</span>"
             f'<span class="sl-tl-cost">{_money(cost) if cost else "—"}</span></div>'
         )
-    # 当天小计同样要算住宿：只算条目会让"每天 ¥1480"和面板合计对不上
+    # 住宿单独一行：它不进条目（模型不该把它写成活动），但必须看得见——
+    # 用户翻到第 2 天就该知道这一晚住哪、多少钱。
     try:
-        subtotal += float(day.get("lodging_cost") or 0)
+        lodging_cost = float(day.get("lodging_cost") or 0)
     except (TypeError, ValueError):
-        pass
+        lodging_cost = 0.0
+    if lodging_cost > 0:
+        subtotal += lodging_cost
+        items.append(
+            '<div class="sl-tl-item sl-tl-item--stay">'
+            '<span class="sl-tl-time">夜</span>'
+            '<span class="sl-tl-act">住宿<small>酒店 · 估算</small></span>'
+            f'<span class="sl-tl-cost">{_money(lodging_cost)}</span></div>'
+        )
+    # 大交通在模型没写进条目时是"总额估算"，挂在第 1 天并标明往返，
+    # 免得逐日小计加起来和面板合计对不上。
+    if is_first and intercity_cost > 0:
+        subtotal += intercity_cost
+        items.insert(0, (
+            '<div class="sl-tl-item sl-tl-item--transport">'
+            '<span class="sl-tl-time">往返</span>'
+            '<span class="sl-tl-act">城际交通<small>机票/高铁 · 估算</small></span>'
+            f'<span class="sl-tl-cost">{_money(intercity_cost)}</span></div>'
+        ))
     if not items:
         items.append('<div class="sl-tl-item"><span class="sl-tl-time">—</span><span class="sl-tl-act">暂无安排</span><span class="sl-tl-cost">—</span></div>')
     if not day.get("title"):
@@ -1509,7 +1595,14 @@ def plan_panels_html(payload: Dict[str, Any]) -> str:
     ]
 
     if days:
-        day_html = "".join(_day_html(day) for day in days)
+        day_html = "".join(
+            _day_html(
+                day,
+                intercity_cost=intercity_total if index == 0 else 0.0,
+                is_first=index == 0,
+            )
+            for index, day in enumerate(days)
+        )
         intercity_note = f"（含城际估算 {_money(intercity_total)}）" if intercity_total else ""
         parts.append(
             panel_html(

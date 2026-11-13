@@ -107,7 +107,9 @@ def test_budget_bounded_multi_day_trip_is_travel_plan_not_product_search():
     assert result.route == "plan_and_execute"
     assert result.sub_intent == "plan_trip"
     assert result.retrieval == "rag_only"
-    assert queue.events[-1][1] == {
+
+    payload = queue.events[-1][1]
+    assert payload == {
         "route": "plan_and_execute",
         "intent": "travel",
         "sub_intent": "plan_trip",
@@ -117,6 +119,22 @@ def test_budget_bounded_multi_day_trip_is_travel_plan_not_product_search():
         "from": "keyword",
         "strength": "strong",
         "method": "keyword",
+        # 过程卡片要摊开"命中了哪几个词"，所以证据随事件一起出去
+        "keyword_hits": {
+            "travel": ["上海", "<时长>"],
+            "shopping_weak": ["预算", "块钱"],
+        },
+        "keyword_scores": {
+            "shopping": 0.8,
+            "travel": 2.2,
+            "customer_service": 0.0,
+            "general": 0.0,
+        },
+        "keyword_ready": {
+            "shopping": False,
+            "travel": True,
+            "customer_service": False,
+        },
     }
 
 

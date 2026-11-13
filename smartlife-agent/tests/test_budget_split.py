@@ -28,11 +28,22 @@ def _graph_and_ctx(with_gear=True):
     return build_trip_gear_graph(checkpointer=InMemorySaver(), with_gear=with_gear), ctx
 
 
+# 出发地/交通/住宿现在都是必问项：这些用例只关心预算怎么分，先按卡片补上。
+_GAP_ANSWER = "出发地：上海；交通：自驾；住宿：酒店，每晚300元"
+
+
 def _start(message, thread="split-1", with_gear=True):
     graph, ctx = _graph_and_ctx(with_gear=with_gear)
     payload = {"user_message": message, "user_id": "u", "thread_id": thread}
     config = {"configurable": {"thread_id": thread}}
-    return graph, ctx, config, asyncio.run(graph.ainvoke(payload, config, context=ctx))
+    state = asyncio.run(graph.ainvoke(payload, config, context=ctx))
+    for _ in range(2):
+        intr = (state.get("__interrupt__") or [{}])[0]
+        value = getattr(intr, "value", intr) or {}
+        if not isinstance(value, dict) or value.get("type") != "trip_gear_clarify":
+            break
+        state = asyncio.run(graph.ainvoke(Command(resume=_GAP_ANSWER), config, context=ctx))
+    return graph, ctx, config, state
 
 
 def test_parse_accepts_presets_percent_and_amount():

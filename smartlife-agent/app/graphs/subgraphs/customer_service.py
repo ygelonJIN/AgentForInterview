@@ -33,19 +33,6 @@ async def load_orders(state: CustomerServiceState, runtime: Runtime[TurnContext]
 async def generate(state: CustomerServiceState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
     sink = runtime.context.sink_for(runtime)
     orders = state.get("orders") or []
-    # 结构化卡片在生成前就定稿：它的数据来自订单表，跟正文写什么无关。
-    # 先发出去，前端跑的时候就能把卡片画出来，不必等模型写完再整块替换。
-    try:
-        from app.ui.blocks import order_blocks
-
-        blocks = order_blocks(orders, "")
-        if blocks:
-            await sink.emit("answer_blocks", {
-                "agent": "customer_service",
-                "blocks": blocks,
-            }, step="generate")
-    except Exception:
-        pass
 
     order_text = "\n".join(
         f"- id={item.get('id')} product={item.get('product_name')} "
@@ -60,12 +47,25 @@ async def generate(state: CustomerServiceState, runtime: Runtime[TurnContext]) -
         ("user", "用户问题：{question}\n\n真实订单：\n{orders}"),
     ])
     chain = prompt | runtime.context.services.llm
-    full = ""
-    async for chunk in chain.astream({"question": state["user_message"], "orders": order_text}):
-        if chunk.content:
-            full += str(chunk.content)
-            await sink.emit_token(str(chunk.content), step="generate")
-    return {"response": full, "status": "generated"}
+    # 不逐字推 token：这一轮的回答已经以结构化块（answer_blocks）画在界面上了，
+    # 正文只是"查看 Markdown 原文"里的备份。逐字输出只会在卡片下方再刷一遍
+    # 同样的内容，结束再被替换掉。
+    await sink.emit_thinking("🧠 正在生成回答…", step="generate")
+    message = await chain.ainvoke({"question": state["user_message"], "orders": order_text})
+    response = str(getattr(message, "content", "") or "")
+    # 卡片和正文一次给全（和 travel 一样），不再"先画卡片、正文后补"。
+    try:
+        from app.ui.blocks import order_blocks
+
+        blocks = order_blocks(orders, response)
+        if blocks:
+            await sink.emit("answer_blocks", {
+                "agent": "customer_service",
+                "blocks": blocks,
+            }, step="generate")
+    except Exception:
+        pass
+    return {"response": response, "status": "generated"}
 
 
 def build_customer_service_graph(checkpointer: Optional[Any] = None):

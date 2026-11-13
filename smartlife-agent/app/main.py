@@ -11,8 +11,9 @@ SmartLife Agent v2 - Streaming 前端应用
 """
 import streamlit as st
 import json
-import sys
 import os
+import re
+import sys
 import importlib
 import threading
 import time
@@ -33,7 +34,17 @@ from app.identity import ActorContext
 from app.observability import log_exception
 from app.async_runner import SharedAsyncRunner
 from app.stream_response import StreamResponseBuffer
-from app.streaming import deduplicate_process_events, reconcile_tool_events
+from app.streaming import (
+    INTENT_LABELS,
+    find_clarify_event,
+    turn_events_for_storage,
+    RETRIEVAL_LABELS,
+    RETRIEVAL_SCOPE,
+    ROUTE_LABELS,
+    deduplicate_process_events,
+    describe_classification_method,
+    reconcile_tool_events,
+)
 from app.process_timeline import build_process_timeline, infer_active_step
 from app.ui.content import filter_travel_resources, load_orders, load_product, load_product_reviews, load_product_summary, load_product_taxonomy, load_products, load_travel_resources, load_user
 from app.ui.theme import (
@@ -379,19 +390,25 @@ def _run_memory_extraction(scene: str):
 
 
 def render_clarify_card() -> None:
-    """追问卡片：每题 A/B/C 可直接点，D 自己填；一次可以问多个。"""
+    """追问卡片：每题 A/B/C 可直接点，D 自己填；一次可以问多个。
+
+    多选只出现在 ``multi`` 标记的题上（"广东去哪几个城市？"）：答案是集合时
+    单选会强迫用户只报一个城市。其余题保持单选——天数、人数、预算这种题
+    多选本身就是自相矛盾，不会给出多选控件。
+    """
     pending = st.session_state.get("pending_clarify") or {}
     questions = pending.get("questions") or []
     if not questions or st.session_state.get("pending_assistant"):
         return
 
-    from app.services.clarify_questions import compose_answer
+    from app.services.clarify_questions import compose_answer, option_values
 
+    has_multi = any(bool(question.get("multi")) for question in questions)
     with st.container(key="clarify_card"):
         st.markdown(
             '<div class="sl-ask-head">'
             '<span class="sl-ask-kicker">还差几个信息</span>'
-            '<span class="sl-ask-tip">点一个，或自己填</span>'
+            f'<span class="sl-ask-tip">{"有可多选的题，点几个" if has_multi else "点一个"}，或自己填</span>'
             "</div>",
             unsafe_allow_html=True,
         )
@@ -400,7 +417,13 @@ def render_clarify_card() -> None:
         answers = []
         for question in questions:
             key = str(question.get("key") or "")
-            labels = [option["label"] for option in question.get("options") or []]
+            options = question.get("options") or []
+            labels = [option["label"] for option in options]
+            # 点的是"标签"、回给图的是"值"，两者不一定相同：
+            # 「经济型 ¥300/晚」是给人看的，槽位只认"酒店，每晚300元"。
+            # 以前直接把标签当值拼回去，于是"住宿"这题选了也解析不出来，
+            # 卡片一轮一轮地问同一件事。
+            value_of = option_values(question)
             st.markdown(
                 f'<div class="sl-ask-q">{_esc(question.get("title") or "")}</div>',
                 unsafe_allow_html=True,
@@ -464,7 +487,9 @@ def render_clarify_card() -> None:
                     "value": str(value),
                 })
                 continue
-            if labels:
+            # 单选控件只在不是多选题时创建：两套控件同时出现在同一题上，
+            # 用户会看到"点了 A 还能再点 B"的圆点，答案却是单选。
+            if labels and not question.get("multi"):
                 choice = st.radio(
                     question.get("title") or key,
                     labels + [CUSTOM_OPTION_LABEL],
@@ -473,16 +498,51 @@ def render_clarify_card() -> None:
                     label_visibility="collapsed",
                     horizontal=True,
                 )
+            if question.get("multi") and labels:
+                # 答案是集合的题：多选，选几个算几个，顺序即行程顺序。
+                # 自定义输入和选项是叠加关系（选了广州，再自己填"佛山"），
+                # 不是二选一，所以这里不出现"D · 自己填"那一档。
+                picked = st.pills(
+                    question.get("title") or key,
+                    labels,
+                    selection_mode="multi",
+                    default=[],
+                    key=f"clarify_multi_{key}",
+                    label_visibility="collapsed",
+                ) or []
+                typed = st.text_input(
+                    "自己填",
+                    key=f"clarify_custom_{key}",
+                    label_visibility="collapsed",
+                    placeholder="也可以自己填：佛山、东莞（用「、」隔开）",
+                )
+                value = [value_of.get(str(label), str(label)) for label in picked] + [
+                    part.strip()
+                    for part in _MULTI_INPUT_SPLIT.split(str(typed or ""))
+                    if part.strip()
+                ]
+                # 除了药丸的点亮状态，再用一句话说清"现在一共选了哪几个"：
+                # 多选最容易出的事故是漏选一个自己以为选了的城市。
+                hint = str(question.get("hint") or "").strip()
+                summary = (
+                    f"已选 {len(value)} 个：{'、'.join(value)}" if value else "还没选（可多选）"
+                )
+                st.caption(f"{hint}｜{summary}" if hint else summary)
+                answers.append({
+                    "prefix": question.get("answer_prefix") or "",
+                    "value": value,
+                })
+                continue
             value = ""
             if not labels or choice == CUSTOM_OPTION_LABEL:
                 value = st.text_input(
                     "自己填",
                     key=f"clarify_custom_{key}",
                     label_visibility="collapsed",
-                    placeholder="例如：3 天 / 每周二出发",
+                    placeholder="例如：3 天 / 每晚450元",
                 )
             elif choice:
-                value = choice
+                value = value_of.get(str(choice), str(choice))
             answers.append({
                 "prefix": question.get("answer_prefix") or "",
                 "value": value,
@@ -727,16 +787,20 @@ def render_memory_extraction_panel(scene, key_suffix):
 
 
 # ========== 实时流式渲染器 ==========
-def run_streaming_realtime(async_gen_factory, *, postprocess=None):
+def run_streaming_realtime(async_gen_factory, *, postprocess=None, seed_events=None):
     """实时渲染 streaming 事件流。
 
     ``postprocess`` 在正文流结束后、同一助手气泡刷新前执行，可返回追加到步骤区的
     后处理事件。这样 Step 4 会更新到固定的过程区，而不会落到正文下方。
+
+    ``seed_events`` 是上一段事件（追问/等比例打断的那一轮）：续跑时先铺回去，
+    过程区从第 1 步接着显示，而不是每答一次就从零开始、看起来"步骤全没了"。
     """
     try:
         return _run_streaming_impl(
             async_gen_factory,
             postprocess=postprocess,
+            seed_events=seed_events,
         )
     except Exception as e:
         log_exception("ui.streaming", e)
@@ -857,8 +921,9 @@ def _timing_summary_html(events):
 
 
 # 分类卡片的人话映射：显示值不再直接裸露 react / rag_only 这类内部枚举。
-_ROUTE_LABELS = {"react": "单步", "plan_and_execute": "先规划"}
-_RETRIEVAL_LABELS = {"sql_only": "SQL", "rag_only": "RAG", "mixed": "混合", "none": "不检索"}
+# 词表在 app/streaming.py，过程卡片和步骤描述共用同一份，避免两处文案漂移。
+_ROUTE_LABELS = ROUTE_LABELS
+_RETRIEVAL_LABELS = RETRIEVAL_LABELS
 
 # 过程卡片三态：事件里的状态枚举 → (卡片 class, 状态签文案, 签色)。
 # 只有这三态有明显的视觉差：运行中赭色实线、已完成橄榄绿、待执行虚线压暗。
@@ -895,9 +960,29 @@ def _step_counter(step_num, total):
     return f"{number:02d}"
 
 
+# 还没有思考/工具事件时，"正在干什么"按阶段给一句兜底：
+# 过程区不能出现"步骤亮着但一个字都不说在干嘛"的空档。
+_DEFAULT_LIVE_ACTIONS = {
+    1: "正在分类意图、决定检索方式",
+    2: "正在检索商品库与评价库",
+    # 措辞只报"此刻在做什么"：写成"正在生成并校验回答"会盖住真正的阶段动作，
+    # 用户看到的是同一句话反复出现，等于没说。
+    3: "正在生成回答",
+}
+
+
 def _latest_action(events):
-    """流式期间"正在干什么"只有一条：取最新的思考或进行中的工具调用。"""
-    for evt in reversed(events or []):
+    """流式期间"正在干什么"只有一条：取最新的思考或进行中的工具调用。
+
+    只看**最近一次阶段切换之后**的事件：阶段一换，上一段"小模型正在分析…"
+    就已经过期，继续挂着会让过程区一直在说一件已经做完的事。
+    """
+    items = [evt for evt in (events or []) if isinstance(evt, dict)]
+    start = 0
+    for index, evt in enumerate(items):
+        if evt.get("event") == "step":
+            start = index + 1
+    for evt in reversed(items[start:]):
         event_type = evt.get("event")
         data = evt.get("data") or {}
         if event_type == "thinking":
@@ -912,6 +997,85 @@ def _latest_action(events):
     return ""
 
 
+_HIT_TAG_LABELS = {
+    "shopping": "购物",
+    "shopping_weak": "购物弱词",
+    "travel": "旅行",
+    "customer_service": "客服",
+}
+
+
+def _tool_meta_html(data):
+    """工具卡片的"结果"行：命中多少 + 耗时，缺哪样省哪样。"""
+    parts = []
+    output = (data.get("output", "") or "").replace("\n", " ").strip()
+    if output:
+        parts.append(output)
+    elapsed = data.get("elapsed_ms")
+    if isinstance(elapsed, (int, float)):
+        parts.append(f"{elapsed:.0f}ms")
+    if not parts:
+        return ""
+    return f'<br><span class="process-kv">结果</span>{_esc(" · ".join(parts))}'
+
+
+def _keyword_hits_html(data):
+    """命中的关键词：按意图分组摊开，没命中就说"无"。
+
+    只显示证据，不显示结论——结论那一行是"意图 / 检索"。用户问"它凭什么
+    把这句当成购物"时，看的就是这里命中了哪几个词。
+    """
+    hits = data.get("keyword_hits") or {}
+    strength = str(data.get("strength") or "").strip()
+    has_hits = any(bool(words) for words in hits.values())
+    # "未命中"和"命中了但不够定案"要分开说：关键词得分到不了 1.2 的句子里，
+    # 明明命中了两三个词，写"未命中"会让人以为词表没起作用。
+    badge = {
+        "strong": ("强证据 · 直接定案", "hard"),
+        "weak": ("弱证据 · 交小模型", "warn"),
+    }.get(strength)
+    if badge is None and strength == "none":
+        badge = (
+            ("有命中但不够定案 · 交小模型", "muted")
+            if has_hits else ("未命中 · 交小模型", "muted")
+        )
+    lead = (
+        f'<span class="process-kv">命中关键词</span>'
+        f'{_state_tag(badge[0], badge[1])}' if badge else '<span class="process-kv">命中关键词</span>'
+    )
+    tags = []
+    for key, words in hits.items():
+        if not words:
+            continue
+        label = _HIT_TAG_LABELS.get(str(key), str(key))
+        tags.append(
+            f'<span class="sl-tag sl-tag--soft sl-tag--pill">'
+            f'{_esc(label)} {" / ".join(_esc(str(word)) for word in list(words)[:6])}</span>'
+        )
+    if not tags:
+        return f'{lead}<span class="process-none">无（这句没有任何词表命中）</span><br>'
+    return f'{lead}{"".join(tags)}<br>'
+
+
+def _keyword_scores_html(data):
+    """各意图的关键词得分：判定线是 1.2，看不懂分数也能看出差距。"""
+    scores = data.get("keyword_scores") or {}
+    if not isinstance(scores, dict) or not scores:
+        return ""
+    parts = [
+        f"{INTENT_LABELS.get(str(key), str(key))} {float(value):g}"
+        for key, value in scores.items()
+        if isinstance(value, (int, float))
+    ]
+    if not parts:
+        return ""
+    # 把定案线一起写出来：1.0 和 1.2 差多少，用户自己算不出来。
+    return (
+        f'<span class="process-kv">关键词得分</span>'
+        f'{_esc(" · ".join(parts))}（定案线 1.2）<br>'
+    )
+
+
 def _fmt_event_html(evt, live_action=""):
     """把单个过程事件渲染成统一的 HTML 过程卡片。"""
     et = evt.get("event", "")
@@ -921,24 +1085,36 @@ def _fmt_event_html(evt, live_action=""):
     if et == "classify":
         # 四个信号各管一件事（architecture「顶层路由」）：intent 选 Agent、
         # route 选执行范式、retrieval 选数据源、sub_intent 是细标签。
-        # 以前把 route 摆在第一位且不写标签，看着像"Agent 叫 react"。
-        intents = data.get("intents") or []
-        agent = " + ".join(str(item) for item in intents) if intents else data.get("intent", "")
-        agent = agent or "—"
-        route = _ROUTE_LABELS.get(str(data.get("route") or ""), data.get("route") or "—")
-        retr = _RETRIEVAL_LABELS.get(str(data.get("retrieval") or ""), data.get("retrieval") or "—")
+        # 卡片按这四件事分行写，再补两行证据（命中的关键词、各意图分数）
+        # 和一行"凭什么定案"（method）——用户问"为什么走 RAG"时答案在这里。
+        intents = [str(item) for item in (data.get("intents") or [])]
+        if not intents and data.get("intent"):
+            intents = [str(data.get("intent"))]
+        agent = " + ".join(
+            f"{INTENT_LABELS.get(item, item)}({item})" for item in intents
+        ) or "—"
+        route_raw = str(data.get("route") or "")
+        route = _ROUTE_LABELS.get(route_raw, route_raw or "—")
+        retr_raw = str(data.get("retrieval") or "")
+        retr = _RETRIEVAL_LABELS.get(retr_raw, retr_raw or "—")
+        scope = RETRIEVAL_SCOPE.get(retr_raw, "")
+        retr_text = f"{retr} · {scope}" if scope else retr
         sub = data.get("sub_intent", "") or "—"
         conf = data.get("confidence", "") or "—"
         reason = data.get("reason", data.get("reasoning", "")) or "—"
-        method = data.get("method", "") or "—"
+        method = describe_classification_method(data.get("method", ""))
+        hits_html = _keyword_hits_html(data)
+        scores_html = _keyword_scores_html(data)
         return (
             '<div class="process-card completed">'
             '<div class="process-head">'
-            '<span class="process-title">已识别任务意图</span>'
+            '<span class="process-title">意图与检索</span>'
             f'{_state_tag("已完成", "ok")}</div>'
-            f'<div class="process-copy">Agent {_esc(agent)} · 策略 {_esc(route)} · 检索 {_esc(retr)}<br>'
-            f'子意图 {_esc(sub)} · 置信度 {_esc(conf)} · {_esc(method)}<br>'
-            f'{_esc(reason)}</div></div>'
+            f'<div class="process-copy">意图 {_esc(agent)} · 策略 {_esc(route)}<br>'
+            f'检索 {_esc(retr_text)} · 子意图 {_esc(sub)}<br>'
+            f'判定 {_esc(method)} · 置信度 {_esc(conf)}<br>'
+            f'{hits_html}{scores_html}'
+            f'理由 {_esc(reason)}</div></div>'
         )
     if et == "step":
         step_num = data.get("step", 0)
@@ -948,9 +1124,13 @@ def _fmt_event_html(evt, live_action=""):
         source = data.get("source", "")
         state_class, state_label, tone = _process_state(data.get("status", "active"))
         source_label = f" · 来源 {_esc(source)}" if source else ""
+        # 卡片描述已经写着"正在生成 5 天逐日行程（广州）"时，下面再挂一行一样的
+        # "当前动作"就是同一句话出现两次。只在不同的时候才补这一行。
         live_html = (
             f'<div class="process-live">{_esc(live_action)}</div>'
-            if live_action and state_class == "active"
+            if live_action
+            and state_class == "active"
+            and live_action.strip() != str(desc or "").strip()
             else ""
         )
         return (
@@ -977,23 +1157,26 @@ def _fmt_event_html(evt, live_action=""):
         if tn == "nl2sql":
             short_sql = ti if len(ti) <= 160 else ti[:160] + "…"
             action = "结构化查询已完成" if is_completed else "正在执行结构化查询"
+            meta = _tool_meta_html(data)
+            sql_html = f"<br><code>{_esc(short_sql)}</code>" if short_sql else ""
             return (
                 f'<div class="process-card {state_class}">'
                 '<div class="process-head">'
-                '<span class="process-title">商品数据检索</span>'
+                '<span class="process-title">商品数据检索（NL2SQL）</span>'
                 f'{tag}</div>'
-                f'<div class="process-copy">{action}<br><code>{_esc(short_sql)}</code>'
-                f'{output_html}</div></div>'
+                f'<div class="process-copy">{action}{sql_html}'
+                f'{meta or output_html}</div></div>'
             )
         if tn == "rag":
             action = "检索已完成" if is_completed else "正在检索"
+            meta = _tool_meta_html(data)
             return (
                 f'<div class="process-card {state_class}">'
                 '<div class="process-head">'
-                '<span class="process-title">评价与攻略检索</span>'
+                '<span class="process-title">评价与攻略检索（RAG）</span>'
                 f'{tag}</div>'
-                f'<div class="process-copy">{action} · {_esc(ti)}'
-                f'{output_html}</div></div>'
+                f'<div class="process-copy">{action}<br>{_esc(ti)}'
+                f'{meta or output_html}</div></div>'
             )
         return (
             f'<div class="process-card {state_class}">'
@@ -1024,6 +1207,27 @@ def _fmt_event_html(evt, live_action=""):
     return ""
 
 
+_OPEN_STEP_STATES = {"active", "running", "in_progress"}
+
+
+def _settle_open_steps(events):
+    """把"进行中"的步骤收成"已完成"。
+
+    只用在收尾（`include_transient=False`）这条路径上：那一轮已经结束，
+    停在中断处的阶段不存在"还在跑"。流式期间照旧保留真实状态。
+    """
+    settled = []
+    for evt in events or []:
+        if evt.get("event") != "step":
+            settled.append(evt)
+            continue
+        data = dict(evt.get("data") or {})
+        if str(data.get("status") or "").strip().lower() in _OPEN_STEP_STATES:
+            data["status"] = "completed"
+        settled.append({**evt, "data": data})
+    return settled
+
+
 def _persistent_events(events):
     """running/thinking 是瞬态状态，不进入已生成消息的永久过程记录。"""
     return deduplicate_process_events([
@@ -1046,8 +1250,18 @@ def _process_events_html(events, include_transient=False, active_step=None, coll
         ),
         active_step=normalized_active_step,
     )
+    if not include_transient:
+        # 收尾后的过程记录里不该再有"进行中"：这一轮已经结束了。阶段在中断处
+        # 停下（追问、等预算比例）时，它开始那条 active 事件会留在事件流里，
+        # 于是"跑完了 01 还写着进行中"——看起来像卡住，其实只是没人给它收尾。
+        source_events = _settle_open_steps(source_events)
     # 「当前动作」只挂在唯一的运行中卡片上，且只在流式期间显示。
-    live_action = _latest_action(events) if include_transient else ""
+    # 没等到思考/工具事件时用阶段兜底文案，避免卡片亮着却不说在干什么。
+    live_action = ""
+    if include_transient:
+        live_action = _latest_action(events) or _DEFAULT_LIVE_ACTIONS.get(
+            normalized_active_step, ""
+        )
     live_rendered = False
     cards = []
     for evt in source_events:
@@ -1140,11 +1354,15 @@ def _plan_lead_html(payload):
     )
 
 
-def render_assistant_message(msg, key: str = "assistant"):
-    """渲染一条助手消息：面板 > 回答块 > Markdown 原文，三层兜底。"""
+def render_assistant_message(msg, key: str = "assistant", *, collapsed: bool = True):
+    """渲染一条助手消息：面板 > 回答块 > Markdown 原文，三层兜底。
+
+    ``collapsed`` 只对"运行过程"生效：最近一轮展开（用户要看过程），
+    更早的轮次折叠成一行，正文优先。
+    """
     if isinstance(msg.get("process_events"), list) or "response" in msg:
         events = msg.get("process_events", [])
-        render_process_events(events, include_transient=False, collapsed=True)
+        render_process_events(events, include_transient=False, collapsed=collapsed)
         payload = _plan_payload(events)
         resp = msg.get("response", "")
         if payload:
@@ -1221,10 +1439,10 @@ def _is_revision_signal(evt):
     )
 
 
-def _run_streaming_impl(async_gen_factory, *, postprocess=None):
+def _run_streaming_impl(async_gen_factory, *, postprocess=None, seed_events=None):
     """后台消费 SSE，主 UI 在两个固定容器内分别更新步骤和正文。"""
     event_q = thread_queue.Queue()
-    all_events = []
+    all_events = list(seed_events or [])
     response_buffer = StreamResponseBuffer()
     stop_event = threading.Event()
 
@@ -1267,13 +1485,13 @@ def _run_streaming_impl(async_gen_factory, *, postprocess=None):
     response_container = st.empty()
     structured_seen = False
     hint_html = _writing_hint_html("answer_blocks")
-    rendered_active_step = 1
+    rendered_active_step = infer_active_step(all_events) if all_events else 1
     last_response_render = 0.0
     _render_process_panel(
         process_panel,
-        [],
+        all_events,
         include_transient=True,
-        active_step=1,
+        active_step=rendered_active_step,
     )
 
     try:
@@ -1417,6 +1635,9 @@ def _current_thread_id() -> str:
 THREAD_TITLE_CHARS = 24
 # 最近会话全量显示，列表自己滚，不再折叠
 CUSTOM_OPTION_LABEL = "D · 自己填"
+# 多选题的"自己填"里可能一次写好几个城市：顿号/逗号/分号/空格都算分隔符，
+# 顺序保留，去掉空项，其余原样交给槽位解析（别在这里猜哪个是城市）。
+_MULTI_INPUT_SPLIT = re.compile(r"[、,，;；/|\s]+")
 
 
 def _clip_thread_title(text: str, limit: int = THREAD_TITLE_CHARS) -> str:
@@ -1515,19 +1736,12 @@ def _start_new_thread() -> None:
         st.session_state.pop(stale_key, None)
 
 
-MAX_TURN_EVENT_BYTES = 256 * 1024
-
-
 def _turn_events_for_storage(events):
-    """历史回看只需要能撑起面板的事件；超量时退化成只留方案事件。"""
-    if not events:
-        return []
-    try:
-        if len(json.dumps(events, ensure_ascii=False)) <= MAX_TURN_EVENT_BYTES:
-            return list(events)
-    except (TypeError, ValueError):
-        pass
-    return [dict(evt) for evt in events if evt.get("event") == "plan_result"]
+    """历史回看只需要能撑起面板的事件：先摘掉 token/thinking，再看体积。
+
+    实现放在 `app/streaming.py`（事件整理的家），这里只做转调。
+    """
+    return turn_events_for_storage(events)
 
 
 def _annotate_last_assistant(thread_id: str, metadata: dict) -> bool:
@@ -1585,6 +1799,64 @@ def _persist_clarify_question(thread_id: str, text: str) -> None:
         log_exception("ui.persist_clarify_question", exc)
 
 
+def _append_assistant_message(response: str, events, *, pending: bool) -> None:
+    """把这一轮的助手消息接到对话区；同一条内容不写两遍。
+
+    追问那一轮的消息只有一句问题，续跑结束后又是同一句问题（比如空回答再问一次），
+    两次都 append 就会看到"追问在最后又输出了一遍"。
+    """
+    messages = st.session_state["assistant_msgs"]
+    text = str(response or "").strip()
+    if not text and not events:
+        return
+    if (
+        messages
+        and messages[-1].get("role") != "user"
+        and str(messages[-1].get("response") or "").strip() == text
+        and not events
+    ):
+        # 与上一条完全一样、又没有新的事件：不重复输出
+        return
+    messages.append({
+        "role": "assistant",
+        "response": response,
+        "process_events": events,
+        # 被 interrupt 截住的那一轮：续跑会把这段事件接过去，
+        # 这条消息上的副本要摘掉，否则同一份过程会出现两次。
+        "clarify_pending": pending,
+    })
+
+
+def _take_clarify_events(pending, messages=None) -> list:
+    """把上一段（追问/等比例打断的）事件交给续跑，并从那条追问消息上摘掉。
+
+    不摘的话，同一段过程会在界面上出现两次：追问消息里一份、续跑的助手消息里
+    又一份。事件归到"这一轮"的最后一条助手消息上，历史里也只留一份。
+    """
+    if not isinstance(pending, dict):
+        return []
+    events = list(pending.get("events") or [])
+    if not events:
+        return []
+    question = str(pending.get("question") or "").strip()
+    if messages is None:
+        messages = st.session_state.get("assistant_msgs") or []
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            continue
+        if msg.get("process_events") is None:
+            continue
+        # 优先认标记（新消息都带）；老会话没有标记时才退回文本比对
+        flagged = bool(msg.get("clarify_pending"))
+        same_text = bool(question) and str(msg.get("response") or "").strip() == question
+        if not flagged and not same_text:
+            continue
+        msg.pop("process_events", None)
+        msg.pop("clarify_pending", None)
+        break
+    return events
+
+
 def _persist_turn_events(events) -> None:
     """把本轮事件补进助手消息：切回该会话时结构化面板才在。"""
     if not events:
@@ -1627,6 +1899,14 @@ def _activate_thread(thread_id: str) -> None:
         if role == "user":
             restored.append({"role": "user", "content": content})
         elif role == "assistant":
+            # 同一条助手消息在库里可能被写过两次（追问补记 + 续跑再问一次）：
+            # 还原时只留一条，否则历史里会出现"追问输出两遍"。
+            if (
+                restored
+                and restored[-1].get("role") == "assistant"
+                and str(restored[-1].get("response") or "").strip() == content
+            ):
+                continue
             events = (row.get("metadata") or {}).get("process_events")
             restored.append({
                 "role": "assistant",
@@ -1772,12 +2052,24 @@ def render_assistant_page():
         if not st.session_state["assistant_msgs"] and not pending_message:
             st.markdown(EMPTY_STATE_HTML, unsafe_allow_html=True)
 
-        for index, msg in enumerate(st.session_state["assistant_msgs"]):
+        messages = st.session_state["assistant_msgs"]
+        last_assistant = max(
+            (index for index, msg in enumerate(messages) if msg.get("role") != "user"),
+            default=-1,
+        )
+        # 还在等用户回答（追问卡片在屏幕上）时，最近一轮的过程区要摊开，
+        # 用户才能看见"刚才跑到哪一步"；回答完就收起成一行，正文优先。
+        open_process = bool(st.session_state.get("pending_clarify"))
+        for index, msg in enumerate(messages):
             if msg.get("role") == "user":
                 st.markdown(user_bubble_html(msg.get("content", "")), unsafe_allow_html=True)
             else:
                 with st.chat_message("assistant"):
-                    render_assistant_message(msg, key=f"answer_{index}")
+                    render_assistant_message(
+                        msg,
+                        key=f"answer_{index}",
+                        collapsed=not (open_process and index == last_assistant),
+                    )
 
         # 追问还没答完时，这一屏只该有追问卡片：记忆入口和"事件未入库"这类
         # 内部提示都是噪声，而且追问轮本来就没有助手正文可挂事件。
@@ -1801,6 +2093,7 @@ def render_assistant_page():
                 browser_session_id = st.session_state["browser_session_id"]
                 # 上一轮被"缺少核心信息"中断时，这一句是补充答案，要走恢复而不是新开一轮。
                 resuming = st.session_state.pop("pending_clarify", None)
+                seed_events = _take_clarify_events(resuming)
                 if orch and resuming:
                     async def _gen():
                         async for line in orch.resume_streaming(
@@ -1823,22 +2116,28 @@ def render_assistant_page():
                 clarify = None
                 if orch:
                     # 记忆不再在回答后自动判断：提取由对话区的按钮按需触发。
-                    response, events = run_streaming_realtime(_gen)
-                    clarify = next(
-                        (event for event in events if event.get("event") == "clarify"),
-                        None,
+                    response, events = run_streaming_realtime(
+                        _gen, seed_events=seed_events
                     )
+                    # 只在这一段**新产生**的事件里找中断：`events` 前面还铺着上一段
+                    # 的事件，里面本来就有那条旧的 `clarify`。在整份列表里找，
+                    # 每次续跑都会把上次的追问当成"这次又问了"——于是同一句追问
+                    # 被重复输出、追问卡片赖着不走、过程区永远停在展开状态。
+                    clarify = find_clarify_event(events, since=len(seed_events))
                     if clarify:
                         data = clarify.get("data", {}) or {}
-                        st.session_state["pending_clarify"] = {
-                            "thread_id": data.get("thread_id", ""),
-                            "missing": data.get("missing", []),
-                            "questions": data.get("questions", []),
-                        }
                         response = (
                             data.get("question")
                             or "还需要补充一些信息才能继续，请直接回复缺失的内容。"
                         )
+                        st.session_state["pending_clarify"] = {
+                            "thread_id": data.get("thread_id", ""),
+                            "missing": data.get("missing", []),
+                            "questions": data.get("questions", []),
+                            # 本轮跑到哪儿被打断：续跑时要接着显示，不能清空重来。
+                            "events": list(events),
+                            "question": response,
+                        }
                         # 追问轮被 interrupt 截住，finalize 不跑，图不会写这条助手
                         # 消息；旧消息迁移现在只补一次，不在这里补就会丢问题本身。
                         _persist_clarify_question(
@@ -1853,11 +2152,10 @@ def render_assistant_page():
                 st.session_state.pop("turn_persist_error", None)
             else:
                 _persist_turn_events(events)
-            st.session_state["assistant_msgs"].append({
-                "role": "assistant",
-                "response": response,
-                "process_events": events,
-            })
+                # 这一轮没有中断就跑完了：上一轮留下的追问状态必须清掉，
+                # 否则追问卡片会跟着已经完成的回答一起停在页面上。
+                st.session_state.pop("pending_clarify", None)
+            _append_assistant_message(response, events, pending=bool(clarify))
             st.rerun()
 
     # 放进 st.bottom：输入框仍固定在底部，但 Streamlit 不再把首屏滚到最底

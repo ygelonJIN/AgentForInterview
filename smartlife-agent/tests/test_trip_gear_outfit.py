@@ -65,7 +65,11 @@ def test_outfit_and_estimates_survive_the_clarify_interrupts():
     ))
     assert first["__interrupt__"][0].value["type"] == "trip_gear_clarify"
 
-    second = asyncio.run(graph.ainvoke(Command(resume="出发日期：明天"), config, context=ctx))
+    # 住宿现在是必问项：给了"酒店 300/晚"，住宿估算才能回到 6 晚 × 300
+    second = asyncio.run(graph.ainvoke(
+        Command(resume="出发日期：明天；住宿：酒店，每晚300元"),
+        config, context=ctx,
+    ))
     question = second["__interrupt__"][0].value["questions"][0]
     assert question["type"] == "slider"
     assert question["budget"] == 5000

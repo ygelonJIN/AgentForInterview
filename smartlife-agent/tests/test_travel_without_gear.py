@@ -20,6 +20,12 @@ def test_gear_items_tolerates_missing_key():
     assert _gear_items({}) == []
 
 
+# 出发地/交通/住宿现在是必问项：一次给全，才走得到规划那一步。
+_TRAVEL_REQUEST = (
+    "去杭州玩两天，一个人，明天出发，从上海出发，坐高铁，住酒店每晚300元"
+)
+
+
 def _run_travel(message: str):
     events = []
     graph = build_travel_graph()
@@ -37,7 +43,7 @@ def _run_travel(message: str):
 
 
 def test_travel_plan_runs_without_a_gear_key():
-    state, events = _run_travel("去杭州玩两天，一个人，明天出发")
+    state, events = _run_travel(_TRAVEL_REQUEST)
 
     assert state["status"] == "ok"
     plan = [event for event in events if event.get("event") == "plan_result"][-1]["data"]
@@ -46,14 +52,20 @@ def test_travel_plan_runs_without_a_gear_key():
 
 
 def test_travel_progress_reports_four_steps_and_no_gear_copy():
-    _state, events = _run_travel("去杭州玩两天，一个人，明天出发")
+    _state, events = _run_travel(_TRAVEL_REQUEST)
 
     steps = [
         (event["data"]["step"], event["data"]["total"], event["data"]["description"])
         for event in events
         if event.get("event") == "step"
     ]
-    assert [(step, total) for step, total, _ in steps] == [(1, 4), (2, 4), (3, 4), (4, 4)]
+    # 每个阶段会发两条 step：开始时 active（带具体动作）、结束时 completed。
+    # 这里只关心"跑了哪几步、编号对不对"，按首次出现顺序去重。
+    order = []
+    for step, total, _ in steps:
+        if (step, total) not in order:
+            order.append((step, total))
+    assert order == [(1, 4), (2, 4), (3, 4), (4, 4)]
     assert not any("装备建议" in text for _, _, text in steps)
 
 

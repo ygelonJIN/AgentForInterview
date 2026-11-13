@@ -45,6 +45,9 @@ _ORIGIN_BARE_DEPART = re.compile(r"([\u4e00-\u9fa5]{2,6}?)\s*出发")
 _ORIGIN_BARE_HEAD = re.compile(r"^\s*([\u4e00-\u9fa5]{2,6})\s*[，,、；;]\s*(?:去|到|飞|前往|回到)")
 # "上海到广州"：没有"从"也要认出起点
 _ORIGIN_TO = re.compile(r"(?:^|[，。；;、\s])\s*([\u4e00-\u9fa5]{2,6}?)\s*(?:到|至)\s*[\u4e00-\u9fa5]{2,6}")
+# 追问卡片拼出来的写法："出发地：上海"。没有介词、也没有"出发"二字，
+# 上面几条都不认，于是用户在卡片里点了出发城市、系统还是说"没给出发地"。
+_ORIGIN_LABEL = re.compile(r"(?:出发地|出发城市|起点)\s*[：:]?\s*([\u4e00-\u9fa5]{2,6})")
 _ORIGIN_SUBJECTS = ("我", "我们", "本人", "咱", "俺", "他", "她", "住", "住在")
 _LEADING_PARTICLES = re.compile(r"^(?:并|和|再|然后|顺便|规划|安排|去|到|在|回)+")
 
@@ -158,6 +161,11 @@ _LODGING_RATE = re.compile(
 )
 
 _CAMP_WORDS = ("露营", "营地", "扎营", "帐篷过夜")
+# 追问卡"住宿"那一题自己填的写法：「住宿：450」「住宿 450 元」。
+# 有金额没类型时按酒店算，金额进 lodging_budget（范围由 parse_lodging_budget 把）。
+_LODGING_BUDGET_LABEL = re.compile(
+    r"(?:住宿|房费)\s*[：:]?\s*(?P<num>\d{2,5})\s*(?:元|块)?(?!\s*(?:一晚|每晚))"
+)
 _HOTEL_WORDS = ("酒店", "民宿", "青旅", "宾馆", "客栈", "住店")
 _KID_WORDS = ("孩子", "小孩", "儿童", "宝宝", "亲子", "带娃", "带孩", "小朋友")
 _FLIGHT_WORDS = ("飞机", "航班", "机票", "飞过去")
@@ -319,7 +327,10 @@ def _verb_destination(source: str, pattern, skip_origin: bool) -> str:
 
 def parse_destination(text: str) -> str:
     """先按"去 X"抓，再按"X 两天"抓，最后查地名表。"""
-    source = str(text or "")
+    # 显式标了"出发地：上海"的城市不能当地名兜底捡走：追问卡把出发地和目的地
+    # 拼在同一句里（"出发地：上海；住宿：…"），兜底扫描会返回上海，于是整趟
+    # 行程变成"从上海去上海"。
+    source = _ORIGIN_LABEL.sub("", str(text or ""))
 
     # 强动词（去/到/回/飞）优先于"在"：一句话里同时出现起点和终点时，
     # "去上海"必须赢过"在广东"。
@@ -330,9 +341,17 @@ def parse_destination(text: str) -> str:
     if found:
         return found
 
-    for place in sorted(lexicon.PLACES, key=len, reverse=True):
-        if place in source:
-            return place
+    # 地名表兜底：取**文字里最先出现**的那个地名。
+    # 以前按"名字长优先"迭代、命中即返回，命中顺序跟词表顺序有关：
+    # 追问卡多选拼出来的"目的地：成都、杭州"会返回杭州，第一站就变成了
+    # 用户没排在第一个的城市。多城顺序是行程顺序，必须按出现顺序来。
+    placed = [
+        (source.find(place), -len(place), place)
+        for place in lexicon.PLACES
+        if place in source
+    ]
+    if placed:
+        return sorted(placed)[0][2]
 
     # 地名表没覆盖时，用"X 两天"兜底；先剪掉"并规划""再去"这类前缀
     for match in _PLACE_BEFORE_DURATION.finditer(source):
@@ -351,6 +370,12 @@ def parse_origin(text: str) -> str:
     起点当终点。
     """
     source = str(text or "")
+    # 卡片答案的显式写法排最前：它不可能有歧义，不需要和"我在/从…出发"抢。
+    match = _ORIGIN_LABEL.search(source)
+    if match:
+        candidate = _trim_destination(match.group(1))
+        if _valid_destination(candidate):
+            return candidate
     for pattern in (_ORIGIN_IN, _ORIGIN_FROM, _ORIGIN_DEPART, _ORIGIN_TO):
         for match in pattern.finditer(source):
             candidate = _trim_destination(match.group(1))
@@ -551,6 +576,9 @@ def _nearest_cue(before: str):
 # 金额紧挨着"一晚/每晚"时，它是房价不是整趟预算。
 _LODGING_AFTER = re.compile(r"^\s*(?:元|块)?\s*(?:左右|上下|以内|以下)?[^，。；;\n]{0,2}?(?:一晚|每晚)")
 _LODGING_BEFORE = re.compile(r"(?:每晚|一晚|一晚上|每夜)[^，。；;\n]{0,4}$")
+# 追问卡"住宿：450"这种写法：金额紧跟"住宿"标签，是每晚预算，不是整趟预算。
+# 只认"住宿"后面直接跟金额（可带冒号），"住宿预算3000"仍按整趟预算理解。
+_LODGING_LABEL_BEFORE = re.compile(r"(?:住宿|房费)\s*[：:]?\s*$")
 
 
 def _kind_of(source: str, start: int, end: int) -> str:
@@ -558,7 +586,11 @@ def _kind_of(source: str, start: int, end: int) -> str:
     after = source[end:end + 12]
     tail = before[-10:]
 
-    if _LODGING_AFTER.match(after) or _LODGING_BEFORE.search(before[-8:]):
+    if (
+        _LODGING_AFTER.match(after)
+        or _LODGING_BEFORE.search(before[-8:])
+        or _LODGING_LABEL_BEFORE.search(before[-8:])
+    ):
         return "lodging"
 
     cue, cue_end, kind = _nearest_cue(before)
@@ -782,6 +814,10 @@ def parse_lodging(text: str) -> str:
         position = source.find(word)
         if position >= 0 and not _negated_before(source, position):
             return "hotel"
+    # 追问卡里"住宿：450"这种写法：只给了每晚预算，没说类型——按酒店算。
+    # 露营在上面已经先命中，所以这里不会把露营读成酒店。
+    if _LODGING_BUDGET_LABEL.search(source):
+        return "hotel"
     return ""
 
 
@@ -948,8 +984,9 @@ def parse_visits(text: str) -> List[Dict[str, Any]]:
 
 
 def parse_lodging_budget(text: str) -> Optional[float]:
-    """每晚住宿预算：只认"一晚/每晚 + 金额"的写法，取值范围 50~3000。"""
-    match = _LODGING_RATE.search(str(text or ""))
+    """每晚住宿预算：认"一晚/每晚 + 金额"，也认追问卡的"住宿：450"。"""
+    source = str(text or "")
+    match = _LODGING_RATE.search(source) or _LODGING_BUDGET_LABEL.search(source)
     if not match:
         return None
     try:

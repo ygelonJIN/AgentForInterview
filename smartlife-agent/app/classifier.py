@@ -14,7 +14,7 @@
 }
 """
 import json
-from app.streaming import EventType
+from app.streaming import INTENT_LABELS, EventType
 import re
 from typing import Dict, Any, List, Literal, Optional
 from pydantic import BaseModel, Field, model_validator
@@ -293,6 +293,46 @@ def _keyword_classify(message: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def keyword_display(message: str) -> Dict[str, Any]:
+    """关键词层的全部证据，只用于展示，不参与调用链的任何判定。
+
+    以前界面上只有一句"关键词匹配 (3 个关键词命中)"：用户既看不到命中了
+    哪几个词，也不知道"够不够硬、为什么没走模型"。这里把命中的词、各意图
+    分数、以及"是否达到定案线"一起带出去，过程卡片直接摊开。
+    """
+    signal = signals.score_intents(message)
+    hits = {
+        intent: list(words)
+        for intent, words in (signal.hits or {}).items()
+        if words
+    }
+    weak = list(signal.weak_hits.get("shopping") or [])
+    if weak:
+        hits["shopping_weak"] = weak
+    return {
+        "keyword_hits": hits,
+        "keyword_scores": {
+            key: float(value) for key, value in (signal.scores or {}).items()
+        },
+        "keyword_ready": {
+            "shopping": bool(signal.shopping_ready),
+            "travel": bool(signal.travel_ready),
+            "customer_service": bool(signal.service_ready),
+        },
+    }
+
+
+def hits_brief(display: Dict[str, Any]) -> str:
+    """把证据压成一句人话：``购物 跑鞋/推荐 · 旅行 杭州``。"""
+    parts: List[str] = []
+    for intent, words in (display.get("keyword_hits") or {}).items():
+        if not words:
+            continue
+        label = "购物弱词" if intent == "shopping_weak" else INTENT_LABELS.get(intent, intent)
+        parts.append(f"{label} {'/'.join(str(word) for word in words[:6])}")
+    return " · ".join(parts)
+
+
 def _keyword_hint(evidence: Optional[Dict[str, Any]]) -> str:
     """弱证据作为线索送进小模型 prompt；没有证据时明确写"无"。"""
     if not evidence:
@@ -445,6 +485,49 @@ class UnifiedClassifier:
         if self._arbiter_chain is None:
             self._arbiter_chain = _CLASSIFY_ARBITER_PROMPT | self.arbiter_llm
         return self._arbiter_chain
+
+    @staticmethod
+    async def _emit_classify_step(
+        queue: Any,
+        *,
+        method: str,
+        result: "ClassificationResult",
+        display: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """把"这一步到底怎么判的"回写到过程卡片的第 1 阶段描述。
+
+        第 1 阶段一开始的文案是通用流程（"关键词层 → 小模型 → 仲裁"），
+        真正定案的方法要等分类结束才知道。不回写的话，关键词直通的轮次
+        也会显示"小模型分析"，界面在解释一件没发生的事。
+        """
+        from app.streaming import (
+            INTENT_LABELS,
+            RETRIEVAL_LABELS,
+            RETRIEVAL_SCOPE,
+            describe_classification_method,
+        )
+
+        intents = result.effective_intents or [result.intent]
+        labels = " + ".join(INTENT_LABELS.get(str(item), str(item)) for item in intents)
+        retrieval = str(result.retrieval or "")
+        scope = RETRIEVAL_SCOPE.get(retrieval, "")
+        hit_count = sum(
+            len(words) for words in ((display or {}).get("keyword_hits") or {}).values()
+        )
+        description = (
+            f"{describe_classification_method(method)} · 意图 {labels} · "
+            f"检索 {RETRIEVAL_LABELS.get(retrieval, retrieval or '——')}"
+            f"{f'（{scope}）' if scope else ''} · 关键词命中 {hit_count} 个"
+        )
+        try:
+            await queue.emit(EventType.STEP, {
+                "step": 1, "total": 4,
+                "name": "统一分类",
+                "description": description,
+                "status": "completed",
+            }, step="classify")
+        except Exception:
+            pass
 
     @staticmethod
     def _format_context(history: Optional[List[Dict[str, Any]]]) -> str:
@@ -950,15 +1033,37 @@ class UnifiedClassifier:
         # 第一层：只对当前消息做关键词判断，历史仅提供给模型上下文。
         # 只有强证据才短路；弱证据带进第二层当线索，模型可以推翻。
         evidence = _keyword_evidence(message)
+        # 关键词证据无论够不够硬都要摊在界面上：用户问"为什么选了这条链路"，
+        # 答案在这里，不在模型理由里。
+        display = keyword_display(message)
+        brief = hits_brief(display)
         if evidence and evidence.get("strength") == "strong":
+            await queue.emit_thinking(
+                f"关键词层直通（强证据）：{brief}；本轮不调分类模型",
+                step="classify",
+            )
+            keyword_result = _keyword_result(evidence)
+            # 先回写步骤描述，再发分类结论：`classify` 事件是这一阶段的收尾，
+            # 之后不该再冒出一条阶段事件。
+            await self._emit_classify_step(
+                queue, method="keyword", result=keyword_result, display=display
+            )
             await queue.emit(EventType.CLASSIFY, {
                 **evidence,
+                **display,
                 "method": "keyword"
             }, step="classify")
-            return _keyword_result(evidence)
+            return keyword_result
 
         context_fallback = self._context_fallback(message, previous)
         if context_fallback:
+            await queue.emit_thinking(
+                f"关键词层未定案（{brief or '无命中'}），沿用上一轮意图",
+                step="classify",
+            )
+            await self._emit_classify_step(
+                queue, method="context", result=context_fallback, display=display
+            )
             await queue.emit(EventType.CLASSIFY, {
                 "route": context_fallback.route,
                 "intent": context_fallback.intent,
@@ -967,11 +1072,15 @@ class UnifiedClassifier:
                 "confidence": context_fallback.confidence,
                 "reason": context_fallback.reason,
                 "method": "context",
+                **display,
             }, step="classify")
             return context_fallback
 
         # 第二层：小模型流式判断。
-        await queue.emit_thinking("🧠 小模型正在分析您的需求...", step="classify")
+        await queue.emit_thinking(
+            f"🧠 小模型正在分析您的需求...（关键词层：{brief or '无命中'}）",
+            step="classify",
+        )
 
         candidate: Optional[ClassificationResult] = None
         try:
@@ -1046,6 +1155,8 @@ class UnifiedClassifier:
                 "confidence": result.confidence,
                 "reason": result.reason,
                 "method": method,
+                "strength": "weak" if evidence else "none",
+                **display,
             }
             if len(result.effective_intents) > 1:
                 classification_payload.update({
@@ -1053,6 +1164,9 @@ class UnifiedClassifier:
                     "intent_scores": result.intent_scores,
                     "primary_intent": result.intent,
                 })
+            await self._emit_classify_step(
+                queue, method=method, result=result, display=display
+            )
             await queue.emit(EventType.CLASSIFY, classification_payload, step="classify")
 
             return result

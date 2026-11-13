@@ -47,7 +47,10 @@ def test_purchase_history_marks_gear_as_owned():
     graph = build_trip_gear_graph(checkpointer=InMemorySaver())
     config = {"configurable": {"thread_id": "purchases"}}
     payload = {
-        "user_message": "周末两个人去莫干山露营，一个人，明天出发，预算3000",
+        "user_message": (
+            "周末两个人去莫干山露营，一个人，明天出发，预算3000，"
+            "从上海出发，坐高铁"
+        ),
         "user_id": "user_001",
         "thread_id": "purchases",
     }

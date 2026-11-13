@@ -191,6 +191,11 @@ def test_shop_node_uses_model_choice_and_keeps_budget():
         config = {"configurable": {"thread_id": "t"}}
         payload = {"user_message": "周末两个人去莫干山露营，预算3000", "user_id": "u1", "thread_id": "t"}
         state = await graph.ainvoke(payload, config, context=ctx)
+        # 露营行程还缺出发地/交通，先补上再谈预算分配。
+        if (state.get("__interrupt__") or [{}])[0].value.get("type") == "trip_gear_clarify":
+            state = await graph.ainvoke(
+                Command(resume="出发地：上海；交通：自驾"), config, context=ctx
+            )
         # 有预算会先停在"预算怎么分"，测试里当作已选各半。
         if (state.get("__interrupt__") or [{}])[0].value.get("type") == "trip_gear_budget_split":
             state = await graph.ainvoke(Command(resume="装备 3000 元"), config, context=ctx)

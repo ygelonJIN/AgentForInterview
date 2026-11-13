@@ -13,11 +13,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from app.trip_gear.gear import OPTIONAL
 from app.trip_gear.itinerary import lodging_cost_for
-from app.trip_gear.models import DayPlan, GearItem, Itinerary, TripFacts
+from app.trip_gear.models import DayPlan, GearItem, Itinerary, ItineraryItem, TripFacts
 
 # 即使预算超了也不能通过"省略"消失的装备：安全、合规与行程成立的前提。
 PROTECTED_SKIP = {
@@ -178,13 +178,47 @@ def _lodging_swap_action(
     )
 
 
-def _soften_action(itinerary: Itinerary) -> Optional[RepairAction]:
-    """砍掉最贵的一项收费活动：不花钱、不推翻住宿，只是少玩一个项目。"""
+# 大交通不是"可选活动"：砍掉去程机票不会让人少玩一个项目，只会让预算凭空少一截，
+# 面板上就出现"只算了返程机票"。这类条目永远不进修复候选。
+_TRANSPORT_HINTS = (
+    "机票", "航班", "飞机", "高铁", "动车", "火车", "城际", "自驾",
+    "往返", "去程", "返程", "机场", "车站",
+)
+
+
+def _is_transport_item(item: ItineraryItem) -> bool:
+    text = str(item.activity or "")
+    return any(hint in text for hint in _TRANSPORT_HINTS)
+
+
+def _booked_activities(facts: Optional[TripFacts]) -> Tuple[str, ...]:
+    """用户已经买票/约好的活动：删它等于替用户退票，同样不能当修复候选。"""
+    if facts is None:
+        return ()
+    return tuple(
+        str(event.title).strip()
+        for event in (facts.fixed_events or [])
+        if event.status == "booked" and str(event.title or "").strip()
+    )
+
+
+def _soften_action(
+    itinerary: Itinerary,
+    facts: Optional[TripFacts] = None,
+) -> Optional[RepairAction]:
+    """砍掉最贵的一项收费活动：不花钱、不推翻住宿，只是少玩一个项目。
+
+    只动"可调整的活动"：大交通与已订票的活动都不算。前者是必需花费，
+    后者是用户已经付过的钱——两样都不是"少玩一个项目"。
+    """
+    booked = _booked_activities(facts)
     candidates = [
         (day, item)
         for day in itinerary.days
         for item in day.items
         if float(item.cost or 0) >= MIN_ACTIVITY_COST
+        and not _is_transport_item(item)
+        and not any(title in str(item.activity or "") for title in booked)
     ]
     if not candidates:
         return None
@@ -235,7 +269,7 @@ def repair_candidates(
         if swap:
             actions.append(swap)
     if itinerary is not None:
-        soften = _soften_action(itinerary)
+        soften = _soften_action(itinerary, facts)
         if soften:
             actions.append(soften)
 

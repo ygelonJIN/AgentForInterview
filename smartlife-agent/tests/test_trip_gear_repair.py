@@ -166,3 +166,61 @@ class TestItineraryCost:
         assert lodging_cost_for("camp", 2, 2) == pytest.approx(200.0)
         assert lodging_cost_for("hotel", 1, 1) == pytest.approx(400.0)
         assert lodging_cost_for("", 2, 2) == 0.0
+
+
+def _flight_itinerary() -> Itinerary:
+    """模型把大交通写成当天条目：去程第 1 天、返程最后一天。"""
+    return Itinerary(
+        destination="广州",
+        days=[
+            DayPlan(day=1, items=[
+                ItineraryItem(time="08:00", activity="机票 上海→广州（2 人）", cost=1600),
+                ItineraryItem(time="14:00", activity="逛北京路", cost=0),
+            ]),
+            DayPlan(day=2, items=[
+                ItineraryItem(time="10:00", activity="长隆乐园", cost=600),
+            ]),
+            DayPlan(day=3, items=[
+                ItineraryItem(time="18:00", activity="机票 广州→上海（2 人）", cost=1600),
+            ]),
+        ],
+    )
+
+
+def test_transport_is_never_cut_to_fit_the_budget():
+    """大交通不是"可选活动"：砍掉去程机票只会让预算凭空少一截。
+
+    回归背景：修复动作挑"最贵的收费项目"，模型写在第 1 天的去程机票
+    （往返两段里更贵的那段）被当成可砍项删掉，面板上就变成"只算了返程机票"。
+    """
+    itinerary = _flight_itinerary()
+
+    actions = repair_candidates([], {}, itinerary=itinerary, facts=TripFacts(destination="广州"))
+
+    soften = [action for action in actions if action.kind == "soften_activity"]
+    assert soften, "还有其他收费活动可砍时，应当给出砍活动的建议"
+    assert all("机票" not in action.name for action in soften)
+    # 挑中的是真正可调整的那个项目
+    assert soften[0].name == "长隆乐园"
+
+
+def test_booked_activity_is_never_cut_either():
+    """已订票的活动删不得：那是用户已经花过的钱，不是"少玩一个项目"。"""
+    from app.trip_gear.models import FixedEvent
+
+    itinerary = Itinerary(
+        destination="广州",
+        days=[DayPlan(day=2, items=[
+            ItineraryItem(time="19:30", activity="陶艺工作坊", cost=400),
+            ItineraryItem(time="10:00", activity="逛上下九", cost=300),
+        ])],
+    )
+    facts = TripFacts(
+        destination="广州",
+        fixed_events=[FixedEvent(title="陶艺工作坊", day=2, cost=400, status="booked")],
+    )
+
+    actions = repair_candidates([], {}, itinerary=itinerary, facts=facts)
+
+    soften = [action for action in actions if action.kind == "soften_activity"]
+    assert soften and soften[0].name == "逛上下九"

@@ -445,7 +445,58 @@ async def _notify(
         pass
 
 
+def _day_cities(itinerary: Itinerary) -> List[str]:
+    """行程覆盖的城市（按出现顺序去重）：只用于"这一步做完了什么"的播报。"""
+    seen: List[str] = []
+    for day in itinerary.days:
+        city = str(day.city or "").strip()
+        if city and city not in seen:
+            seen.append(city)
+    return seen
+
+
+async def _progress(
+    state: TripGearState,
+    runtime: Runtime[TurnContext],
+    node: str,
+    message: str,
+    *,
+    status: str = "active",
+) -> None:
+    """阶段开始：把卡片点亮，同时报"这一秒在干什么"。
+
+    ``_notify`` 只在阶段**结束**时发一条 completed，而排行程、挑款、校验
+    这些阶段本身要跑几秒到几十秒：过程区在这段时间里只有一句通用兜底
+    （"正在生成并校验回答"），用户看不到究竟在查天气还是在挑商品。
+    这里在阶段开始时先发一条 active + 一条思考，界面就有具体动作可读。
+    """
+    with_gear = bool(state.get("with_gear", True))
+    labels = STEP_LABELS if with_gear else TRAVEL_STEP_LABELS
+    entry = labels.get(node)
+    if entry is None:
+        # 这条链路里没有这个阶段（travel 不做 gear/owned/shop/budget_split）。
+        # 以前会退回 (1, "约束派生")，于是 travel 的一轮里冒出好几条"01 约束派生"，
+        # 而且最后一条停在 active——收尾后看着像卡在第一步。
+        return
+    step, name = entry
+    sink = runtime.context.sink_for(runtime)
+    try:
+        await sink.emit(EventType.STEP, {
+            "step": step,
+            "total": 8 if with_gear else 4,
+            "name": name,
+            "description": message,
+            "status": status,
+        }, step=node)
+        # "等你确认"不是"正在干活"：那一行不再冒充进行中的动作。
+        if status == "active":
+            await sink.emit_thinking(message, step=node)
+    except Exception:
+        pass
+
+
 async def derive(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
+    await _progress(state, runtime, "derive", "正在从这句话里抽目的地、天数、人数、日期、预算")
     facts, constraints = derive_constraints(state["user_message"])
     history_text = str(state.get("history_text") or "")
     # 上下文一直沿用：本句没提到的槽位，从上文的用户消息里补齐。
@@ -560,6 +611,7 @@ async def derive(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[st
             "response": f"为了生成行程和装备清单，请先补充：{'、'.join(missing)}。",
         }
 
+    await _progress(state, runtime, "derive", "正在查天气、空气质量、汇率、节假日与时差")
     facts_bag = await _load_facts(runtime, facts)
     constraints = enrich_weather(facts, constraints, facts_bag.get("weather"))
     constraints = enrich_air_quality(facts, constraints, facts_bag.get("air_quality"))
@@ -571,6 +623,7 @@ async def derive(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[st
     # 规则优先、模型补充：只补规则漏掉的语义约束（带老人、不吃海鲜、要宽松行程等）。
     infer = _dep(runtime, "constraint_infer", "_infer_constraints")
     if infer and runtime.context.extra.get("model_constraints", True):
+        await _progress(state, runtime, "derive", "🧠 正在补充语义约束（带老人、饮食偏好、行程松紧）")
         try:
             # 约束推断是"锦上添花"，必须限时：模型慢或不可用不能拖住整轮。
             inferred = await asyncio.wait_for(
@@ -593,8 +646,14 @@ async def derive(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[st
 async def plan(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
     facts = TripFacts.model_validate(state["facts"])
     constraints = [Constraint.model_validate(item) for item in state["constraints"]]
+    cities = "、".join(facts.cities) if facts.cities else (facts.destination or "目的地")
+    await _progress(
+        state, runtime, "plan",
+        f"🧠 正在生成 {facts.days or '·'} 天逐日行程（{cities}）",
+    )
     planner = _dep(runtime, "planner", "_plan")
     itinerary: Optional[Itinerary] = None
+    model_itinerary = False
     suggestions: List[GearItem] = []
     if planner:
         try:
@@ -612,6 +671,7 @@ async def plan(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str,
     if not isinstance(itinerary, Itinerary):
         itinerary = fallback_itinerary(facts)
     else:
+        model_itinerary = True
         # 模型生成的行程也要把已订活动钉进去，否则"买好票的音乐会"会被排丢
         itinerary = apply_fixed_events(itinerary, facts)
     if not itinerary.destination:
@@ -626,11 +686,23 @@ async def plan(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str,
                 day.city = assignment.get(day.day, "")
     # 住宿与城际交通按披露的单价补进行程：不补的话，5000 元的预算只算了
     # 地面花费，"剩余 1176"是假的。清单/面板会带"估算"字样。
-    itinerary = apply_estimates(itinerary, facts)
+    await _progress(state, runtime, "plan", "正在估算住宿与城际交通，并摊进总预算")
+    # 模型排的行程里，票价和住宿它自己估：只补空的、不叠加重复的
+    itinerary = apply_estimates(itinerary, facts, trust_items=model_itinerary)
     # travel 不推导装备，"7 条装备建议"这种话在那边是假的。
-    plan_message = f"已生成 {len(itinerary.days)} 天行程"
+    lodging_total = sum(float(day.lodging_cost or 0) for day in itinerary.days)
+    intercity_total = float(itinerary.intercity_cost or 0)
+    where = "、".join(_day_cities(itinerary)) or facts.destination
+    plan_message = f"已生成 {len(itinerary.days)} 天行程（{where}）"
+    if lodging_total or intercity_total:
+        parts = []
+        if lodging_total:
+            parts.append(f"住宿 ¥{lodging_total:,.0f}")
+        if intercity_total:
+            parts.append(f"城际 ¥{intercity_total:,.0f}")
+        plan_message += f" · {' + '.join(parts)}（估算）"
     if bool(state.get("with_gear", True)):
-        plan_message += f"和 {len(suggestions)} 条装备建议"
+        plan_message += f" · {len(suggestions)} 条装备建议"
     await _notify(state, runtime, "plan", plan_message)
     return {
         "itinerary": itinerary.model_dump(),
@@ -640,6 +712,7 @@ async def plan(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str,
 
 
 async def gear(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
+    await _progress(state, runtime, "gear", "正在按行程推导需要带哪些装备")
     facts = TripFacts.model_validate(state["facts"])
     itinerary = _itinerary_of(state, facts)
     derived = derive_gear(facts, itinerary, extra_text=state["user_message"])
@@ -658,6 +731,7 @@ async def gear(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str,
 
 
 async def owned(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
+    await _progress(state, runtime, "owned", "正在核对哪些装备你已经有了")
     memories: List[Any] = []
     memory_loader = _dep(runtime, "memory_loader", "_memories")
     if memory_loader:
@@ -771,6 +845,11 @@ async def shop(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str,
         # 先让模型在已经打分裁剪过的候选里挑；没得挑、超时、选错都由打分兜底
         select_products = _dep(runtime, "product_select", "_select_products")
         if select_products:
+            await _progress(
+                state, runtime, "shop",
+                f"🧠 正在从候选里挑款（{len(items)} 项装备，剩余额度 ¥{remaining:,.0f}）"
+                if remaining is not None else f"🧠 正在从候选里挑款（{len(items)} 项装备）",
+            )
             entries = select_by_model.build_entries(
                 items,
                 shopper.candidates_for,
@@ -813,6 +892,8 @@ async def shop(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str,
     # 预算不是上限而是计划：选完商品还有额度，就在同品类里换更好的款。
     spend: Dict[str, Any] = {}
     if product_search and facts.budget is not None:
+        await _progress(state, runtime, "shop", "预算还有余量：正在同品类里换更好的款")
+    if product_search and facts.budget is not None:
         left = _remaining_budget(facts, itinerary)
         if left is not None:
             for item in items:
@@ -842,6 +923,10 @@ async def shop(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str,
 
 
 async def verify_node(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
+    await _progress(
+        state, runtime, "verify",
+        f"正在核对 {len(state.get('constraints') or [])} 条约束与预算、时间冲突",
+    )
     facts = TripFacts.model_validate(state["facts"])
     constraints = [Constraint.model_validate(item) for item in state["constraints"]]
     itinerary = _itinerary_of(state, facts)
@@ -887,10 +972,12 @@ async def verify_node(state: TripGearState, runtime: Runtime[TurnContext]) -> Di
     if confirm_options:
         # 需要确认的改法也递出去，让界面能问"要不要改成住民宿"。
         verdict.alternatives = list(verdict.alternatives) + confirm_options
+    trip_cost = total_cost(_itinerary_of(state, facts))
     await _notify(
         state, runtime, "verify",
-        f"发现 {len(issues)} 个问题，{len(repair_options)} 个可修复动作；"
-        f"结论 {verdict.state}",
+        f"行程 ¥{trip_cost:,.0f}"
+        + (f" / 预算 ¥{float(facts.budget):,.0f}" if facts.budget else "")
+        + f" · 发现 {len(issues)} 个问题，{len(repair_options)} 个可修复动作 · 结论 {verdict.state}",
     )
     return {
         "issues": [issue.model_dump() for issue in issues],
@@ -1118,6 +1205,11 @@ async def repair(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[st
         return {"status": "no_repair"}
 
     raw = options[0]
+    await _progress(
+        state, runtime, "repair",
+        f"正在自动修复：{raw.get('reason') or raw.get('name') or '按预算调整'}"
+        f"（省 ¥{float(raw.get('saving') or 0):,.0f}）",
+    )
     action = RepairAction(
         kind=str(raw.get("kind") or "skip"),
         name=str(raw.get("name") or ""),
@@ -1142,6 +1234,7 @@ async def repair(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[st
 
 
 async def finalize(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[str, Any]:
+    await _progress(state, runtime, "finalize", "正在整理约束清单、行程、装备与结论面板")
     with_gear = bool(state.get("with_gear", True))
     facts = TripFacts.model_validate(state["facts"])
     text = render(
@@ -1157,7 +1250,12 @@ async def finalize(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[
         with_itinerary=bool(state.get("itinerary")),
         verdict=state.get("verdict") or {},
     )
-    await _notify(state, runtime, "finalize", "完成")
+    await _notify(
+        state, runtime, "finalize",
+        f"已整理：{len(state.get('constraints') or [])} 条约束 · "
+        f"{len(_itinerary_of(state, facts).days) if state.get('itinerary') else 0} 天行程 · "
+        f"{len(_gear_items(state))} 项装备 · 结论 {(state.get('verdict') or {}).get('state', '—')}",
+    )
     sink = runtime.context.sink_for(runtime)
     # 结构化结果单独发一条事件：正文照旧走 token 流，前端可用它渲染
     # 约束清单 / 逐日行程 / 装备清单 / 预算面板，而不必再解析 Markdown。
@@ -1222,6 +1320,16 @@ def _merge_facts(base: TripFacts, extra: TripFacts, overwrite: bool = False) -> 
         merged.budget_scope = extra.budget_scope
     if (not merged.lodging or overwrite) and extra.lodging:
         merged.lodging = extra.lodging
+    # 每晚住宿预算也是追问才有的：以前不合并，"酒店，每晚400元"进了图就只剩
+    # lodging=hotel，预算还是空，估算又退回默认价——用户答了等于没答。
+    if (
+        merged.lodging_budget is None and extra.lodging_budget is not None
+    ) or (overwrite and extra.lodging_budget is not None):
+        merged.lodging_budget = extra.lodging_budget
+    if merged.lodging == "camp":
+        # 露营按人/晚计价，没有"每晚房价"这一说。把酒店预算带进露营，
+        # 清单里会同时出现"住宿：露营"和"每晚住宿预算：≤400"，自相矛盾。
+        merged.lodging_budget = None
     if (not merged.transport or overwrite) and extra.transport:
         merged.transport = extra.transport
     if extra.with_kids and (not merged.with_kids or overwrite):
@@ -1271,9 +1379,17 @@ def _blocking_gaps(facts: TripFacts) -> List[str]:
 
     人数和出发日期以前是"可见默认值"（按 1 人 / 按今天），结果是用户看着
     一份按 1 人算的预算和一份按今天算的天气，还得自己发现哪里被假设了。
-    现在四项一起问，点选项就能补，补完照旧重写清单。
+    现在一起问，点选项就能补，补完照旧重写清单。
+
+    交通、住宿同理：它们不是配菜，是总预算里的两大块。没出发地就没有大交通
+    估算，没住宿类型就只能按"经济型 300"编一个每晚价——那条默认值正是用户
+    没同意过的假设，所以改成问。
     """
     gaps: List[str] = []
+    # 出发地决定机票/高铁估算，也决定"第 1 天从哪出发"；没有它只能不估算，
+    # 而"预算还剩多少"一旦缺了大交通就是假的，所以要问，不能默认。
+    if not facts.origin:
+        gaps.append("出发地")
     if not facts.destination:
         gaps.append("目的地")
     elif facts.destination in lexicon.PROVINCES and len(facts.cities) < 2:
@@ -1284,6 +1400,16 @@ def _blocking_gaps(facts: TripFacts) -> List[str]:
         gaps.append("人数")
     if not facts.start_date:
         gaps.append("出发日期")
+    # 交通和住宿是整趟花费里最大的两块：不问就只能按"未估算"输出，
+    # 面板上会出现一个看着够用、实际没算机票住宿的预算。
+    if not facts.transport:
+        gaps.append("交通")
+    if not facts.lodging and facts.lodging_budget is None:
+        # 类型和每晚价都没有，才值得问一次。
+        gaps.append("住宿")
+    elif facts.lodging == "hotel" and facts.lodging_budget is None:
+        # 住酒店但没说价：不拿 300 经济型替用户定，问一句。
+        gaps.append("每晚住宿预算")
     return gaps
 
 
@@ -1314,8 +1440,10 @@ async def budget_split(state: TripGearState, runtime: Runtime[TurnContext]) -> D
     """
     facts = TripFacts.model_validate(state["facts"])
     if not bool(state.get("with_gear", True)) or not facts.budget:
+        # 不问比例：这个阶段等于没跑过，别播一条"正在拆分"再停在那儿。
         return {"status": "split_skipped"}
 
+    await _progress(state, runtime, "budget_split", "正在按预算拆分行程额度与装备额度")
     chosen = dict(state.get("budget_split") or {})
     if chosen.get("gear_cap") is None:
         if facts.gear_budget is not None:
@@ -1330,6 +1458,11 @@ async def budget_split(state: TripGearState, runtime: Runtime[TurnContext]) -> D
             nights = max(0, int(facts.days or 0) - 1)
             estimate = intercity_estimate(facts)[0] + lodging_estimate(facts, nights)[0]
             question = f"预算 {float(facts.budget):g} 元：想怎么分给行程和装备？"
+            await _progress(
+                state, runtime, "budget_split",
+                f"等你定比例：预算 {float(facts.budget):g} 元，行程 / 装备怎么分",
+                status="waiting",
+            )
             answer = interrupt({
                 "type": "trip_gear_budget_split",
                 "missing": ["预算分配"],
@@ -1414,6 +1547,11 @@ async def clarify(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[s
         question = f"为了生成行程和装备清单，请先补充：{'、'.join(gaps)}。"
     from app.services.clarify_questions import build_questions
 
+    await _progress(
+        state, runtime, "clarify",
+        f"等你补充：{'、'.join(gaps)}（补齐就接着排）",
+        status="waiting",
+    )
     answer = interrupt(
         {
             "type": "trip_gear_clarify",
@@ -1434,6 +1572,12 @@ async def clarify(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[s
     # 用补充文本重新派生，只填空缺槽位，不覆盖用户已说过的信息
     extra_facts, extra_constraints = derive_constraints(text)
     merged = _merge_facts(facts, extra_facts)
+    if merged.lodging == "camp":
+        # 露营没有每晚房价：答案里那半句"每晚400元"是酒店档位的附属信息，
+        # 不能变成露营行程的住宿预算约束。
+        extra_constraints = [
+            item for item in extra_constraints if item.key != "lodging_budget"
+        ]
 
     constraints = [Constraint.model_validate(item) for item in state.get("constraints", [])]
     known_keys = {item.key for item in constraints if item.key}
@@ -1482,6 +1626,14 @@ async def clarify(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[s
     if remaining:
         rounds = int(state.get("ask_rounds", 0)) + 1
         await _notify(state, runtime, "clarify", f"仍缺 {'、'.join(remaining)}")
+        # 一整轮下来一项都没读出来（典型：界面把选项标签当值拼回去）：不能只把
+        # 同一张卡再摆一遍，得告诉用户"刚才那句没读懂"，否则他会以为点没生效。
+        nothing_parsed = set(remaining) == set(gaps)
+        note = (
+            f"（刚才那条回答没读出：{'、'.join(remaining)}，再点一次，或直接写成"
+            "「每晚450元」这样的话）"
+            if nothing_parsed else ""
+        )
         return {
             "facts": merged.model_dump(),
             "constraints": [item.model_dump() for item in constraints],
@@ -1489,7 +1641,7 @@ async def clarify(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[s
             "ask_rounds": rounds,
             # 用户答了但没答全（"出发日期：1"这种解析不出来）：继续问，不设轮数上限。
             "ask_continue": True,
-            "response": f"还需要补充：{'、'.join(remaining)}。",
+            "response": f"还需要补充：{'、'.join(remaining)}。{note}",
         }
 
     facts_bag = await _load_facts(runtime, merged)

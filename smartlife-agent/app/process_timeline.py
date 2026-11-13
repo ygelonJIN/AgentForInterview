@@ -70,6 +70,14 @@ def infer_active_step(events: Optional[List[Dict[str, Any]]]) -> int:
 
 LEGACY_TOTAL = 4
 
+# 图自己声明的阶段（`step` 字段就是节点名）。有它们时按"链路的真实阶段"渲染，
+# 不补 4 步模板——travel 的 total 也是 4，只凭 total 会和旧四阶段判成同一件事，
+# 于是 travel 的 01/04 后面跟着"资料检索与准备 / 生成并审核回复"这些没发生过的阶段。
+_CHAIN_STEP_NODES = {
+    "derive", "clarify", "budget_split", "plan", "gear", "owned", "shop",
+    "verify", "verify_clarify", "repair", "repair_confirm", "finalize",
+}
+
 
 def _step_events(source_events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """按发生顺序取步骤事件，同一阶段重复上报只留最后一次。
@@ -139,12 +147,50 @@ def build_process_timeline(
         else:
             unmatched.append(event)
 
-    if declared_total > LEGACY_TOTAL and step_stream:
-        timeline: List[Dict[str, Any]] = [
-            {"event": "step", "data": {**data, "status": data.get("status") or "completed"}}
-            for data in step_stream
-        ]
-        timeline.extend(unmatched)
+    chain_declared = any(
+        str(event.get("step") or "") in _CHAIN_STEP_NODES
+        for event in source_events
+        if event.get("event") == "step"
+    )
+    if step_stream and (chain_declared or declared_total > LEGACY_TOTAL):
+        # 多阶段链路按**原始顺序**输出：step 事件只留每个阶段最后一次（开始时的
+        # active 会被结尾的 completed 覆盖），其余事件（classify / tool_call /
+        # error / plan_result）原样保留。
+        #
+        # 以前这里只输出 step 列表、把 details 整个丢掉：`classify` 事件按
+        # `_STEP_ALIASES` 归到第 1 阶段，于是**行程链路上根本看不到"意图与检索"
+        # 那张卡片**——选了 RAG、命中了哪些关键词全都消失，只剩阶段名。
+        # 图自己的阶段存在时，分类那一步（total=4、来源 classify）不单独占一行：
+        # 它的编号是另一套（4 步 vs 8 步），并排会出现两个"01"；而它的全部信息
+        # 都在下面那张"意图与检索"卡片里（选了哪条检索、命中哪些关键词）。
+        has_graph_steps = any(
+            str(event.get("step") or "") not in {"", "classify"}
+            for event in source_events
+            if event.get("event") == "step"
+        )
+
+        placed: Dict[tuple, int] = {}
+        timeline: List[Dict[str, Any]] = []
+        for event in source_events:
+            if event.get("event") != "step":
+                timeline.append(event)
+                continue
+            if has_graph_steps and str(event.get("step") or "") == "classify":
+                continue
+            data = dict(event.get("data") or {})
+            data["status"] = data.get("status") or "completed"
+            key = (
+                data.get("step"),
+                str(event.get("step") or ""),
+                str(data.get("name") or ""),
+            )
+            if key in placed:
+                # 同一阶段又跑了一遍（repair 之后的 verify、追问后的 derive）：
+                # 原地更新描述与状态，不新增一行，也不把它挪到列表末尾。
+                timeline[placed[key]] = {"event": "step", "data": data}
+            else:
+                placed[key] = len(timeline)
+                timeline.append({"event": "step", "data": data})
         return timeline
 
     if active_step is None:

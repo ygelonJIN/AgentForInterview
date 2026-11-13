@@ -216,7 +216,8 @@ def test_v2_rag_only_path_uses_retrieve_result():
 
     assert result["rag_ok"] is True
     assert "真实评价" in result["review_context"]
-    assert queue.calls == [("rag", "返回 1 条文档", "retrieval")]
+    # 工具卡片要写"查了什么"：以前只写"返回 N 条文档"，看着像结论而不是查询
+    assert queue.calls == [("rag", "查询「跑步鞋评价」", "retrieval")]
 
 
 def test_v2_mixed_path_contains_sql_products_and_rag_documents():
