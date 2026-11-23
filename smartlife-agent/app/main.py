@@ -66,6 +66,17 @@ from app.ui.theme import (
     user_bubble_html,
     user_html,
 )
+from app.auth.client import AuthAPIError
+from app.auth.guard import (
+    auth_enabled,
+    call_api,
+    change_password,
+    can_access_page,
+    current_account,
+    ensure_authenticated,
+    is_admin,
+    logout,
+)
 
 st.set_page_config(
     page_title="SmartLife Agent v2",
@@ -76,6 +87,9 @@ st.set_page_config(
 
 # ========== 全局视觉规范 ==========
 inject_theme()
+
+# 登录门禁必须在任何会话状态初始化之前：没有身份就不进入应用。
+ensure_authenticated()
 
 
 # ========== 会话初始化（防御式） ==========
@@ -1955,6 +1969,8 @@ def render_app_sidebar():
         current = st.session_state.get("active_page", "assistant")
         with st.container(key="nav_menu"):
             for label, page_key in NAV_ITEMS:
+                if not can_access_page(page_key):
+                    continue
                 if st.button(
                     label,
                     key=f"nav_{page_key}",
@@ -2915,16 +2931,60 @@ def render_profile_page():
         "查看个人资料、订单记录和模型连接设置。",
         "Profile & Settings",
     )
-    actor = st.session_state["actor_context"]
-    st.markdown(
-        '<div class="sl-actor"><span class="sl-actor-kicker">Actor</span>'
-        f'<span>当前可信 Actor：<b>{_esc(actor.user_id)}</b></span></div>',
-        unsafe_allow_html=True,
-    )
-    st.caption("Actor 由服务端启动环境确定；页面和模型工具均不能切换到其他用户。")
+    account = current_account()
+    actor = st.session_state.get("actor_context")
+    if account:
+        roles = "、".join(account.get("roles") or [])
+        display = account.get("display_name") or account.get("username") or account["id"]
+        info_col, action_col = st.columns([4, 1], vertical_alignment="center")
+        with info_col:
+            st.markdown(
+                '<div class="sl-actor"><span class="sl-actor-kicker">登录身份</span>'
+                f'<span><b>{_esc(display)}</b> · {_esc(account.get("username") or "")}'
+                f' · {_esc(roles)}</span></div>',
+                unsafe_allow_html=True,
+            )
+            st.caption("身份由本地身份服务签发；页面和模型工具都不能切换到其他用户。")
+        with action_col:
+            if st.button("退出登录", key="logout_button", use_container_width=True):
+                logout()
+        with st.expander("账号安全"):
+            with st.form("change_password_form"):
+                old_password = st.text_input("原密码", type="password", key="change_old_password")
+                new_password = st.text_input("新密码（至少 8 位）", type="password", key="change_new_password")
+                confirm_password = st.text_input("确认新密码", type="password", key="change_confirm_password")
+                changed = st.form_submit_button("修改密码", use_container_width=True)
+            if changed:
+                if len(str(new_password or "")) < 8:
+                    st.error("新密码至少 8 位。")
+                elif new_password != confirm_password:
+                    st.error("两次输入的新密码不一致。")
+                else:
+                    try:
+                        change_password(old_password, new_password)
+                    except AuthAPIError as exc:
+                        st.error(exc.message)
+                    else:
+                        st.success("密码已更新，其他设备上的会话已下线。")
+    elif actor is not None:
+        st.markdown(
+            '<div class="sl-actor"><span class="sl-actor-kicker">Actor</span>'
+            f'<span>当前可信 Actor：<b>{_esc(actor.user_id)}</b></span></div>',
+            unsafe_allow_html=True,
+        )
+        st.caption("Actor 由服务端启动环境确定；页面和模型工具均不能切换到其他用户。")
 
-    user = load_user(st.session_state["user_id"])
-    orders = load_orders(st.session_state["user_id"])
+    if account and auth_enabled():
+        try:
+            user = call_api("profile")
+            orders = call_api("orders").get("orders", [])
+        except AuthAPIError as exc:
+            st.warning(f"身份服务暂不可用，已回退本地读取：{exc.message}")
+            user = load_user(st.session_state["user_id"])
+            orders = load_orders(st.session_state["user_id"])
+    else:
+        user = load_user(st.session_state["user_id"])
+        orders = load_orders(st.session_state["user_id"])
     profile_col, orders_col = st.columns([1, 1.25])
     with profile_col:
         render_section_header("个人资料")
@@ -2965,7 +3025,10 @@ def render_profile_page():
         else:
             render_empty("暂无订单记录。")
 
-    render_model_configuration()
+    if is_admin():
+        render_model_configuration()
+    else:
+        st.caption("模型连接配置仅管理员可见。")
 
 
 def render_import_page():
@@ -2980,6 +3043,14 @@ def render_agents_page():
 
 
 def render_page(page_key: str):
+    if not can_access_page(page_key):
+        render_page_header(
+            "没有访问权限",
+            "该页面只对管理员开放。",
+            "Permission",
+        )
+        render_empty("当前账号没有访问这个页面的权限。")
+        return
     pages = {
         "assistant": render_assistant_page,
         "catalog": render_catalog_page,

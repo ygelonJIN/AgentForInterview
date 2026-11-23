@@ -31,3 +31,8 @@ smartlife-agent/data/evaluation/ab_events.db
 
 # LangGraph CLI 本地运行缓存
 smartlife-agent/.langgraph_api/
+
+# 账号库与 JWT 密钥（本地生成，绝不提交）
+smartlife-agent/data/accounts.db
+smartlife-agent/data/accounts.db-*
+smartlife-agent/data/auth_secret.key

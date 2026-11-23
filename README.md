@@ -17,6 +17,7 @@ SmartLife Agent 是一个面向电商导购、旅行规划、客服与通用任�
 - **Agent 工具隔离**：电商、旅游和通用 Agent 拥有独立 Tool Registry，模型只能发现当前 Agent 的工具。
 - **Agent 工具隔离**：每个 Agent 只绑定自己的工具白名单，模型伪造跨域 `tool_call` 会在执行层被拒绝。
 - **长期记忆**：支持偏好、事件和对话记忆，提供 Markdown 同步、记忆压缩、用户隔离和记忆写入审批。
+- **账号与登录**：独立的 FastAPI 身份服务（`auth_service/`）负责注册、登录、JWT 与 refresh 轮换、改密和审计；Streamlit 侧只做登录页和页面门禁，身份从 token 注入 `ActorContext`，数据导入与 Agent 配置仅管理员可见。
 - **数据导入**：支持商品、订单、用户、评价等 CSV 数据，以及 PDF、DOCX、Excel 和 Markdown 文档导入。
 - **可靠性机制**：包含超时、重试、熔断、缓存、节点执行策略和结果校验。
 - **可观测性**：提供执行日志、步骤时间线、Trace、Token 统计和敏感信息脱敏。
@@ -29,6 +30,7 @@ SmartLife Agent 是一个面向电商导购、旅行规划、客服与通用任�
 | 领域 | 技术 |
 |------|------|
 | Web UI | Streamlit |
+| 身份服务 | FastAPI、JWT、bcrypt |
 | 智能体编排 | LangGraph、LangChain |
 | 模型接入 | OpenAI-compatible API |
 | 向量检索 | ChromaDB |
@@ -191,14 +193,17 @@ API Key 不写入公开配置文件。通过 UI 保存的密钥存放在 `data/c
 
 ### 6. 启动应用
 
+`run.sh` 会先起身份服务（:8000）再起 Streamlit（:8501），两个都要在：
+
 ```bash
 ./run.sh
 ```
 
-或手动启动：
+首次可以创建管理员账号（可重复执行）：
 
 ```bash
-streamlit run app/main.py
+venv312/bin/python scripts/seed_auth_accounts.py
+# admin / adminadmin；普通用户在登录页自助注册
 ```
 
 浏览器访问：
@@ -206,6 +211,15 @@ streamlit run app/main.py
 ```text
 http://localhost:8501
 ```
+
+手动分别启动：
+
+```bash
+uvicorn app.api.server:create_server --factory --port 8000
+streamlit run app/main.py
+```
+
+只起 Streamlit 会停在登录页：身份服务连不上时不放行。
 
 ### 方案 B：简化版（无需 LangChain）
 
@@ -452,8 +466,11 @@ venv312/bin/python scripts/run_e2e_benchmark.py \
 ├── 归档/                        # 历史文档，不代表现状
 ├── smartlife-agent/
 │   ├── .streamlit/              # Streamlit 主题配置（与 design token 对齐）
+│   ├── auth_service/            # 通用身份服务：账号/JWT/会话/审计（可复用）
 │   ├── app/
 │   │   ├── agents/              # Agent 清单与启停配置
+│   │   ├── api/                 # 项目适配：当前账号的资料与订单
+│   │   ├── auth/                # 登录页、门禁、token 客户端
 │   │   ├── evaluation/          # RAG、Rerank、A/B 与端到端评测
 │   │   ├── memory/              # 短期记忆、长期记忆和记忆审批
 │   │   ├── retrieval/           # NL2SQL、RAG、规划与精排
@@ -478,6 +495,7 @@ venv312/bin/python scripts/run_e2e_benchmark.py \
 - 不要提交 `data/config.json` 和 `data/config.secrets.json`。
 - 不要在代码、日志或 Git 提交中保存 API Key。
 - 生产环境建议绑定 `127.0.0.1`，并通过反向代理提供 HTTPS。
+- 账号库 `data/accounts.db` 与 JWT 密钥 `data/auth_secret.key` 都在本机，必须加入忽略列表且定期备份；删掉密钥会让所有已登录会话失效。
 - 支付、退款和记忆修改等敏感操作应保留审批流程。
 - 部署前执行 `scripts/security_check.py`。
 
@@ -496,6 +514,16 @@ http://localhost:8501
 ```bash
 lsof -i :8501
 ```
+
+### 登录页提示“身份服务未启动”
+
+说明只起了 Streamlit。用 `./run.sh` 同时启动 8000 和 8501，或另开终端执行：
+
+```bash
+uvicorn app.api.server:create_server --factory --port 8000
+```
+
+检查 `curl http://127.0.0.1:8000/v1/health` 是否返回 `status: ok`。
 
 ### 模型调用失败
 
@@ -545,5 +573,6 @@ pip install PyYAML --no-build-isolation
 
 - `docs/architecture.md`：**唯一的实现说明**——分层、顶层图、行程子系统（四态结论、代价、四类修复动作、规格匹配、采购可履约）、评测口径、文件速查。
 - `经验文档/`：可公开的操作经验，一领域一篇（环境依赖、LangGraph 调试、行程子系统与评测）。
+- `smartlife-agent/auth_service/README.md`：身份服务的接口契约、环境变量、复用方式（复制/安装/Docker/挂载）。
 - `归档/`：历史文档（含旧版设计稿与已合并的子系统文档），**只作查证用，不作为实现依据**。
 - `smartlife-agent/data/import_templates/README.md`：数据导入格式说明。

@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smartlife-auth-service"
+version = "1.0.0"
+description = "Generic username/password auth service with JWT sessions and audit events"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "PyJWT>=2.8",
+  "bcrypt>=4.0",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0",
+  "httpx>=0.27",
+]
+
+[tool.setuptools]
+packages = ["auth_service", "auth_service.routes"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

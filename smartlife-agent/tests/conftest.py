@@ -12,6 +12,11 @@ os.environ["SMARTLIFE_CONVERSATIONS_DB"] = os.path.join(
     "conversations.db",
 )
 
+# 界面测试不启动身份服务：门禁走旧的单 Actor 路径。
+# 需要验证登录页的用例会自己 monkeypatch 回启用状态。
+os.environ["SMARTLIFE_AUTH_DISABLED"] = "1"
+os.environ["SMARTLIFE_AUTH_COOKIE"] = "0"
+
 from app.tools.providers import reset_provider_runtime_state
 
 

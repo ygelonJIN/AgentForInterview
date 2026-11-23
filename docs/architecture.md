@@ -38,6 +38,32 @@
 
 分层：`app/main.py`（UI，只调 TurnGraph）→ `app/graphs/orchestrator.py`（`build_turn_graph()`）→ `app/graphs/subgraphs/*`（节点签名统一 `(state, runtime)`）→ `app/services/*`（无编排的领域能力）→ `app/retrieval` / `app/memory` / `app/tools`。
 
+## 身份与访问边界（`auth_service/` + `app/api/`）
+
+登录注册不是 Streamlit 页面里的一段 if，而是两个进程、三层边界：
+
+```text
+浏览器 ──登录表单──▶ Streamlit(:8501) ──HTTP──▶ 身份服务(:8000)
+                        │                         ├─ /v1/auth/*  账号、JWT、refresh、审计
+                        │                         └─ /v1/me/*    本项目资料/订单适配
+                        ▼
+              ActorContext（来自 token，不来自表单）
+                        ├─ 页面门禁：数据导入 / Agent 配置仅 admin
+                        ├─ 工具注册表：仍按 actor_id 绑定，模型选不了用户
+                        └─ 数据：记忆/会话/订单按 user_id 隔离
+```
+
+- `auth_service/` 是通用包，不允许 `import app.*` 或 `streamlit`（`auth_service/tests/test_no_project_imports.py` 卡住），可整体复制/安装到别的项目。
+- `app/api/me.py` 是项目适配层：账号 id 直接作为业务 `user_id`，首次读资料时补一行 `users`；订单查询强制按当前账号过滤，`/v1/me/orders/{id}` 对别人的订单返回 404。
+- Streamlit 侧 `app/auth/guard.py` 负责登录页、token 存储、401 自动续期、切号清缓存；`app/main.py` 在会话初始化之前调用 `ensure_authenticated()`。
+- 账号/会话/审计在 `data/accounts.db`，与 `products.db` 分开：`data/init_db.py --force` 重建商品库不会清掉账号。
+- access token 2 小时，refresh 7 天并轮换；改密把 `token_version` +1，旧 access 立即失效。
+- 测试：`auth_service/tests/` 覆盖注册/登录/续期/改密/限速；`tests/test_api_me.py` 覆盖跨用户读订单、查询参数注入无效。
+- refresh token 存在前端可读的 cookie（SameSite=Lax），本机演示可接受；公网部署应改成 HttpOnly 会话或 OIDC。
+- 启动：`./run.sh` 同时起 8000 和 8501；只起 Streamlit 会停在登录页。
+
+不是 OIDC：没有 Google/微信/企业 SSO；邮箱验证和找回密码需要 SMTP，当前不做。
+
 ## 四个"原生"约束
 
 | 维度 | 原生做法 | 已废弃做法 |
@@ -790,6 +816,9 @@ Agent 的编排与工具都写在仓库里，因为它们依赖 `TurnContext` / 
 | `agents/specs.py` | Agent 清单：节点名 / 能力面一处定义 |
 | `agents/config.py` | Agent 启停（`data/agent_config.json`） |
 | `ui/agents_page.py` | Agent 配置页：工具面、启停开关 |
+| `auth_service/` | 通用身份服务：账号、JWT、refresh 轮换、审计（可复用） |
+| `app/api/me.py` | 项目适配：当前账号的资料/订单，越权返回 404 |
+| `app/auth/guard.py` | 登录页、门禁、token 续期、退出登录 |
 | `ui/blocks.py` | 回答块构造（只读真实数据，不造字段） |
 | `retrieval/search_index.py` | 商品 2-gram 检索索引（FTS5） |
 | `trip_gear/catalog.py` | 商品库目录摘要（按品类，给模型看） |
