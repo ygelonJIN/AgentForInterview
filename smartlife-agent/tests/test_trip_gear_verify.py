@@ -200,3 +200,26 @@ def test_lodging_over_nightly_budget_is_disclosed():
     hits = [issue for issue in issues if "每晚预算" in issue.constraint]
     assert hits and hits[0].severity == "minor"
     assert hits[0].actual == 400
+
+
+def test_lodging_budget_constraint_is_judged_not_left_unverified():
+    """每晚预算已经答过的约束不能停在 unverified，否则会被当成"还判断不了"再问。"""
+    facts = _facts(lodging="hotel", lodging_budget=300)
+    constraint = Constraint(text="每晚住宿预算：≤ 300 元", key="lodging_budget")
+    itinerary = _itinerary()
+
+    verify(facts, [constraint], itinerary, [], {})
+
+    assert constraint.status == "ok"
+
+
+def test_lodging_budget_constraint_marks_violated_when_over():
+    facts = _facts(lodging="hotel", lodging_budget=300)
+    constraint = Constraint(text="每晚住宿预算：≤ 300 元", key="lodging_budget")
+    itinerary = _itinerary()
+    for day in itinerary.days:
+        day.lodging_cost = 800  # 2 人 → 人均 400，超过每晚 300
+
+    verify(facts, [constraint], itinerary, [], {})
+
+    assert constraint.status == "violated"

@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from app.nlu.slots import extract_slots
 from app.nlu.slots import parse_budget as parse_budget_slot
 from app.nlu.slots import parse_days as parse_days_slot
+from app.nlu.transport import transport_label
 
 
 class SharedConstraints(BaseModel):
@@ -76,11 +77,7 @@ def _extra_requirements(slots) -> List[str]:
     if slots.lodging:
         notes.append("住宿：露营" if slots.lodging == "camp" else "住宿：酒店/民宿")
     if slots.transport:
-        notes.append(
-            {"flight": "交通：飞机", "train": "交通：高铁/火车", "drive": "交通：自驾"}.get(
-                slots.transport, f"交通：{slots.transport}"
-            )
-        )
+        notes.append(f"交通：{transport_label(slots.transport)}")
     if slots.gear_budget is not None:
         notes.append(f"装备预算：{slots.gear_budget:g} 元")
     return notes

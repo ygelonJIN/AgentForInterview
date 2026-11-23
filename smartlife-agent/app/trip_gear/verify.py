@@ -36,6 +36,10 @@ _CHECKABLE = {
     "sleeping_bag_temp",
     "rain",
     "weather",
+    # 每晚预算不在这张派发表里逐条比：它的检查在 verify() 里按"人均每晚"算，
+    # 但键必须登记，否则派发层会先把它标成 unverified，追问层又把已答过的
+    # 每晚预算当成"还判断不了"抛出来。
+    "lodging_budget",
 }
 
 # 有信息价值但当前无法确定性判定的约束键，明确标注为未校验。
@@ -464,6 +468,12 @@ def verify(
             if float(day.lodging_cost or 0) / max(1, facts.effective_people)
             > float(facts.lodging_budget) + 1e-6
         ]
+        lodging_constraint = next(
+            (item for item in constraints if item.key == "lodging_budget"), None
+        )
+        if lodging_constraint is not None:
+            # 专用检查已经算过这一条，状态必须落下来；不落就会留在 unverified。
+            lodging_constraint.status = "violated" if over else "ok"
         if over:
             day_number, per_person = over[0]
             issues.append(

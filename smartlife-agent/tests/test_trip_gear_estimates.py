@@ -158,3 +158,22 @@ def test_transport_items_without_prices_fall_back_to_the_estimate():
 
     assert result.intercity_cost > 0
     assert any("没有金额" in note for note in result.estimate_notes)
+
+
+def test_bus_and_ferry_are_disclosed_not_priced():
+    """大巴/轮渡没有公开单价：不编数字，写"未估算"，有逐日条目就按条目算。"""
+    for mode, label in (("bus", "大巴"), ("ferry", "轮渡")):
+        amount, notes = intercity_estimate(_facts(transport=mode))
+        assert amount == 0.0
+        assert any(label in note for note in notes)
+        assert any("不估算" in note for note in notes)
+
+
+def test_undecided_and_mixed_transport_are_not_estimated():
+    amount, notes = intercity_estimate(_facts(transport="undecided"))
+    assert amount == 0.0
+    assert any("未定" in note for note in notes)
+
+    amount, notes = intercity_estimate(_facts(transport="mixed"))
+    assert amount == 0.0
+    assert any("混合" in note for note in notes)

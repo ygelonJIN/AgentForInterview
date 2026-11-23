@@ -72,6 +72,16 @@ def intercity_estimate(facts: TripFacts) -> Tuple[float, List[str]]:
         parts = [f"高铁 {rail_legs} 段 × {facts.effective_people} 人 × ¥{RAIL_PER_PERSON_LEG:g}"]
     elif transport == "drive":
         return 0.0, ["自驾：油费/过路费未估算"]
+    elif transport == "undecided":
+        # 用户明确说"自己安排/还没定"：不是没抽到，不能拿默认方式替他定。
+        return 0.0, ["交通未定（按你自己安排）：城际交通未估算"]
+    elif transport == "mixed":
+        # 一句里出现多种方式（先飞再高铁）：按单一方式估会算错一段。
+        return 0.0, ["混合交通方式：不按单一方式估算，以逐日行程条目为准"]
+    elif transport in ("bus", "ferry"):
+        # 大巴/轮渡没有披露过公开单价，不编数字；有逐日条目就按条目的钱算。
+        label = "大巴/长途汽车" if transport == "bus" else "轮渡/邮轮"
+        return 0.0, [f"{label}：没有公开单价，不估算，以逐日行程条目为准"]
     else:
         return 0.0, ["交通方式未指定：城际交通未估算"]
 
@@ -107,7 +117,7 @@ def lodging_estimate(facts: TripFacts, nights: int) -> Tuple[float, List[str]]:
 
 _TRANSPORT_ITEM_HINTS = (
     "高铁", "动车", "火车", "飞机", "航班", "机票", "自驾", "城际", "返程", "去程",
-    "往返", "机场", "车站",
+    "往返", "机场", "车站", "大巴", "长途汽车", "客运", "轮渡", "邮轮", "客轮",
 )
 
 

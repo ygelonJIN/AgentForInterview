@@ -271,7 +271,7 @@ def test_keyword_badge_distinguishes_no_hit_from_not_enough_evidence():
             "data": {
                 "intent": "travel", "route": "plan_and_execute", "retrieval": "rag_only",
                 "confidence": 0.95, "method": "llm", "strength": "none",
-                "keyword_hits": {"travel": ["<时长>"]},
+                "keyword_hits": {"travel": ["玩5天"]},
                 "keyword_scores": {"shopping": 0.0, "travel": 1.0},
                 "reason": "多步行程规划",
             },

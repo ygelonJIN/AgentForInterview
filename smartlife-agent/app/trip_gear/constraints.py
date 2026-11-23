@@ -16,10 +16,9 @@ from typing import Iterable, List, Optional, Tuple
 
 from app.nlu import lexicon
 from app.nlu.slots import extract_slots
+from app.nlu.transport import transport_label
 from app.services.task_models import SharedConstraints
 from app.trip_gear.models import Constraint, FixedEvent, TripFacts
-
-_TRANSPORT_LABELS = {"flight": "飞机", "train": "高铁/火车", "drive": "自驾"}
 
 
 # 用户只说"广东的很多城市/你定/都行"：这是授权我们挑，不是缺信息
@@ -282,7 +281,7 @@ def derive_constraints(
             key="fixed_event",
         ))
     if days:
-        constraints.append(Constraint(text=f"天数：{days} 天", source=days_source, key="days"))
+        constraints.append(Constraint(text=f"停留天数：{days} 天", source=days_source, key="days"))
     if people is not None:
         constraints.append(Constraint(text=f"人数：{people} 人", source=people_source, key="people"))
     else:
@@ -335,7 +334,7 @@ def derive_constraints(
     if slots.transport:
         constraints.append(
             Constraint(
-                text=f"交通：{_TRANSPORT_LABELS.get(slots.transport, slots.transport)}",
+                text=f"交通：{transport_label(slots.transport)}",
                 source="用户原话",
                 key="transport",
             )
@@ -345,7 +344,7 @@ def derive_constraints(
     if days_capped:
         constraints.append(
             Constraint(
-                text="天数：原话超出单次规划上限，按 60 天处理",
+                text="停留天数：原话超出单次规划上限，按 60 天处理",
                 source="规则推导",
                 hard=False,
             )
@@ -419,7 +418,7 @@ def apply_assisted(
     days = extra.get("days")
     if days and merged.days is None and "days" not in existing_keys:
         merged.days = int(days)
-        added.append((f"天数：{merged.days} 天", "days"))
+        added.append((f"停留天数：{merged.days} 天", "days"))
 
     people = extra.get("people")
     if people and merged.people is None:

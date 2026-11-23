@@ -168,9 +168,33 @@ _LODGING_BUDGET_LABEL = re.compile(
 )
 _HOTEL_WORDS = ("酒店", "民宿", "青旅", "宾馆", "客栈", "住店")
 _KID_WORDS = ("孩子", "小孩", "儿童", "宝宝", "亲子", "带娃", "带孩", "小朋友")
-_FLIGHT_WORDS = ("飞机", "航班", "机票", "飞过去")
-_TRAIN_WORDS = ("高铁", "动车", "火车")
-_DRIVE_WORDS = ("自驾", "开车", "租车", "自驾游")
+# 交通方式词表：一种方式一组，按在句子里**最先出现**的那个算。
+# 只收录"指向出行方式"的词，不收录"飞/到"这类单字：飞进"飞镖"、到进"寄到"都会误伤。
+_TRANSPORT_WORDS = (
+    ("flight", ("飞机", "航班", "机票", "直飞", "飞过去", "坐飞机", "航空")),
+    ("train", ("高铁", "动车", "火车", "列车", "卧铺", "硬卧", "软卧", "二等座", "一等座")),
+    ("drive", ("自驾", "开车", "租车", "自驾游", "包车", "拼车", "顺风车", "自己开车")),
+    ("bus", ("大巴", "长途汽车", "客运", "班车", "客车", "汽车站")),
+    ("ferry", ("轮渡", "渡轮", "坐船", "游轮", "邮轮", "客轮")),
+)
+# "还没定/自己安排"只有和交通语境一起出现才算"用户主动不提供"：
+# 单独一句"酒店都行"是住宿偏好，不能被读成交通未定。
+_UNDECIDED_WORDS = (
+    "还没定", "没定", "未定", "待定", "还没想好", "看情况", "不确定",
+    "自己安排", "自己定", "到时候再说", "到了再买", "不填", "你安排", "你定",
+)
+_TRANSPORT_CUES = ("交通", "怎么去", "怎么走", "出行", "大交通", "去程", "返程")
+# "先飞上海""飞往杭州"里的"飞"是出行动词，但"飞机/飞行/飞盘/飞得很快"不是。
+# 只认"飞 + （到/往/去）+ 地名"：靠地名表收窄，避免把玩飞盘读成坐飞机。
+_PLACE_ALT = "|".join(
+    sorted((re.escape(city) for city in {*lexicon.PLACES, *lexicon.PROVINCES}), key=len, reverse=True)
+)
+_BARE_FLIGHT = re.compile(rf"飞(?=(?:到|往|去)?(?:{_PLACE_ALT}))")
+# 整句就是这几个词时不必再要"交通"前缀（"你定/你安排"不算：可能是让用户定别的）。
+_BARE_UNDECIDED = (
+    "还没定", "没定", "未定", "待定", "还没想好", "看情况", "不确定",
+    "到时候再说", "自己安排", "自己定",
+)
 
 # ---- 指定活动与"想参加活动"的意向 ----
 # 分两档语气：已订是硬约束，想去只是偏好；两者都不能和"想参加一点活动"混为一谈。
@@ -822,13 +846,36 @@ def parse_lodging(text: str) -> str:
 
 
 def parse_transport(text: str) -> str:
+    """出行方式：飞机 / 高铁火车 / 自驾 / 大巴 / 轮渡；说不出具体方式时见下。
+
+    一句里出现多种方式（"先飞上海再高铁去杭州"）返回 ``mixed``，不替用户挑一种：
+    挑错会让大交通估算和被写成条目的钱对不上。只有完全没提方式、但明确说
+    "还没定/自己安排"时才返回 ``undecided``，"酒店都行"这类不能被读成交通未定。
+    """
     source = str(text or "")
-    if any(word in source for word in _FLIGHT_WORDS):
-        return "flight"
-    if any(word in source for word in _TRAIN_WORDS):
-        return "train"
-    if any(word in source for word in _DRIVE_WORDS):
-        return "drive"
+    hits = []
+    for mode, words in _TRANSPORT_WORDS:
+        for word in words:
+            position = source.find(word)
+            if position >= 0:
+                hits.append((position, mode))
+                break
+    for match in _BARE_FLIGHT.finditer(source):
+        hits.append((match.start(), "flight"))
+    if hits:
+        modes = []
+        for _, mode in hits:
+            if mode not in modes:
+                modes.append(mode)
+        return "mixed" if len(modes) > 1 else modes[0]
+    if any(word in source for word in _UNDECIDED_WORDS) and any(
+        cue in source for cue in _TRANSPORT_CUES
+    ):
+        return "undecided"
+    # 整句就是"还没定/看情况"（用户直接回在输入框里，没有"交通："前缀）：
+    # 这也是在回答交通这一问，不能因为少了语境词就再来一轮。
+    if source.strip(" \t\r\n。.！!，,、") in _BARE_UNDECIDED:
+        return "undecided"
     return ""
 
 

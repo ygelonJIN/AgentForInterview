@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, ValidationError
 from app.config import create_llm
 from app.memory.long_term import LongTermMemory
 from app.llm_json import ainvoke_json, extract_json_object as _extract_json, message_text as _text_of
+from app.nlu.transport import transport_label
 from app.observability import extract_model_usage, log_exception, timed_span
 from app.retrieval.repositories import ProductRepository
 from app.tools.travel_executor import TravelToolExecutor
@@ -134,7 +135,7 @@ class TripGearService:
 2. 每天 4-6 个安排，包含用餐和休息，活动时间在 08:00-21:00 之间；
 3. time 用 HH:MM；duration_min 用分钟；cost 用整数元估算——免费才写 0，有价格但拿不准时按当地一般水平给一个整数，不要因为不确定就写 0；
 4. 行程要贴合事实：住宿方式、天气、同行人、预算都要考虑；逐日花费（餐饮/门票/市内交通）合计要贴进【地面可花上限】（若给出）或行程预算，不低于七成、不超出；
-4b. **大交通由你估算，并写成当天的一条条目**：去程写在第 1 天、返程写在最后一天、换城市写在换城那天，activity 写成"{高铁|机票} 上海→杭州（2 人）"，cost 写这一趟合计的整数元（含所有人、按常识估价，宁略高不省略）；
+4b. **大交通由你估算，并写成当天的一条条目**：去程写在第 1 天、返程写在最后一天、换城市写在换城那天，activity 按实际方式写成"机票/高铁/大巴/轮渡 上海→杭州（2 人）"，cost 写这一趟合计的整数元（含所有人、按常识估价，宁略高不省略）；
 4c. **住宿不要写成条目**：系统会按用户给的每晚预算单独列一行，你写进条目就会重复计一遍；每晚预算在【事实】里，按它安排住宿档次即可；
 5. 天数必须与给定天数一致；
 6. 同时给出这次出行的装备建议（gear）：名称、数量、为什么带，覆盖衣物、鞋、洗护、药品、活动装备，不要列身份证/手机/充电器这类通用物品；
@@ -172,7 +173,7 @@ class TripGearService:
             [
                 f"出发地：{facts.origin or '未指定'}",
                 f"目的地：{facts.destination}",
-                f"天数：{facts.days}",
+                f"停留天数：{facts.days} 天",
                 f"行程城市：{'、'.join(facts.cities) if len(facts.cities) >= 2 else facts.destination or '未指定'}",
                 f"人数：{facts.people if facts.people is not None else '未指定（按 1 人计）'}",
                 f"预算：{facts.budget if facts.budget is not None else '未指定'}"
@@ -202,7 +203,11 @@ class TripGearService:
                     if facts.purchase_items else []
                 ),
                 f"住宿：{facts.lodging or '未指定'}",
-                f"交通：{facts.transport or '未指定'}",
+                f"交通：{transport_label(facts.transport) or '未指定'}",
+                *(
+                    ["大交通：用户自己安排，不要写进逐日条目，也不要估算票价"]
+                    if facts.transport == "undecided" else []
+                ),
                 f"同行儿童：{'有' if facts.with_kids else '无'}",
                 f"天气：{facts.weather_summary or '未获取到可验证天气'}",
                 "约束：\n" + "\n".join(f"- {item.text}" for item in constraints),

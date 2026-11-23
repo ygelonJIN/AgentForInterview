@@ -196,7 +196,7 @@ class TripFacts(BaseModel):
     budget_split_source: str = ""  # 用户选择 / 用户原话（装备预算）/ 默认
     start_date: Optional[str] = None
     lodging: str = ""  # camp / hotel
-    transport: str = ""  # flight / train / drive
+    transport: str = ""  # flight / train / drive / bus / ferry / undecided
     with_kids: bool = False
     min_temp_c: Optional[float] = None
     rain_probability: Optional[float] = None

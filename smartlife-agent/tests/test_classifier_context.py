@@ -121,7 +121,7 @@ def test_budget_bounded_multi_day_trip_is_travel_plan_not_product_search():
         "method": "keyword",
         # 过程卡片要摊开"命中了哪几个词"，所以证据随事件一起出去
         "keyword_hits": {
-            "travel": ["上海", "<时长>"],
+            "travel": ["上海", "玩5天"],
             "shopping_weak": ["预算", "块钱"],
         },
         "keyword_scores": {

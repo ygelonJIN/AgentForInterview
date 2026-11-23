@@ -239,7 +239,7 @@ def test_clarify_resume_fills_missing_fields_and_continues():
     assert second["status"] == "ok"
     assert "## 行程" in second["response"]
     assert "目的地：杭州" in second["response"]
-    assert "天数：2 天" in second["response"]
+    assert "停留天数：2 天" in second["response"]
 
 
 def test_previous_turn_supplies_owned_items_and_destination():
@@ -621,7 +621,7 @@ def test_multi_city_trip_assigns_a_city_to_every_day():
     assert state["status"] == "ok"
     response = state["response"]
     assert "串联城市：广州 → 深圳 → 珠海" in response
-    assert "天数：6 天" in response
+    assert "停留天数：6 天" in response
     assert "### 第 1 天（广州）" in response
     assert "### 第 5 天（珠海）" in response
 
@@ -805,7 +805,7 @@ def test_answering_with_chosen_options_resumes_the_plan():
 
     assert second["status"] == "ok"
     assert "目的地：杭州" in second["response"]
-    assert "天数：3 天" in second["response"]
+    assert "停留天数：3 天" in second["response"]
     assert "人数：2 人" in second["response"]
     assert "出发日期：2026-11-10" in second["response"]
 
@@ -1076,3 +1076,36 @@ def test_budget_split_waiting_state_names_the_choice():
     waiting = [event["data"] for event in events
                if event.get("event") == "step" and event["data"].get("status") == "waiting"]
     assert waiting and "等你定比例" in waiting[-1]["description"]
+
+
+def test_clarify_accepts_undecided_transport_without_asking_again():
+    """"先不估算"是明确出口：不再阻塞，也不会把同一张交通卡再摆一遍。"""
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.types import Command
+
+    graph = build_trip_gear_graph(checkpointer=InMemorySaver())
+    cfg = {"configurable": {"thread_id": "trip-gear-undecided"}}
+    ctx = TurnContext(services=_Services(None), trace_id="trip-gear").with_extra(
+        product_search=_search, planner=_Planner("到达杭州")
+    )
+
+    first = asyncio.run(
+        graph.ainvoke(
+            {
+                "user_message": "去杭州玩两天，一个人，2026-11-10 出发，从上海出发，酒店每晚300元",
+                "user_id": "user-1",
+                "thread_id": "trip-gear-undecided",
+            },
+            cfg,
+            context=ctx,
+        )
+    )
+    assert first.get("__interrupt__")
+    assert first["__interrupt__"][0].value["missing"] == ["交通"]
+
+    second = asyncio.run(
+        graph.ainvoke(Command(resume="交通：先不估算，自己安排"), cfg, context=ctx)
+    )
+    assert second["status"] == "ok"
+    assert "还需要补充" not in second["response"]
+    assert "停留天数：2 天" in second["response"]

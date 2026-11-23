@@ -18,6 +18,7 @@ from langgraph.types import interrupt
 from app.graphs._util import resolve
 from app.graphs.context import TurnContext
 from app.nlu import lexicon
+from app.nlu.transport import transport_label
 from app.streaming import EventType
 from app.trip_gear.constraints import (
     _vague_city_request,
@@ -38,7 +39,13 @@ from app.trip_gear.constraints import (
 )
 from app.trip_gear.gear import derive_gear, merge_suggestions
 from app.trip_gear.itinerary import apply_fixed_events, fallback_itinerary, total_cost
-from app.trip_gear.models import Constraint, GearItem, Issue, Itinerary, TripFacts
+from app.trip_gear.models import (
+    Constraint,
+    GearItem,
+    Issue,
+    Itinerary,
+    TripFacts,
+)
 from app.trip_gear.owned import (
     apply_owned,
     extract_from_memories,
@@ -513,7 +520,7 @@ async def derive(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[st
             inherited.append(f"目的地：{prior.destination}")
         if not facts.days and prior.days:
             facts.days = prior.days
-            inherited.append(f"天数：{prior.days} 天")
+            inherited.append(f"停留天数：{prior.days} 天")
         # 多城市也要继承：用户上一句点过名的城市（"包括汕头"）不能在这一轮丢掉
         if not facts.cities and prior.cities:
             facts.cities = list(prior.cities)
@@ -536,7 +543,7 @@ async def derive(state: TripGearState, runtime: Runtime[TurnContext]) -> Dict[st
             inherited.append("住宿：露营" if prior.lodging == "camp" else "住宿：酒店/民宿")
         if not facts.transport and prior.transport:
             facts.transport = prior.transport
-            inherited.append(f"交通：{prior.transport}")
+            inherited.append(f"交通：{transport_label(prior.transport)}")
         if not facts.with_kids and prior.with_kids:
             facts.with_kids = True
             inherited.append("同行：有儿童")
@@ -1330,7 +1337,8 @@ def _merge_facts(base: TripFacts, extra: TripFacts, overwrite: bool = False) -> 
         # 露营按人/晚计价，没有"每晚房价"这一说。把酒店预算带进露营，
         # 清单里会同时出现"住宿：露营"和"每晚住宿预算：≤400"，自相矛盾。
         merged.lodging_budget = None
-    if (not merged.transport or overwrite) and extra.transport:
+    # "先不估算"不是锁死：用户后面又说了具体方式（"算了坐高铁"）要能改回来。
+    if (not merged.transport or merged.transport == "undecided" or overwrite) and extra.transport:
         merged.transport = extra.transport
     if extra.with_kids and (not merged.with_kids or overwrite):
         merged.with_kids = True

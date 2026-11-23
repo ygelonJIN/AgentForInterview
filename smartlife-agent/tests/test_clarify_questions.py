@@ -183,3 +183,16 @@ def test_every_option_value_fills_the_gap_it_belongs_to():
             assert check(facts), (
                 f"{question['key']} 的选项「{option['label']}」拼成 {text!r} 后没被解析出来"
             )
+
+
+def test_transport_question_offers_every_mode_and_undecided():
+    """交通不止飞机/高铁/自驾：点完的每个值都要能被槽位解析，包括"先不估算"。"""
+    from app.nlu.slots import parse_transport
+    from app.services.clarify_questions import TRANSPORT_OPTIONS
+
+    parsed = {parse_transport(f"交通：{value}") for _, value in TRANSPORT_OPTIONS}
+    assert parsed == {"flight", "train", "drive", "bus", "ferry", "undecided"}
+    labels = [label for label, _ in TRANSPORT_OPTIONS]
+    assert any("大巴" in label for label in labels)
+    assert any("轮渡" in label for label in labels)
+    assert any("先不估算" in label for label in labels)

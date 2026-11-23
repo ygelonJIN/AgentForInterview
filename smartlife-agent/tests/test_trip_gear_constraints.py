@@ -46,7 +46,7 @@ def test_destination_outside_city_whitelist_is_derived():
     assert facts.budget_scope == "all_in"
     texts = [item.text for item in constraints]
     assert "目的地：莫干山" in texts
-    assert "天数：2 天" in texts
+    assert "停留天数：2 天" in texts
     assert "预算口径：含装备" in texts
 
 
@@ -135,3 +135,23 @@ def test_ensure_budget_rewrites_the_entry_when_user_raises_budget():
     assert len(budgets) == 1
     assert budgets[0].text == "预算：6000 元"
     assert budgets[0].source == "追问补充"
+
+
+def test_transport_modes_are_written_as_readable_constraints():
+    """清单里不能出现 bus/flight 这种代码；新方式要有人话标签。"""
+    facts, constraints = derive_constraints("去杭州玩两天，坐大巴")
+    assert facts.transport == "bus"
+    texts = [item.text for item in constraints]
+    assert "交通：大巴/长途汽车" in texts
+
+    facts, constraints = derive_constraints("去杭州玩两天，交通：先不估算，自己安排")
+    assert facts.transport == "undecided"
+    texts = [item.text for item in constraints]
+    assert "交通：未定（自己安排）" in texts
+
+
+def test_days_constraint_says_stay_days():
+    """用户口径：游玩时间 = 停留天数，清单上直接写"停留天数"。"""
+    _, constraints = derive_constraints("去上海玩五天")
+    texts = [item.text for item in constraints]
+    assert "停留天数：5 天" in texts

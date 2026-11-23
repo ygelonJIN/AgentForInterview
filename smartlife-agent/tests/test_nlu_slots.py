@@ -261,3 +261,32 @@ def test_lodging_budget(text, expected):
     from app.nlu.slots import parse_lodging_budget
 
     assert parse_lodging_budget(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("坐飞机", "flight"),
+        ("坐高铁/火车", "train"),
+        ("自驾", "drive"),
+        ("坐大巴", "bus"),
+        ("坐轮渡", "ferry"),
+        ("怎么去还没定", "undecided"),
+        ("交通：先不估算，自己安排", "undecided"),
+        # 用户直接把答案回在输入框里、没有"交通："前缀，也不能再问一轮
+        ("还没定", "undecided"),
+        ("自己安排", "undecided"),
+        ("坐飞机到上海再坐高铁去杭州", "mixed"),
+        ("先飞上海再坐高铁去杭州", "mixed"),
+        ("飞往杭州", "flight"),
+        # 单字"飞"只在后面跟地名时才是出行方式
+        ("玩飞盘", ""),
+        # 住宿偏好不能被读成"交通未定"：没有交通语境词就不是
+        ("酒店都行", ""),
+        ("不知道", ""),
+    ],
+)
+def test_parse_transport_covers_all_modes(text, expected):
+    from app.nlu.slots import parse_transport
+
+    assert parse_transport(text) == expected

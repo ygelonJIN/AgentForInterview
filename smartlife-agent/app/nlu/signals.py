@@ -175,13 +175,17 @@ def score_intents(message: str) -> IntentScores:
     travel_hits = places + strong + scenes
     score = _W_PLACE * len(places) + _W_TRAVEL * len(strong) + _W_SCENE * len(scenes)
 
-    has_duration = bool(TRAVEL_DURATION.search(text))
-    bare_duration = False
-    if has_duration:
-        travel_hits.append("<时长>")
+    # 证据里放**实际命中的写法**（"玩5天"），不放内部占位符：界面上
+    # "上海 / <时长>" 看起来像"没抽到天数"，但天数其实已经抽到了。
+    duration_match = TRAVEL_DURATION.search(text)
+    bare_match = None if duration_match else BARE_DURATION.search(text)
+    has_duration = duration_match is not None
+    bare_duration = bare_match is not None
+    if duration_match:
+        travel_hits.append(duration_match.group(0))
         score += _W_DURATION
-    elif BARE_DURATION.search(text):
-        bare_duration = True
+    elif bare_match:
+        travel_hits.append(bare_match.group(0))
         score += _W_BARE_DURATION
     # 地名 + 出行结构（"去杭州"）比单说地名更像一次出行
     structured = has_travel_structure(text)
