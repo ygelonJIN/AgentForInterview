@@ -1,0 +1,530 @@
+{
+  "generated_at": "2026-11-25T13:34:25",
+  "scenarios_file": "data/evaluation/trip_gear.hard.jsonl",
+  "metric_definitions": {
+    "V_actual": "独立检查器认定的硬约束违反条数（每个约束家族最多 1 条）",
+    "V_declared": "被测链路披露的 critical issue 去重条数",
+    "missed": "检查器认定违反、系统未披露",
+    "false_alarm": "系统披露违反、检查器认定不成立",
+    "feasible.zero_violation_rate": "可行场景里 V_actual=0 的比例",
+    "infeasible.detected_rate": "不可行场景判成 infeasible 的比例",
+    "infeasible.consistent_rate": "判对且 V_actual>0 且披露一致的比例"
+  },
+  "summary": {
+    "scenarios": 20,
+    "expect_distribution": {
+      "feasible": 8,
+      "infeasible": 6,
+      "repairable": 3,
+      "needs_input": 3
+    },
+    "checker_accuracy": 1.0,
+    "verdict_accuracy": 1.0,
+    "disclosure_consistency": 1.0,
+    "missed_total": 0,
+    "false_alarm_total": 0,
+    "unchecked_total": 0,
+    "feasible": {
+      "count": 8,
+      "zero_violation_rate": 1.0,
+      "disclosed_rate": 1.0,
+      "total_violations": 0
+    },
+    "infeasible": {
+      "count": 6,
+      "detected_rate": 1.0,
+      "consistent_rate": 1.0,
+      "false_positive_feasible": 0
+    },
+    "other_states": {
+      "count": 6,
+      "consistent_rate": 1.0
+    },
+    "undecidable": {
+      "count": 2,
+      "disclosed_rate": 1.0
+    }
+  },
+  "rows": [
+    {
+      "id": "camp-ok-2p",
+      "note": "2 人 3℃ 露营，温标/容量/R 值都够，总花费远低于预算",
+      "expect_verdict": "feasible",
+      "verdict": "feasible",
+      "verdict_ok": true,
+      "expect_codes": [],
+      "actual_codes": [],
+      "checker_ok": true,
+      "v_actual": 0,
+      "v_declared": 0,
+      "declared_codes": [],
+      "missed": [],
+      "false_alarm": [],
+      "unchecked": [],
+      "consistent": true,
+      "undecidable": [],
+      "undecidable_disclosed": [],
+      "undecidable_ok": true
+    },
+    {
+      "id": "hotel-3d",
+      "note": "单人杭州 3 天酒店，2700 / 6000",
+      "expect_verdict": "feasible",
+      "verdict": "feasible",
+      "verdict_ok": true,
+      "expect_codes": [],
+      "actual_codes": [],
+      "checker_ok": true,
+      "v_actual": 0,
+      "v_declared": 0,
+      "declared_codes": [],
+      "missed": [],
+      "false_alarm": [],
+      "unchecked": [],
+      "consistent": true,
+      "undecidable": [],
+      "undecidable_disclosed": [],
+      "undecidable_ok": true
+    },
+    {
+      "id": "camp-ok-unknown-bag",
+      "note": "温标未标注：不算违反，但必须披露为不可判定",
+      "expect_verdict": "feasible",
+      "verdict": "feasible",
+      "verdict_ok": true,
+      "expect_codes": [],
+      "actual_codes": [],
+      "checker_ok": true,
+      "v_actual": 0,
+      "v_declared": 0,
+      "declared_codes": [],
+      "missed": [],
+      "false_alarm": [],
+      "unchecked": [],
+      "consistent": true,
+      "undecidable": [
+        "sleeping_bag_temp"
+      ],
+      "undecidable_disclosed": [
+        "sleeping_bag_temp"
+      ],
+      "undecidable_ok": true
+    },
+    {
+      "id": "trip-only-budget",
+      "note": "预算口径为不含装备：装备 800 不计入 1500 的行程预算",
+      "expect_verdict": "feasible",
+      "verdict": "feasible",
+      "verdict_ok": true,
+      "expect_codes": [],
+      "actual_codes": [],
+      "checker_ok": true,
+      "v_actual": 0,
+      "v_declared": 0,
+      "declared_codes": [],
+      "missed": [],
+      "false_alarm": [],
+      "unchecked": [],
+      "consistent": true,
+      "undecidable": [],
+      "undecidable_disclosed": [],
+      "undecidable_ok": true
+    },
+    {
+      "id": "budget-exact-boundary",
+      "note": "刚好等于预算不算超：检查用的是严格大于",
+      "expect_verdict": "feasible",
+      "verdict": "feasible",
+      "verdict_ok": true,
+      "expect_codes": [],
+      "actual_codes": [],
+      "checker_ok": true,
+      "v_actual": 0,
+      "v_declared": 0,
+      "declared_codes": [],
+      "missed": [],
+      "false_alarm": [],
+      "unchecked": [],
+      "consistent": true,
+      "undecidable": [],
+      "undecidable_disclosed": [],
+      "undecidable_ok": true
+    },
+    {
+      "id": "rain-with-umbrella",
+      "note": "降水 60% 但带伞，不构成违反",
+      "expect_verdict": "feasible",
+      "verdict": "feasible",
+      "verdict_ok": true,
+      "expect_codes": [],
+      "actual_codes": [],
+      "checker_ok": true,
+      "v_actual": 0,
+      "v_declared": 0,
+      "declared_codes": [],
+      "missed": [],
+      "false_alarm": [],
+      "unchecked": [],
+      "consistent": true,
+      "undecidable": [],
+      "undecidable_disclosed": [],
+      "undecidable_ok": true
+    },
+    {
+      "id": "kids-with-child-gear",
+      "note": "同行儿童且清单有儿童项",
+      "expect_verdict": "feasible",
+      "verdict": "feasible",
+      "verdict_ok": true,
+      "expect_codes": [],
+      "actual_codes": [],
+      "checker_ok": true,
+      "v_actual": 0,
+      "v_declared": 0,
+      "declared_codes": [],
+      "missed": [],
+      "false_alarm": [],
+      "unchecked": [],
+      "consistent": true,
+      "undecidable": [],
+      "undecidable_disclosed": [],
+      "undecidable_ok": true
+    },
+    {
+      "id": "gear-budget-ok",
+      "note": "装备 900 / 装备预算 1500",
+      "expect_verdict": "feasible",
+      "verdict": "feasible",
+      "verdict_ok": true,
+      "expect_codes": [],
+      "actual_codes": [],
+      "checker_ok": true,
+      "v_actual": 0,
+      "v_declared": 0,
+      "declared_codes": [],
+      "missed": [],
+      "false_alarm": [],
+      "unchecked": [],
+      "consistent": true,
+      "undecidable": [],
+      "undecidable_disclosed": [],
+      "undecidable_ok": true
+    },
+    {
+      "id": "bag-temp-weak",
+      "note": "3℃ 露营用 10℃ 睡袋：温度不够是事实型问题，省钱修不掉",
+      "expect_verdict": "infeasible",
+      "verdict": "infeasible",
+      "verdict_ok": true,
+      "expect_codes": [
+        "sleeping_bag_temp"
+      ],
+      "actual_codes": [
+        "sleeping_bag_temp"
+      ],
+      "checker_ok": true,
+      "v_actual": 1,
+      "v_declared": 1,
+      "declared_codes": [
+        "sleeping_bag_temp"
+      ],
+      "missed": [],
+      "false_alarm": [],
+      "unchecked": [],
+      "consistent": true,
+      "undecidable": [],
+      "undecidable_disclosed": [],
+      "undecidable_ok": true
+    },
+    {
+      "id": "camp-no-pad",
+      "note": "露营清单缺防潮垫：必备装备缺失，直接不可行",
+      "expect_verdict": "infeasible",
+      "verdict": "infeasible",
+      "verdict_ok": true,
+      "expect_codes": [
+        "camping_gear"
+      ],
+      "actual_codes": [
+        "camping_gear"
+      ],
+      "checker_ok": true,
+      "v_actual": 1,
+      "v_declared": 1,
+      "declared_codes": [
+        "camping_gear"
+      ],
+      "missed": [],
+      "false_alarm": [],
+      "unchecked": [],
+      "consistent": true,
+      "undecidable": [],
+      "undecidable_disclosed": [],
+      "undecidable_ok": true
+    },
+    {
+      "id": "out-of-stock",
+      "note": "冲锋衣库存为 0：买不到就是不可行，不是等两天的问题",
+      "expect_verdict": "infeasible",
+      "verdict": "infeasible",
+      "verdict_ok": true,
+      "expect_codes": [
+        "out_of_stock"
+      ],
+      "actual_codes": [
+        "out_of_stock"
+      ],
+      "checker_ok": true,
+      "v_actual": 1,
+      "v_declared": 1,
+      "declared_codes": [
+        "out_of_stock"
+      ],
+      "missed": [],
+      "false_alarm": [],
+      "unchecked": [],
+      "consistent": true,
+      "undecidable": [],
+      "undecidable_disclosed": [],
+      "undecidable_ok": true
+    },
+    {
+      "id": "lead-time-miss",
+      "note": "距出发 3 天、到货要 7 天：赶不上就是硬冲突",
+      "expect_verdict": "infeasible",
+      "verdict": "infeasible",
+      "verdict_ok": true,
+      "expect_codes": [
+        "lead_time"
+      ],
+      "actual_codes": [
+        "lead_time"
+      ],
+      "checker_ok": true,
+      "v_actual": 1,
+      "v_declared": 1,
+      "declared_codes": [
+        "lead_time"
+      ],
+      "missed": [],
+      "false_alarm": [],
+      "unchecked": [],
+      "consistent": true,
+      "undecidable": [],
+      "undecidable_disclosed": [],
+      "undecidable_ok": true
+    },
+    {
+      "id": "lodging-mismatch",
+      "note": "要求露营，行程却全住酒店：住宿约束没有被兑现",
+      "expect_verdict": "infeasible",
+      "verdict": "infeasible",
+      "verdict_ok": true,
+      "expect_codes": [
+        "lodging"
+      ],
+      "actual_codes": [
+        "lodging"
+      ],
+      "checker_ok": true,
+      "v_actual": 1,
+      "v_declared": 1,
+      "declared_codes": [
+        "lodging"
+      ],
+      "missed": [],
+      "false_alarm": [],
+      "unchecked": [],
+      "consistent": true,
+      "undecidable": [],
+      "undecidable_disclosed": [],
+      "undecidable_ok": true
+    },
+    {
+      "id": "time-overlap",
+      "note": "11:00 的活动与 10:00 的两小时安排重叠",
+      "expect_verdict": "infeasible",
+      "verdict": "infeasible",
+      "verdict_ok": true,
+      "expect_codes": [
+        "time_overlap"
+      ],
+      "actual_codes": [
+        "time_overlap"
+      ],
+      "checker_ok": true,
+      "v_actual": 1,
+      "v_declared": 1,
+      "declared_codes": [
+        "time_overlap"
+      ],
+      "missed": [],
+      "false_alarm": [],
+      "unchecked": [],
+      "consistent": true,
+      "undecidable": [],
+      "undecidable_disclosed": [],
+      "undecidable_ok": true
+    },
+    {
+      "id": "repair-downgrade",
+      "note": "超 100，降一档正好补上，代价 0.10 ≤ τ，可自动执行",
+      "expect_verdict": "repairable",
+      "verdict": "repairable",
+      "verdict_ok": true,
+      "expect_codes": [
+        "budget"
+      ],
+      "actual_codes": [
+        "budget"
+      ],
+      "checker_ok": true,
+      "v_actual": 1,
+      "v_declared": 1,
+      "declared_codes": [
+        "budget"
+      ],
+      "missed": [],
+      "false_alarm": [],
+      "unchecked": [],
+      "consistent": true,
+      "undecidable": [],
+      "undecidable_disclosed": [],
+      "undecidable_ok": true
+    },
+    {
+      "id": "repair-two-actions",
+      "note": "缺口 600 要两个动作才够，代价 0.20+0.10=0.30 > τ，要用户点头",
+      "expect_verdict": "repairable",
+      "verdict": "repairable",
+      "verdict_ok": true,
+      "expect_codes": [
+        "budget"
+      ],
+      "actual_codes": [
+        "budget"
+      ],
+      "checker_ok": true,
+      "v_actual": 1,
+      "v_declared": 1,
+      "declared_codes": [
+        "budget"
+      ],
+      "missed": [],
+      "false_alarm": [],
+      "unchecked": [],
+      "consistent": true,
+      "undecidable": [],
+      "undecidable_disclosed": [],
+      "undecidable_ok": true
+    },
+    {
+      "id": "repair-lodging-confirm",
+      "note": "只有换住宿能补缺口，代价 0.50 高于 τ：必须用户确认",
+      "expect_verdict": "repairable",
+      "verdict": "repairable",
+      "verdict_ok": true,
+      "expect_codes": [
+        "budget"
+      ],
+      "actual_codes": [
+        "budget"
+      ],
+      "checker_ok": true,
+      "v_actual": 1,
+      "v_declared": 1,
+      "declared_codes": [
+        "budget"
+      ],
+      "missed": [],
+      "false_alarm": [],
+      "unchecked": [],
+      "consistent": true,
+      "undecidable": [],
+      "undecidable_disclosed": [],
+      "undecidable_ok": true
+    },
+    {
+      "id": "needs-input-budget",
+      "note": "只超预算且没有可执行动作：交还用户取舍，不硬判不可行",
+      "expect_verdict": "needs_input",
+      "verdict": "needs_input",
+      "verdict_ok": true,
+      "expect_codes": [
+        "budget"
+      ],
+      "actual_codes": [
+        "budget"
+      ],
+      "checker_ok": true,
+      "v_actual": 1,
+      "v_declared": 1,
+      "declared_codes": [
+        "budget"
+      ],
+      "missed": [],
+      "false_alarm": [],
+      "unchecked": [],
+      "consistent": true,
+      "undecidable": [],
+      "undecidable_disclosed": [],
+      "undecidable_ok": true
+    },
+    {
+      "id": "needs-input-gear-budget",
+      "note": "装备超装备预算，同样交还用户",
+      "expect_verdict": "needs_input",
+      "verdict": "needs_input",
+      "verdict_ok": true,
+      "expect_codes": [
+        "gear_budget"
+      ],
+      "actual_codes": [
+        "gear_budget"
+      ],
+      "checker_ok": true,
+      "v_actual": 1,
+      "v_declared": 1,
+      "declared_codes": [
+        "gear_budget"
+      ],
+      "missed": [],
+      "false_alarm": [],
+      "unchecked": [],
+      "consistent": true,
+      "undecidable": [],
+      "undecidable_disclosed": [],
+      "undecidable_ok": true
+    },
+    {
+      "id": "needs-input-budget-unknown",
+      "note": "超预算 + 温标未知：两个都不是事实型死结，交还用户并披露未知",
+      "expect_verdict": "needs_input",
+      "verdict": "needs_input",
+      "verdict_ok": true,
+      "expect_codes": [
+        "budget"
+      ],
+      "actual_codes": [
+        "budget"
+      ],
+      "checker_ok": true,
+      "v_actual": 1,
+      "v_declared": 1,
+      "declared_codes": [
+        "budget"
+      ],
+      "missed": [],
+      "false_alarm": [],
+      "unchecked": [],
+      "consistent": true,
+      "undecidable": [
+        "sleeping_bag_temp"
+      ],
+      "undecidable_disclosed": [
+        "sleeping_bag_temp"
+      ],
+      "undecidable_ok": true
+    }
+  ]
+}

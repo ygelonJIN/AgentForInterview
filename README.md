@@ -1,10 +1,10 @@
 # SmartLife Agent
 
-> **毕业设计题目**：基于 LangGraph 的行程约束派生与装备协同规划智能体设计与实现
+> **毕业设计题目**：基于 LangGraph 的旅行智能体设计与实现
 
 SmartLife Agent 是一个面向电商导购、旅行规划、客服与通用任务的全栈智能体平台，也是本毕业设计的工程基础。项目基于 Python、Streamlit、LangChain、LangGraph 和 ChromaDB，演示了任务路由、智能体编排、混合检索、工具调用、长期记忆、审批机制、流式输出及评测能力。
 
-本设计在通用平台之上聚焦一条纵向链路：把一句出行需求派生为可追溯的约束清单，生成结构化逐日行程，由行程推导装备清单，结合对话与长期记忆判断已有装备，只对缺口调用商品检索，最后做预算、时间与装备齐全性校验，并在有限轮次内修复。实现见 `smartlife-agent/app/trip_gear/`，说明见 `docs/architecture.md`。
+本设计在通用平台之上构建一个面向出行场景的旅行智能体：入口先把一句中文需求解析成意图与结构化槽位，按意图路由到旅行规划、装备协同、导购或客服；旅行链路再把需求派生为可追溯的约束清单，生成结构化逐日行程，由行程推导装备清单，结合对话与长期记忆判断已有装备，只对缺口调用商品检索，最后做预算、时间与装备齐全性校验，并在有限轮次内修复。实现见 `smartlife-agent/app/trip_gear/`，说明见 `docs/architecture.md`。
 
 > 项目代码位于 `smartlife-agent/` 目录。
 
@@ -454,6 +454,23 @@ venv312/bin/python scripts/run_e2e_benchmark.py \
 - Provider 状态。
 - 首 Token、生成、后处理和完整链路耗时。
 - 各 LangGraph 节点的性能分解。
+
+### 行程子系统评测（硬约束 / 代价 / 消融）
+
+```bash
+# 硬约束违反数与披露一致性：20 条场景，不调模型、不联网
+venv312/bin/python scripts/eval_trip_gear_hard.py --strict
+
+# 代价权重敏感性：扰动档位/置信度/τ，看结论翻不翻
+venv312/bin/python scripts/analyze_cost_sensitivity.py
+
+# G1–G4 消融（会调模型）：同模型、同温度、同等提示词预算，逐组记 token
+venv312/bin/python scripts/run_ablation.py
+```
+
+三份报告分别落在 `data/evaluation/trip_gear.hard.report.json`、
+`cost.sensitivity.report.json`、`trip_gear.ablation.report.json`。
+指标定义与口径见 `docs/architecture.md` 的「评测」一节。
 
 ## 目录结构
 

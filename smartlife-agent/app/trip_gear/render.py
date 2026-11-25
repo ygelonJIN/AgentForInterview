@@ -81,6 +81,76 @@ def _verdict_note(verdict: Optional[Dict[str, Any]]) -> str:
     return ""
 
 
+def _cost_note(verdict: Optional[Dict[str, Any]]) -> List[str]:
+    """把代价明细写进正文：每项改法多贵、省多少、要不要确认。
+
+    只展示，不参与判定；数值直接取 ``verdict.terms``，保证与界面面板同源。
+    """
+    if not verdict:
+        return []
+    terms = verdict.get("terms") or []
+    violations = verdict.get("violation_terms") or []
+    if not terms and not violations:
+        return []
+    lines = [
+        "",
+        "## 代价与取舍",
+        "代价 = 权重 × 幅度；权重 = 硬度 × 来源置信度；幅度归一到 0–1。",
+    ]
+    for term in violations[:6]:
+        label = str(term.get("label") or "")
+        try:
+            weight = float(term.get("weight") or 0)
+        except (TypeError, ValueError):
+            weight = 0.0
+        try:
+            delta = float(term.get("delta") or 0)
+        except (TypeError, ValueError):
+            delta = 0.0
+        try:
+            cost = float(term.get("cost") or 0)
+        except (TypeError, ValueError):
+            cost = 0.0
+        lines.append(
+            f"- 违反 {label}：权重 {weight:.2f} × 幅度 {delta:.2f} = 代价 {cost:.2f}"
+        )
+        detail = str(term.get("detail") or "")
+        if detail:
+            lines.append(f"  - 算式：{detail}")
+    if violations:
+        try:
+            violation_total = float(verdict.get("violation_cost") or 0)
+        except (TypeError, ValueError):
+            violation_total = 0.0
+        lines.append(f"违反代价合计 {violation_total:.2f}（权重 = 硬度 × 来源置信度，只影响排序与披露顺序）。")
+    if not terms:
+        return lines
+    for term in terms[:6]:
+        label = str(term.get("label") or "")
+        try:
+            cost = float(term.get("cost") or 0)
+        except (TypeError, ValueError):
+            cost = 0.0
+        try:
+            saving = float(term.get("saving") or 0)
+        except (TypeError, ValueError):
+            saving = 0.0
+        money = f"，省 ¥{saving:,.0f}" if saving else ""
+        detail = str(term.get("detail") or "")
+        lines.append(f"- {label}：代价 {cost:.2f}{money}" + (f"（{detail}）" if detail else ""))
+    try:
+        best = float(verdict.get("best_cost") or 0)
+    except (TypeError, ValueError):
+        best = 0.0
+    try:
+        tau = float(verdict.get("tau") or 0)
+    except (TypeError, ValueError):
+        tau = 0.0
+    tail = "可自动执行" if verdict.get("auto_applicable") else "需要你确认"
+    lines.append(f"总代价 {best:.2f}，阈值 τ {tau:.2f}（{tail}）；τ 只决定要不要问，不决定可不可行。")
+    return lines
+
+
 def render(
     facts: TripFacts,
     constraints: List[Constraint],
@@ -235,6 +305,8 @@ def render(
         lines.append("## 到店自提")
         for issue in pickup:
             lines.append(f"- {issue.constraint}：{issue.hint or ''}".rstrip("："))
+
+    lines.extend(_cost_note(verdict))
 
     note = _defaults_note(facts)
     if note:

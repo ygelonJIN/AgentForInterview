@@ -68,6 +68,7 @@ def validate(itinerary: Itinerary) -> List[Issue]:
                     constraint=f"第 {day.day} 天日程",
                     hint="当天没有任何安排",
                     severity="minor",
+                    code="day_empty",
                 )
             )
             continue
@@ -79,6 +80,7 @@ def validate(itinerary: Itinerary) -> List[Issue]:
                     actual=f"{total_minutes} 分钟",
                     limit=f"{DAY_WINDOW_MIN} 分钟",
                     hint="单日活动排得太满，需要删减或调整时长",
+                    code="day_overload",
                 )
             )
         timed = []
@@ -95,6 +97,7 @@ def validate(itinerary: Itinerary) -> List[Issue]:
                         constraint=f"第 {day.day} 天时间冲突",
                         actual=f"{previous[2]} 与 {current[2]} 重叠",
                         hint="相邻安排时间重叠，需要顺延或删减",
+                        code="time_overlap",
                     )
                 )
     return issues

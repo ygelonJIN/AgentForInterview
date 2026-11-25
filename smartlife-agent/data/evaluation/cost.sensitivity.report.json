@@ -1,0 +1,252 @@
+{
+  "generated_at": "2026-11-25T12:48:57",
+  "note": "扰动在进程内完成，跑完即恢复；不调模型、不联网。",
+  "report": {
+    "baseline": {
+      "tau": 0.15,
+      "hard_weight": 1.0,
+      "soft_weight": 0.6,
+      "source_confidence": {
+        "用户": 1.0,
+        "天气": 0.9,
+        "工具": 0.9,
+        "外部": 0.9,
+        "规则": 0.8,
+        "模型": 0.5
+      },
+      "action_cost": {
+        "downgrade": 0.1,
+        "skip": 0.2,
+        "change_lodging": 0.5,
+        "soften_activity": 0.4
+      }
+    },
+    "cases": {
+      "repair_cases": [
+        "downgrade-then-skip",
+        "single-skip",
+        "two-downgrades",
+        "skip-then-lodging",
+        "soften-activity",
+        "auto-downgrade",
+        "three-skips",
+        "lodging-only"
+      ],
+      "order_cases": [
+        "user-hard-vs-model-hard",
+        "user-soft-vs-rule-hard",
+        "rule-vs-model",
+        "weather-vs-model"
+      ]
+    },
+    "action_tier": {
+      "perturbations": [
+        {
+          "kind": "downgrade",
+          "factor": 0.8,
+          "plan_flips": [],
+          "auto_flips": [],
+          "state_flips": []
+        },
+        {
+          "kind": "downgrade",
+          "factor": 1.2,
+          "plan_flips": [],
+          "auto_flips": [],
+          "state_flips": []
+        },
+        {
+          "kind": "downgrade",
+          "factor": 0.4,
+          "plan_flips": [],
+          "auto_flips": [
+            "two-downgrades"
+          ],
+          "state_flips": []
+        },
+        {
+          "kind": "skip",
+          "factor": 0.8,
+          "plan_flips": [],
+          "auto_flips": [],
+          "state_flips": []
+        },
+        {
+          "kind": "skip",
+          "factor": 1.2,
+          "plan_flips": [],
+          "auto_flips": [],
+          "state_flips": []
+        },
+        {
+          "kind": "skip",
+          "factor": 0.4,
+          "plan_flips": [
+            "downgrade-then-skip"
+          ],
+          "auto_flips": [
+            "single-skip"
+          ],
+          "state_flips": []
+        },
+        {
+          "kind": "change_lodging",
+          "factor": 0.8,
+          "plan_flips": [],
+          "auto_flips": [],
+          "state_flips": []
+        },
+        {
+          "kind": "change_lodging",
+          "factor": 1.2,
+          "plan_flips": [],
+          "auto_flips": [],
+          "state_flips": []
+        },
+        {
+          "kind": "change_lodging",
+          "factor": 0.4,
+          "plan_flips": [
+            "skip-then-lodging"
+          ],
+          "auto_flips": [],
+          "state_flips": []
+        },
+        {
+          "kind": "soften_activity",
+          "factor": 0.8,
+          "plan_flips": [],
+          "auto_flips": [],
+          "state_flips": []
+        },
+        {
+          "kind": "soften_activity",
+          "factor": 1.2,
+          "plan_flips": [],
+          "auto_flips": [],
+          "state_flips": []
+        },
+        {
+          "kind": "soften_activity",
+          "factor": 0.4,
+          "plan_flips": [],
+          "auto_flips": [],
+          "state_flips": []
+        }
+      ],
+      "plan_flip_total": 2,
+      "first_flip_factor": {
+        "downgrade": 0.4,
+        "skip": 0.4,
+        "change_lodging": 0.4,
+        "soften_activity": null
+      },
+      "stable_under_pm20": true
+    },
+    "source_confidence": {
+      "perturbations": [
+        {
+          "model_confidence": 0.3,
+          "order_flips": []
+        },
+        {
+          "model_confidence": 0.4,
+          "order_flips": []
+        },
+        {
+          "model_confidence": 0.6,
+          "order_flips": []
+        },
+        {
+          "model_confidence": 0.7,
+          "order_flips": []
+        },
+        {
+          "model_confidence": 0.9,
+          "order_flips": [
+            "rule-vs-model"
+          ]
+        }
+      ]
+    },
+    "soft_weight": {
+      "perturbations": [
+        {
+          "soft_weight": 0.4,
+          "cost_changed": [
+            "user-soft-vs-rule-hard"
+          ],
+          "rank_flips": []
+        },
+        {
+          "soft_weight": 0.5,
+          "cost_changed": [
+            "user-soft-vs-rule-hard"
+          ],
+          "rank_flips": []
+        },
+        {
+          "soft_weight": 0.7,
+          "cost_changed": [
+            "user-soft-vs-rule-hard"
+          ],
+          "rank_flips": []
+        },
+        {
+          "soft_weight": 0.8,
+          "cost_changed": [
+            "user-soft-vs-rule-hard"
+          ],
+          "rank_flips": [
+            "user-soft-vs-rule-hard"
+          ]
+        }
+      ]
+    },
+    "tau": {
+      "sweep": [
+        {
+          "tau": 0.05,
+          "auto_changed": [
+            "auto-downgrade"
+          ],
+          "state_changed": []
+        },
+        {
+          "tau": 0.1,
+          "auto_changed": [],
+          "state_changed": []
+        },
+        {
+          "tau": 0.15,
+          "auto_changed": [],
+          "state_changed": []
+        },
+        {
+          "tau": 0.2,
+          "auto_changed": [
+            "single-skip",
+            "two-downgrades"
+          ],
+          "state_changed": []
+        },
+        {
+          "tau": 0.3,
+          "auto_changed": [
+            "downgrade-then-skip",
+            "single-skip",
+            "two-downgrades"
+          ],
+          "state_changed": []
+        }
+      ]
+    },
+    "state_flip_total": 0,
+    "verdict": {
+      "decisions_stable_under_pm20": true,
+      "disclosure_sensitive_to_model_confidence": true,
+      "disclosure_sensitive_to_soft_weight": true,
+      "tau_affects_feasibility": false
+    }
+  }
+}

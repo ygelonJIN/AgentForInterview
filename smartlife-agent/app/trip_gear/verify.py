@@ -10,7 +10,7 @@ unverified（该项无法自动判定，需人工确认）。只有 violated 才
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from app.trip_gear.itinerary import total_cost, validate as validate_itinerary
 from app.trip_gear.models import Constraint, GearItem, Issue, Itinerary, TripFacts
@@ -75,7 +75,11 @@ def _violate(
     limit: Any = None,
     hint: str = "",
 ) -> None:
-    """记录一次违反：软约束标 relaxed，硬约束产生 critical issue。"""
+    """记录一次违反：软约束标 relaxed，硬约束产生 critical issue。
+
+    ``code`` 一律取约束的 ``key``：约束键就是硬约束的类别标识，
+    评测与披露对账都按它统计，不依赖中文文案。
+    """
     if constraint.hard:
         constraint.status = "violated"
         issues.append(
@@ -85,6 +89,7 @@ def _violate(
                 limit=limit,
                 hint=hint or "该约束未被满足",
                 severity="critical",
+                code=constraint.key or "",
             )
         )
     else:
@@ -96,6 +101,7 @@ def _violate(
                 limit=limit,
                 hint=hint or "软约束未满足，可接受",
                 severity="minor",
+                code=constraint.key or "",
             )
         )
 
@@ -112,6 +118,20 @@ def _camping_days(itinerary: Itinerary) -> int:
 
 def _known_gear_names(gear: List[GearItem]) -> set:
     return {item.name for item in gear if item.status != "skipped"}
+
+
+def _has_gear(names: Iterable[str], required: str) -> bool:
+    """清单里有没有这件东西：允许自由命名（"双人帐篷"算帐篷）。
+
+    精确相等会把模型/商品名里的修饰词当成"缺装备"。
+    """
+    for name in names:
+        text = str(name or "")
+        if required in text:
+            return True
+        if len(text) >= 2 and text in required:
+            return True
+    return False
 
 
 def _bag_requirement(facts: TripFacts, constraint: Constraint) -> Optional[SpecRequirement]:
@@ -165,6 +185,7 @@ def _check_bag(
                 limit=constraint.text,
                 hint="睡袋温标不明，无法判断够不够用，需确认",
                 severity="minor",
+                code="sleeping_bag_temp",
                 blocking_risk=True,
             )
         )
@@ -197,6 +218,7 @@ def _check_specs(
                     limit=req.describe(),
                     hint=result.hint,
                     severity="critical",
+                    code="spec_insufficient",
                 )
             )
         elif result.status == STATUS_UNKNOWN:
@@ -207,6 +229,7 @@ def _check_specs(
                     limit=req.describe(),
                     hint=result.hint,
                     severity="minor",
+                    code="spec_unknown",
                     # 规格一问就清楚，且答案可能直接判"不够用"，所以值得打断。
                     blocking_risk=True,
                 )
@@ -257,6 +280,7 @@ def _check_purchases(
                     actual=result.product,
                     hint=result.hint,
                     severity="minor",
+                    code="self_pickup",
                     blocking_risk=False,
                 )
             )
@@ -271,6 +295,7 @@ def _check_purchases(
                     actual=result.product,
                     hint=result.hint,
                     severity="minor",
+                    code="lead_unknown",
                     blocking_risk=risky,
                 )
             )
@@ -297,6 +322,7 @@ def _check_purchases(
                     limit="需要有货",
                     hint=hint,
                     severity="critical",
+                    code="out_of_stock",
                     alternatives=options,
                 )
             )
@@ -317,6 +343,7 @@ def _check_purchases(
                 limit=f"距出发 {result.days_left} 天",
                 hint=hint,
                 severity="critical",
+                code="lead_time",
                 alternatives=options,
             )
         )
@@ -487,6 +514,7 @@ def verify(
                     hint="换更便宜的住处，或放宽每晚住宿预算",
                     # 没有可自动执行的改法，只披露不判死
                     severity="minor",
+                    code="lodging_budget",
                 )
             )
 
@@ -502,6 +530,7 @@ def verify(
                     constraint=f"装备：{name} 预算不足",
                     hint="当前预算内没有可选的款，未购买；放宽预算或减需求再试",
                     severity="minor",
+                    code="gear_unmatched",
                 )
             )
         else:
@@ -510,6 +539,7 @@ def verify(
                     constraint=f"装备：{name}",
                     hint="商品库暂未匹配到商品，未计入预算",
                     severity="minor",
+                    code="gear_unmatched",
                 )
             )
 
@@ -522,6 +552,7 @@ def verify(
                 constraint=f"装备：{item.name} 已按预算省略",
                 hint="装备额度不够；可改选“装备优先”，或调高预算后再补",
                 severity="minor",
+                code="gear_skipped",
             )
         )
 
@@ -543,6 +574,7 @@ def verify(
                     "或去掉雨伞/防晒再试"
                 ),
                 severity="minor",
+                code="outfit_missing",
             )
         )
 
@@ -558,6 +590,7 @@ def verify(
                     actual=len(itinerary.days),
                     limit=facts.days,
                     hint="生成的行程天数与要求不一致",
+                    code="days",
                 )
             )
 
@@ -565,11 +598,12 @@ def verify(
     if with_gear and facts.is_camping:
         names = _known_gear_names(gear)
         for required in ("帐篷", "睡袋", "防潮垫"):
-            if required not in names:
+            if not _has_gear(names, required):
                 issues.append(
                     Issue(
                         constraint=f"露营装备：{required}",
                         hint="露营过夜必须有这一项",
+                        code="camping_gear",
                     )
                 )
 
@@ -585,6 +619,7 @@ def verify(
                     limit=round(float(facts.trip_cap), 2),
                     hint="把装备占比调低、提高行程额度，或减少收费项目",
                     severity="minor",
+                    code="trip_cap",
                 )
             )
 

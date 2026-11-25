@@ -1,0 +1,991 @@
+{
+  "generated_at": "2026-11-25T12:48:45",
+  "scenarios_file": "data/evaluation/trip_gear.ablation.jsonl",
+  "variants": {
+    "G1": {
+      "label": "纯提示词基线",
+      "detail": "一次模型调用，无约束清单/装备规则/校验"
+    },
+    "G2": {
+      "label": "串行流水线",
+      "detail": "+ 规则约束清单 + 规则装备推导"
+    },
+    "G3": {
+      "label": "联合修复与可行性判定",
+      "detail": "+ 确定性校验 + 有界修复（按省得多）"
+    },
+    "G4": {
+      "label": "带代价的提问",
+      "detail": "+ 统一代价排序 + 缺口交还用户"
+    }
+  },
+  "fairness": {
+    "temperature": 0,
+    "max_repair_rounds": 2,
+    "same_model": true,
+    "mean_prompt_chars": {
+      "G1": 1831,
+      "G2": 1912,
+      "G3": 1912,
+      "G4": 1912
+    },
+    "baseline_is_subset": true,
+    "note": "G2–G4 共用同一份事实与规划提示词；G1 的提示词是 G2 的子集（没有约束清单），因此不存在基线获得更多预算的情况。"
+  },
+  "summary": {
+    "G1": {
+      "label": "纯提示词基线",
+      "scenarios": 6,
+      "mean_violations": 0.6667,
+      "zero_violation_rate": 0.3333,
+      "mean_structural_violations": 0.0,
+      "disclosure_rate": 0.0,
+      "mean_missed": 1.0,
+      "mean_gear_coverage": 0.5833,
+      "mean_budget_deviation": 0.1153,
+      "repair_rounds": 0,
+      "asked_rate": 0.0,
+      "mean_latency_ms": 26321,
+      "prompt_tokens": 7073,
+      "completion_tokens": 30749,
+      "calls": 6,
+      "mean_prompt_chars": 1831
+    },
+    "G2": {
+      "label": "串行流水线",
+      "scenarios": 6,
+      "mean_violations": 1.1667,
+      "zero_violation_rate": 0.0,
+      "mean_structural_violations": 0.1667,
+      "disclosure_rate": 0.0,
+      "mean_missed": 1.1667,
+      "mean_gear_coverage": 0.5833,
+      "mean_budget_deviation": 0.3908,
+      "repair_rounds": 0,
+      "asked_rate": 0.0,
+      "mean_latency_ms": 26320,
+      "prompt_tokens": 7436,
+      "completion_tokens": 30770,
+      "calls": 6,
+      "mean_prompt_chars": 1912
+    },
+    "G3": {
+      "label": "联合修复与可行性判定",
+      "scenarios": 6,
+      "mean_violations": 1.0,
+      "zero_violation_rate": 0.0,
+      "mean_structural_violations": 0.0,
+      "disclosure_rate": 1.0,
+      "mean_missed": 0.0,
+      "mean_gear_coverage": 0.75,
+      "mean_budget_deviation": 0.2553,
+      "repair_rounds": 11,
+      "asked_rate": 0.0,
+      "mean_latency_ms": 26390,
+      "prompt_tokens": 7436,
+      "completion_tokens": 31841,
+      "calls": 6,
+      "mean_prompt_chars": 1912
+    },
+    "G4": {
+      "label": "带代价的提问",
+      "scenarios": 6,
+      "mean_violations": 1.0,
+      "zero_violation_rate": 0.0,
+      "mean_structural_violations": 0.0,
+      "disclosure_rate": 1.0,
+      "mean_missed": 0.0,
+      "mean_gear_coverage": 0.75,
+      "mean_budget_deviation": 0.3417,
+      "repair_rounds": 0,
+      "asked_rate": 1.0,
+      "mean_latency_ms": 23284,
+      "prompt_tokens": 7436,
+      "completion_tokens": 27902,
+      "calls": 6,
+      "mean_prompt_chars": 1912
+    }
+  },
+  "rows": [
+    {
+      "variant": "G1",
+      "id": "camp-weekend",
+      "v_actual": 0,
+      "v_structural": 0,
+      "codes": [],
+      "declared_codes": [],
+      "missed": [],
+      "disclosed": true,
+      "gear_coverage": 1.0,
+      "gear_count": 12,
+      "gear": [
+        "双人帐篷",
+        "棉睡袋",
+        "蛋巢防潮垫",
+        "头灯",
+        "大功率营地灯",
+        "登山背包",
+        "速干长袖",
+        "速干长裤",
+        "冲锋衣",
+        "登山鞋",
+        "长柄雨伞",
+        "防晒霜SPF50+"
+      ],
+      "budget_deviation": -0.1933,
+      "repair_rounds": 0,
+      "asked": false,
+      "verdict_state": "n/a",
+      "latency_ms": 38744,
+      "calls": 1,
+      "prompt_chars": 1830,
+      "prompt_tokens": 1178,
+      "completion_tokens": 7516
+    },
+    {
+      "variant": "G1",
+      "id": "family-beach",
+      "v_actual": 1,
+      "v_structural": 0,
+      "codes": [
+        "budget"
+      ],
+      "declared_codes": [],
+      "missed": [
+        "budget"
+      ],
+      "disclosed": false,
+      "gear_coverage": 1.0,
+      "gear_count": 10,
+      "gear": [
+        "防晒霜SPF50+",
+        "女士连体泳衣",
+        "浮潜三件套",
+        "速干短袖",
+        "速干长裤",
+        "儿童T恤",
+        "儿童长裤",
+        "儿童外套",
+        "透气跑步鞋",
+        "长柄雨伞"
+      ],
+      "budget_deviation": 0.415,
+      "repair_rounds": 0,
+      "asked": false,
+      "verdict_state": "n/a",
+      "latency_ms": 37687,
+      "calls": 1,
+      "prompt_chars": 1831,
+      "prompt_tokens": 1179,
+      "completion_tokens": 7391
+    },
+    {
+      "variant": "G1",
+      "id": "business-trip",
+      "v_actual": 1,
+      "v_structural": 0,
+      "codes": [
+        "budget"
+      ],
+      "declared_codes": [],
+      "missed": [
+        "budget"
+      ],
+      "disclosed": false,
+      "gear_coverage": 0.0,
+      "gear_count": 8,
+      "gear": [
+        "速干短袖",
+        "速干长裤",
+        "透气跑步鞋",
+        "长柄雨伞",
+        "防晒霜SPF50+",
+        "登山背包",
+        "单层冲锋衣",
+        "西装外套"
+      ],
+      "budget_deviation": 0.032,
+      "repair_rounds": 0,
+      "asked": false,
+      "verdict_state": "n/a",
+      "latency_ms": 27973,
+      "calls": 1,
+      "prompt_chars": 1831,
+      "prompt_tokens": 1179,
+      "completion_tokens": 5625
+    },
+    {
+      "variant": "G1",
+      "id": "rainy-hike",
+      "v_actual": 0,
+      "v_structural": 0,
+      "codes": [],
+      "declared_codes": [],
+      "missed": [],
+      "disclosed": true,
+      "gear_coverage": 0.0,
+      "gear_count": 7,
+      "gear": [
+        "长柄雨伞",
+        "速干短袖",
+        "速干长裤",
+        "透气跑步鞋",
+        "防晒霜SPF50+",
+        "轻薄羽绒服",
+        "登山背包"
+      ],
+      "budget_deviation": -0.0135,
+      "repair_rounds": 0,
+      "asked": false,
+      "verdict_state": "n/a",
+      "latency_ms": 12359,
+      "calls": 1,
+      "prompt_chars": 1831,
+      "prompt_tokens": 1179,
+      "completion_tokens": 2359
+    },
+    {
+      "variant": "G1",
+      "id": "budget-tight",
+      "v_actual": 1,
+      "v_structural": 0,
+      "codes": [
+        "budget"
+      ],
+      "declared_codes": [],
+      "missed": [
+        "budget"
+      ],
+      "disclosed": false,
+      "gear_coverage": 1.0,
+      "gear_count": 6,
+      "gear": [
+        "速干短袖",
+        "速干长裤",
+        "透气跑步鞋",
+        "防晒霜SPF50+",
+        "雨伞",
+        "登山背包"
+      ],
+      "budget_deviation": 0.2417,
+      "repair_rounds": 0,
+      "asked": false,
+      "verdict_state": "n/a",
+      "latency_ms": 21665,
+      "calls": 1,
+      "prompt_chars": 1831,
+      "prompt_tokens": 1179,
+      "completion_tokens": 4057
+    },
+    {
+      "variant": "G1",
+      "id": "cold-winter",
+      "v_actual": 1,
+      "v_structural": 0,
+      "codes": [
+        "budget"
+      ],
+      "declared_codes": [],
+      "missed": [
+        "budget"
+      ],
+      "disclosed": false,
+      "gear_coverage": 0.5,
+      "gear_count": 7,
+      "gear": [
+        "厚羽绒服",
+        "速干长袖",
+        "速干长裤",
+        "防水登山鞋",
+        "长柄雨伞",
+        "防晒霜SPF50+",
+        "登山背包"
+      ],
+      "budget_deviation": 0.21,
+      "repair_rounds": 0,
+      "asked": false,
+      "verdict_state": "n/a",
+      "latency_ms": 19502,
+      "calls": 1,
+      "prompt_chars": 1833,
+      "prompt_tokens": 1179,
+      "completion_tokens": 3801
+    },
+    {
+      "variant": "G2",
+      "id": "camp-weekend",
+      "v_actual": 1,
+      "v_structural": 0,
+      "codes": [
+        "budget"
+      ],
+      "declared_codes": [],
+      "missed": [
+        "budget"
+      ],
+      "disclosed": false,
+      "gear_coverage": 1.0,
+      "gear_count": 14,
+      "gear": [
+        "帐篷",
+        "睡袋",
+        "防潮垫",
+        "头灯",
+        "羽绒服",
+        "登山鞋",
+        "背包",
+        "双人帐篷",
+        "棉睡袋",
+        "冬季款防潮垫",
+        "冲锋衣",
+        "速干长裤",
+        "登山背包",
+        "长柄雨伞"
+      ],
+      "budget_deviation": 0.65,
+      "repair_rounds": 0,
+      "asked": false,
+      "verdict_state": "n/a",
+      "latency_ms": 17868,
+      "calls": 1,
+      "prompt_chars": 1920,
+      "prompt_tokens": 1246,
+      "completion_tokens": 3555
+    },
+    {
+      "variant": "G2",
+      "id": "family-beach",
+      "v_actual": 2,
+      "v_structural": 1,
+      "codes": [
+        "budget",
+        "time_overlap"
+      ],
+      "declared_codes": [],
+      "missed": [
+        "budget",
+        "time_overlap"
+      ],
+      "disclosed": false,
+      "gear_coverage": 1.0,
+      "gear_count": 20,
+      "gear": [
+        "防晒霜",
+        "帽子",
+        "墨镜",
+        "泳衣",
+        "速干衣",
+        "防水袋",
+        "T恤",
+        "洗衣袋",
+        "儿童",
+        "湿巾",
+        "防晒霜SPF50+",
+        "女士连体泳衣",
+        "浮潜三件套",
+        "速干短袖",
+        "速干长裤",
+        "儿童T恤",
+        "儿童长裤",
+        "儿童外套",
+        "透气跑步鞋",
+        "长柄雨伞"
+      ],
+      "budget_deviation": 0.1963,
+      "repair_rounds": 0,
+      "asked": false,
+      "verdict_state": "n/a",
+      "latency_ms": 20443,
+      "calls": 1,
+      "prompt_chars": 1909,
+      "prompt_tokens": 1237,
+      "completion_tokens": 3958
+    },
+    {
+      "variant": "G2",
+      "id": "business-trip",
+      "v_actual": 1,
+      "v_structural": 0,
+      "codes": [
+        "budget"
+      ],
+      "declared_codes": [],
+      "missed": [
+        "budget"
+      ],
+      "disclosed": false,
+      "gear_coverage": 0.5,
+      "gear_count": 6,
+      "gear": [
+        "西装",
+        "皮鞋",
+        "中厚羽绒服",
+        "透气跑步鞋",
+        "长柄雨伞",
+        "防晒霜SPF50+"
+      ],
+      "budget_deviation": 0.2488,
+      "repair_rounds": 0,
+      "asked": false,
+      "verdict_state": "n/a",
+      "latency_ms": 45421,
+      "calls": 1,
+      "prompt_chars": 1911,
+      "prompt_tokens": 1238,
+      "completion_tokens": 8863
+    },
+    {
+      "variant": "G2",
+      "id": "rainy-hike",
+      "v_actual": 1,
+      "v_structural": 0,
+      "codes": [
+        "budget"
+      ],
+      "declared_codes": [],
+      "missed": [
+        "budget"
+      ],
+      "disclosed": false,
+      "gear_coverage": 0.5,
+      "gear_count": 10,
+      "gear": [
+        "雨伞",
+        "登山鞋",
+        "背包",
+        "加固雨伞",
+        "硬壳冲锋衣",
+        "中厚羽绒服",
+        "防水登山鞋",
+        "速干长裤",
+        "速干长袖",
+        "登山背包"
+      ],
+      "budget_deviation": 0.422,
+      "repair_rounds": 0,
+      "asked": false,
+      "verdict_state": "n/a",
+      "latency_ms": 16176,
+      "calls": 1,
+      "prompt_chars": 1923,
+      "prompt_tokens": 1247,
+      "completion_tokens": 3180
+    },
+    {
+      "variant": "G2",
+      "id": "budget-tight",
+      "v_actual": 1,
+      "v_structural": 0,
+      "codes": [
+        "budget"
+      ],
+      "declared_codes": [],
+      "missed": [
+        "budget"
+      ],
+      "disclosed": false,
+      "gear_coverage": 0.0,
+      "gear_count": 6,
+      "gear": [
+        "轻薄羽绒服",
+        "速干长袖",
+        "速干长裤",
+        "透气跑步鞋",
+        "长柄雨伞",
+        "防晒霜SPF50+"
+      ],
+      "budget_deviation": 0.3458,
+      "repair_rounds": 0,
+      "asked": false,
+      "verdict_state": "n/a",
+      "latency_ms": 40002,
+      "calls": 1,
+      "prompt_chars": 1911,
+      "prompt_tokens": 1238,
+      "completion_tokens": 7673
+    },
+    {
+      "variant": "G2",
+      "id": "cold-winter",
+      "v_actual": 1,
+      "v_structural": 0,
+      "codes": [
+        "budget"
+      ],
+      "declared_codes": [],
+      "missed": [
+        "budget"
+      ],
+      "disclosed": false,
+      "gear_coverage": 0.5,
+      "gear_count": 9,
+      "gear": [
+        "羽绒服",
+        "T恤",
+        "洗衣袋",
+        "厚羽绒服",
+        "速干长袖",
+        "速干长裤",
+        "防水登山鞋",
+        "防晒霜SPF50+",
+        "登山背包"
+      ],
+      "budget_deviation": 0.4818,
+      "repair_rounds": 0,
+      "asked": false,
+      "verdict_state": "n/a",
+      "latency_ms": 18015,
+      "calls": 1,
+      "prompt_chars": 1903,
+      "prompt_tokens": 1230,
+      "completion_tokens": 3541
+    },
+    {
+      "variant": "G3",
+      "id": "camp-weekend",
+      "v_actual": 1,
+      "v_structural": 0,
+      "codes": [
+        "budget"
+      ],
+      "declared_codes": [
+        "budget"
+      ],
+      "missed": [],
+      "disclosed": true,
+      "gear_coverage": 1.0,
+      "gear_count": 17,
+      "gear": [
+        "帐篷",
+        "睡袋",
+        "防潮垫",
+        "头灯",
+        "羽绒服",
+        "登山鞋",
+        "背包",
+        "双人帐篷",
+        "棉睡袋",
+        "冬季款防潮垫",
+        "大功率营地灯",
+        "厚羽绒服",
+        "速干长袖",
+        "速干长裤",
+        "防水登山鞋",
+        "登山背包",
+        "长柄雨伞"
+      ],
+      "budget_deviation": 0.5093,
+      "repair_rounds": 2,
+      "asked": false,
+      "verdict_state": "needs_input",
+      "latency_ms": 25083,
+      "calls": 1,
+      "prompt_chars": 1920,
+      "prompt_tokens": 1246,
+      "completion_tokens": 4793
+    },
+    {
+      "variant": "G3",
+      "id": "family-beach",
+      "v_actual": 1,
+      "v_structural": 0,
+      "codes": [
+        "budget"
+      ],
+      "declared_codes": [
+        "budget"
+      ],
+      "missed": [],
+      "disclosed": true,
+      "gear_coverage": 1.0,
+      "gear_count": 13,
+      "gear": [
+        "T恤",
+        "洗衣袋",
+        "儿童",
+        "湿巾",
+        "防晒霜SPF50+",
+        "女士连体泳衣",
+        "儿童外套",
+        "儿童长裤",
+        "速干短袖",
+        "速干长裤",
+        "透气跑步鞋",
+        "长柄雨伞",
+        "浮潜三件套"
+      ],
+      "budget_deviation": 0.29,
+      "repair_rounds": 2,
+      "asked": false,
+      "verdict_state": "needs_input",
+      "latency_ms": 23328,
+      "calls": 1,
+      "prompt_chars": 1909,
+      "prompt_tokens": 1237,
+      "completion_tokens": 4904
+    },
+    {
+      "variant": "G3",
+      "id": "business-trip",
+      "v_actual": 1,
+      "v_structural": 0,
+      "codes": [
+        "budget"
+      ],
+      "declared_codes": [
+        "budget"
+      ],
+      "missed": [],
+      "disclosed": true,
+      "gear_coverage": 0.5,
+      "gear_count": 6,
+      "gear": [
+        "西装",
+        "皮鞋",
+        "厚羽绒服",
+        "速干长袖",
+        "速干长裤",
+        "长柄雨伞"
+      ],
+      "budget_deviation": 0.0136,
+      "repair_rounds": 2,
+      "asked": false,
+      "verdict_state": "needs_input",
+      "latency_ms": 31897,
+      "calls": 1,
+      "prompt_chars": 1911,
+      "prompt_tokens": 1238,
+      "completion_tokens": 6504
+    },
+    {
+      "variant": "G3",
+      "id": "rainy-hike",
+      "v_actual": 1,
+      "v_structural": 0,
+      "codes": [
+        "budget"
+      ],
+      "declared_codes": [
+        "budget"
+      ],
+      "missed": [],
+      "disclosed": true,
+      "gear_coverage": 0.5,
+      "gear_count": 8,
+      "gear": [
+        "雨伞",
+        "登山鞋",
+        "背包",
+        "中厚羽绒服",
+        "加固雨伞",
+        "透气跑步鞋",
+        "登山背包",
+        "速干长袖"
+      ],
+      "budget_deviation": 0.0645,
+      "repair_rounds": 2,
+      "asked": false,
+      "verdict_state": "needs_input",
+      "latency_ms": 23299,
+      "calls": 1,
+      "prompt_chars": 1923,
+      "prompt_tokens": 1247,
+      "completion_tokens": 4681
+    },
+    {
+      "variant": "G3",
+      "id": "budget-tight",
+      "v_actual": 1,
+      "v_structural": 0,
+      "codes": [
+        "budget"
+      ],
+      "declared_codes": [
+        "budget"
+      ],
+      "missed": [],
+      "disclosed": true,
+      "gear_coverage": 1.0,
+      "gear_count": 6,
+      "gear": [
+        "轻薄羽绒服",
+        "速干长袖",
+        "透气跑步鞋",
+        "防晒霜SPF50+",
+        "长柄雨伞",
+        "登山背包"
+      ],
+      "budget_deviation": 0.3208,
+      "repair_rounds": 1,
+      "asked": false,
+      "verdict_state": "needs_input",
+      "latency_ms": 22268,
+      "calls": 1,
+      "prompt_chars": 1911,
+      "prompt_tokens": 1238,
+      "completion_tokens": 4576
+    },
+    {
+      "variant": "G3",
+      "id": "cold-winter",
+      "v_actual": 1,
+      "v_structural": 0,
+      "codes": [
+        "budget"
+      ],
+      "declared_codes": [
+        "budget"
+      ],
+      "missed": [],
+      "disclosed": true,
+      "gear_coverage": 0.5,
+      "gear_count": 8,
+      "gear": [
+        "羽绒服",
+        "T恤",
+        "洗衣袋",
+        "厚羽绒服",
+        "速干长袖",
+        "速干长裤",
+        "防水登山鞋",
+        "防晒霜SPF50+"
+      ],
+      "budget_deviation": 0.3338,
+      "repair_rounds": 2,
+      "asked": false,
+      "verdict_state": "needs_input",
+      "latency_ms": 32470,
+      "calls": 1,
+      "prompt_chars": 1903,
+      "prompt_tokens": 1230,
+      "completion_tokens": 6383
+    },
+    {
+      "variant": "G4",
+      "id": "camp-weekend",
+      "v_actual": 1,
+      "v_structural": 0,
+      "codes": [
+        "budget"
+      ],
+      "declared_codes": [
+        "budget"
+      ],
+      "missed": [],
+      "disclosed": true,
+      "gear_coverage": 1.0,
+      "gear_count": 13,
+      "gear": [
+        "帐篷",
+        "睡袋",
+        "防潮垫",
+        "头灯",
+        "羽绒服",
+        "登山鞋",
+        "背包",
+        "双人帐篷",
+        "棉睡袋",
+        "冬季款防潮垫",
+        "大功率营地灯",
+        "冲锋衣",
+        "长柄雨伞"
+      ],
+      "budget_deviation": 0.2913,
+      "repair_rounds": 0,
+      "asked": true,
+      "verdict_state": "needs_input",
+      "latency_ms": 16571,
+      "calls": 1,
+      "prompt_chars": 1920,
+      "prompt_tokens": 1246,
+      "completion_tokens": 3378
+    },
+    {
+      "variant": "G4",
+      "id": "family-beach",
+      "v_actual": 1,
+      "v_structural": 0,
+      "codes": [
+        "budget"
+      ],
+      "declared_codes": [
+        "budget"
+      ],
+      "missed": [],
+      "disclosed": true,
+      "gear_coverage": 1.0,
+      "gear_count": 20,
+      "gear": [
+        "防晒霜",
+        "帽子",
+        "墨镜",
+        "泳衣",
+        "速干衣",
+        "防水袋",
+        "T恤",
+        "洗衣袋",
+        "儿童",
+        "湿巾",
+        "速干短袖",
+        "速干长裤",
+        "儿童T恤",
+        "儿童长裤",
+        "儿童外套",
+        "透气跑步鞋",
+        "女士连体泳衣",
+        "浮潜三件套",
+        "防晒霜SPF50+",
+        "长柄雨伞"
+      ],
+      "budget_deviation": 0.4797,
+      "repair_rounds": 0,
+      "asked": true,
+      "verdict_state": "needs_input",
+      "latency_ms": 31132,
+      "calls": 1,
+      "prompt_chars": 1909,
+      "prompt_tokens": 1237,
+      "completion_tokens": 6535
+    },
+    {
+      "variant": "G4",
+      "id": "business-trip",
+      "v_actual": 1,
+      "v_structural": 0,
+      "codes": [
+        "budget"
+      ],
+      "declared_codes": [
+        "budget"
+      ],
+      "missed": [],
+      "disclosed": true,
+      "gear_coverage": 0.5,
+      "gear_count": 8,
+      "gear": [
+        "西装",
+        "皮鞋",
+        "厚羽绒服",
+        "速干长袖",
+        "速干长裤",
+        "透气跑步鞋",
+        "登山背包",
+        "长柄雨伞"
+      ],
+      "budget_deviation": 0.0888,
+      "repair_rounds": 0,
+      "asked": true,
+      "verdict_state": "needs_input",
+      "latency_ms": 16065,
+      "calls": 1,
+      "prompt_chars": 1911,
+      "prompt_tokens": 1238,
+      "completion_tokens": 3269
+    },
+    {
+      "variant": "G4",
+      "id": "rainy-hike",
+      "v_actual": 1,
+      "v_structural": 0,
+      "codes": [
+        "budget"
+      ],
+      "declared_codes": [
+        "budget"
+      ],
+      "missed": [],
+      "disclosed": true,
+      "gear_coverage": 0.5,
+      "gear_count": 6,
+      "gear": [
+        "雨伞",
+        "登山鞋",
+        "背包",
+        "中厚羽绒服",
+        "加固雨伞",
+        "速干长袖"
+      ],
+      "budget_deviation": 0.3445,
+      "repair_rounds": 0,
+      "asked": true,
+      "verdict_state": "needs_input",
+      "latency_ms": 17592,
+      "calls": 1,
+      "prompt_chars": 1923,
+      "prompt_tokens": 1247,
+      "completion_tokens": 3489
+    },
+    {
+      "variant": "G4",
+      "id": "budget-tight",
+      "v_actual": 1,
+      "v_structural": 0,
+      "codes": [
+        "budget"
+      ],
+      "declared_codes": [
+        "budget"
+      ],
+      "missed": [],
+      "disclosed": true,
+      "gear_coverage": 1.0,
+      "gear_count": 8,
+      "gear": [
+        "轻薄羽绒服",
+        "单层冲锋衣",
+        "速干长袖",
+        "速干长裤",
+        "透气跑步鞋",
+        "长柄雨伞",
+        "登山背包",
+        "防晒霜SPF50+"
+      ],
+      "budget_deviation": 0.3042,
+      "repair_rounds": 0,
+      "asked": true,
+      "verdict_state": "needs_input",
+      "latency_ms": 29596,
+      "calls": 1,
+      "prompt_chars": 1911,
+      "prompt_tokens": 1238,
+      "completion_tokens": 5585
+    },
+    {
+      "variant": "G4",
+      "id": "cold-winter",
+      "v_actual": 1,
+      "v_structural": 0,
+      "codes": [
+        "budget"
+      ],
+      "declared_codes": [
+        "budget"
+      ],
+      "missed": [],
+      "disclosed": true,
+      "gear_coverage": 0.5,
+      "gear_count": 10,
+      "gear": [
+        "羽绒服",
+        "T恤",
+        "洗衣袋",
+        "厚羽绒服",
+        "速干长袖",
+        "速干长裤",
+        "防水登山鞋",
+        "防晒霜SPF50+",
+        "头灯",
+        "登山背包"
+      ],
+      "budget_deviation": 0.5418,
+      "repair_rounds": 0,
+      "asked": true,
+      "verdict_state": "needs_input",
+      "latency_ms": 28750,
+      "calls": 1,
+      "prompt_chars": 1903,
+      "prompt_tokens": 1230,
+      "completion_tokens": 5646
+    }
+  ]
+}

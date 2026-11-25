@@ -773,6 +773,117 @@ NLU 场景集 `data/evaluation/nlu.spec.jsonl` 覆盖关键词层、槽位、装
 
 关键指标：`new_accuracy` / `legacy_accuracy`（对照"只查理由里有没有'温标'"的旧逻辑）、`legacy_reported_insufficient`（旧逻辑恒为 0）、`legacy_false_accept`、`spec_unknown_rate`。评测确定性：不调模型、不联网，同一份场景集结果一致。
 
+### 硬约束违反数：两类场景分开算
+
+`硬约束违反数` 不是一个数，是两个量。混着报，不可行场景的"0"会同时表示
+"方案完美"和"硬编了一个假可行方案"：
+
+| 量 | 定义 | 谁数 |
+|---|---|---|
+| `V_actual` | 独立检查器认定的违反条数，**每个约束家族最多 1 条**（两天都超支仍是 1 条 `budget`） | `trip_gear/hard_checker.py`，不 import `verify`/`verdict`/`spec_match`/`tradeoff` |
+| `V_declared` | 被测链路披露的 critical issue 去重条数 | `verify` 产出的 `Issue.code` |
+
+判据分两类，**不合并成一个准确率**：
+
+- **可行场景**：`V_actual = 0`（干净方案）；违反了但全部披露也算合格，单列
+  `disclosed_rate`；
+- **不可行场景**：`verdict == infeasible` **且** `V_actual > 0` **且** `missed == []`。
+  不可行场景不可能"违反数为 0"——那正是"不可行"的含义；报 0 只可能是硬编了方案。
+  误报可行（`false_positive_feasible`）单列，必须为 0。
+
+三条口径写死，别在统计时再改：
+
+1. **计数单位是约束条目**，不是"每天一次"或"每件一次"；
+2. **未知不算违反**：规格未标注进 `undecidable`，它是"必须披露"的义务，
+   既不进 `violations`，也不当满足；
+3. **词表外的披露不参与对账**：只比 `hard_checker.CODES` 里的家族，
+   别的模块的问题记 `unchecked`，否则分母会随无关改动漂移。
+
+**装备名按包含关系认，不按精确相等**：`"双人帐篷"` 算帐篷、`"-5℃ 羽绒睡袋"`
+算睡袋。精确匹配会把模型和商品名里的修饰词当成"缺装备"，`verify` 与
+`hard_checker` 两边都按同一规则（短名做反向包含时要求长度 ≥2）。
+
+`Issue.code` 的词表就是约束的 `key`（`budget` / `days` / `sleeping_bag_temp` /
+`lodging` / `gear_budget` / `rain` / `destination`），结构性问题用固定词
+（`camping_gear` / `spec_insufficient` / `out_of_stock` / `lead_time` /
+`time_overlap` / `day_overload` / `day_empty` / `trip_cap` / `gear_unmatched` /
+`gear_skipped` / `self_pickup` / `lead_unknown` / `outfit_missing` / `lodging_budget`）。
+**判定不要再拿中文文案做前缀匹配**：`verdict.is_budget_issue` 优先看 `code`，
+文案前缀只是旧数据兜底——"总预算 2000 元"这种措辞一旦不以"预算"开头，
+前缀法会把超预算误判成事实型冲突，把 `needs_input` 判成 `infeasible`。
+
+```bash
+python scripts/eval_trip_gear_hard.py            # 写 data/evaluation/trip_gear.hard.report.json
+python scripts/eval_trip_gear_hard.py --strict   # 任一条不达标退出码 1
+```
+
+场景集 `data/evaluation/trip_gear.hard.jsonl`（20 条：可行 8 / 不可行 6 /
+可修复 3 / 待补充 3），`expect_codes` 与 `expect_verdict` 人工标注；方案
+（itinerary / gear / products）内联，`today` 固定，不查库不联网不调模型。
+
+### 代价：量纲与权重来源
+
+`cost(λ) = Σ wᵢ·δᵢ`，`wᵢ = 硬度（hard 1.0 / soft 0.6）× 来源置信度
+（用户 1.0 / 天气·工具·外部 0.9 / 规则 0.8 / 模型 0.5）`。三条边界：
+
+- **δ 一律归一到无量纲 `[0,1]`**（预算按超支比例封顶、缺失按档位、事实型
+  冲突取满幅），所以代价分只排序、只比阈值，**不能解释成金额**；
+- **金额只出现在缺口与省下**（元口径），修复先判"省够没够"，再在同一缺口下
+  比代价——不存在把"元"和"代价分"相加的路径；
+- **τ 只决定 `auto_applicable`**，不参与可行性判定。
+
+权重落在三处，作用边界写死，别扩大：
+
+| 数字 | 用在哪 | 参与什么 | 不参与什么 |
+|---|---|---|---|
+| 约束权重（硬度×来源） | `violation_terms`、`_ordered_blocking`、`gaps` | 披露顺序、追问顺序（先问用户明说的硬条件） | 可行/不可行 |
+| 违反代价合计 `violation_cost` | 面板与正文展示、敏感性分析 | 解释"这条有多硬" | 任何判定 |
+| 动作档位 `ACTION_COST` | `plan_repair`、`auto_applicable` | 选哪几个修复动作、要不要问用户 | 可行/不可行、轮次上限 |
+
+**可行性只看"能不能消掉 critical"，不看代价**：让权重决定可行与否，结论会随
+一个拍出来的数字漂移（τ 的教训）。所以这几个数字里，只有动作档位真的改变
+系统行为（自动改还是问），约束权重改变的是"先说什么、先问什么"。两处都上屏：
+05 面板与 Markdown 的「代价与取舍」不只给结果，还给算式——
+`代价 = 权重 × 幅度`，每项下面一行写清"硬/软约束 × 来源（置信度）= 权重"
+和"超支 X 元 ÷ 预算 Y = 幅度"，动作项写"档位 + 省多少"。
+`CostTerm.detail` 就是这个字段，由 `verdict.violation_terms` 生成。
+
+```bash
+python scripts/analyze_cost_sensitivity.py   # 写 data/evaluation/cost.sensitivity.report.json
+```
+
+扰动档位 ±20%、模型置信度、软权重、τ，报"选择/披露顺序/自动性"的翻转率与
+首次翻转倍率。当前结论：±20% 档位扰动下选择不变；τ 扫描只改自动性、不改结论。
+
+### 消融：G1–G4 与同等提示词预算
+
+`evaluation/ablation.py` + `scripts/run_ablation.py`，场景集
+`data/evaluation/trip_gear.ablation.jsonl`（6 条，内联商品与已有装备）：
+
+- G1 纯提示词基线：一次调用，无约束清单/装备规则/校验；
+- G2 串行流水线：+ 规则约束清单 + 规则装备推导；
+- G3 联合修复与可行性判定：+ 确定性校验 + 有界修复（按省得多）；
+- G4 带代价的提问：+ 统一代价排序 + 修不动时交还用户。
+
+公平性控制（报告里 `fairness` 段可核对）：同一模型、`temperature=0`、
+同一 `max_tokens`、同一修复轮次上限、同一份事实与规划提示词；G2–G4 平均
+提示词字符数逐组记录，G1 是 G2 的**子集**（少一份约束清单），基线拿不到
+更多预算；每组记 `prompt_tokens / completion_tokens / calls / latency`。
+指标由 `hard_checker` 独立数，不由被测链路自报。
+
+**核心指标是披露，不是"违反更少"**：`disclosure_rate` / `mean_missed`
+统计"存在违反却没披露"的比例，分母只算**确实有违反**的场景（干净场景的
+"已披露"是空真，放进分母会把基线抬高一截）。G1/G2 没有校验节点，结构化披露为空，
+所以漏披露等于全部违反——这正是"约束清单化 + 确定性校验"要解决的问题；
+G3/G4 的披露率应为 100%。另外把预算类与结构类拆开（`v_structural`），
+因为前者能靠改法消掉、后者只能改需求。G4 比 G3 更保守（缺口补不上就问，
+不擅自砍），代价是预算占用更高——这是设计取舍，报告里如实呈现。
+
+**一个坑**：httpx 客户端绑在创建它的事件循环上。每条场景各开一次
+`asyncio.run` 会在第二次调用直接 `Event loop is closed`，而 `_plan` 的
+异常兜底会把结果悄悄换成 fallback 行程——看起来像"模型输出很差"。
+脚本因此在一个事件循环里跑完所有场景。
+
 ## 新增一个 Agent
 
 1. 定义状态：通用字段放 `app/graphs/state.py`，该场景专有的就近写在子图模块里。
@@ -837,8 +948,12 @@ Agent 的编排与工具都写在仓库里，因为它们依赖 `TurnContext` / 
 | `trip_gear/verify.py` | 确定性校验（约束/齐全性/规格/可履约） |
 | `trip_gear/verdict.py` | 四态结论 + 修复方案 + 信息缺口 |
 | `trip_gear/repair.py` | 修复动作与落地 |
-| `trip_gear/tradeoff.py` | 统一代价 |
+| `trip_gear/tradeoff.py` | 统一代价（权重、动作档位、τ） |
+| `trip_gear/sensitivity.py` | 代价权重敏感性分析（扰动档位/置信度/τ） |
+| `trip_gear/hard_checker.py` | 独立硬约束检查器（不引用被测判定） |
+| `trip_gear/hard_eval.py` | 硬约束评测：V_actual vs V_declared、披露一致性 |
 | `trip_gear/spec_eval.py` | 规格评测与改前/改后对照 |
+| `evaluation/ablation.py` | G1–G4 消融台（同等提示词预算、token 记录） |
 | `trip_gear/render.py` | Markdown 展示 |
 
 `docs/generated/` 放生成物，**不要手改**：`pipeline-spec.html/json` 由 `smartlife-agent/scripts/build_pipeline_spec.py` 生成；`current-agent-flow.html` 是早期的分支流程快照，只作查证。

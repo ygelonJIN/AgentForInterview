@@ -691,6 +691,15 @@ def parse_budget(text: str) -> Optional[float]:
     return parse_budget_detail(text)[0]
 
 
+# 预算判定依据的中文名。以前直接把内部代码 "total"/"max" 拼进来源，
+# 界面上会显示成"用户原话（total）"——用户看不懂，也不知道这是哪门子依据。
+_BUDGET_KIND_LABEL = {
+    "total": "总预算",
+    "max": "上限",
+    "min": "下限",
+    "plain": "唯一金额",
+}
+
 _PER_PERSON_CUES = ("人均", "每人", "一人")
 
 
@@ -1097,7 +1106,10 @@ def extract_slots(text: str, today=None) -> Slots:
         "cities": "用户原话" if len(cities) >= 2 else "未指定",
         "days": days_source,
         "people": people_source,
-        "budget": f"用户原话（{budget_kind}）" if budget is not None else "未指定",
+        "budget": (
+            f"用户原话（{_BUDGET_KIND_LABEL.get(budget_kind, budget_kind)}）"
+            if budget is not None else "未指定"
+        ),
         "lodging_budget": "用户原话" if lodging_budget is not None else "未指定",
         "budget_scope": scope_source,
         "start_date": "用户原话" if slots.start_date else "未指定",

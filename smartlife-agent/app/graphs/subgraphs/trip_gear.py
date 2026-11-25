@@ -1013,7 +1013,7 @@ def after_verify(state: TripGearState) -> str:
         return "repair"
 
     # 自动修复只能动装备；改住宿这种会推翻用户明说的条件，必须问一次。
-    # 摆一个具体方案比泛泛问"放宽预算还是减内容"更有价值，所以排在追问之前。
+    # 摆一个具体方案比泛泛问"减哪一块"更有价值，所以排在追问之前。
     if state.get("confirm_options") and int(state.get("confirm_rounds", 0)) < MAX_REPAIR_CONFIRM_ROUNDS:
         return "repair_confirm"
 
@@ -1121,11 +1121,22 @@ async def verify_clarify(state: TripGearState, runtime: Runtime[TurnContext]) ->
             return int((value + 499) // 500 * 500)
 
         amounts = [_ceil500(need), _ceil500(need + 1000), _ceil500(need + 2000)]
+        actual = ask.get("actual")
+        limit = ask.get("limit")
+        if actual is not None and limit is not None:
+            title = f"预算超了 {gap:.0f} 元（实际 {float(actual):.0f} / 预算 {float(limit):.0f}），减哪一块？"
+        else:
+            title = f"预算还差 {gap:.0f} 元，减哪一块？"
+        # 不提供"放宽到多少"：预算按硬约束执行，系统只提议怎么在额度内排下。
+        # 用户想放宽会自己说，不该由系统先把口子开了。
         questions.insert(0, {
             "key": "budget",
-            "title": f"预算还差 {gap:.0f} 元，放宽到多少？",
-            "answer_prefix": "预算",
-            "options": [{"label": f"{amount} 元", "value": f"{amount} 元"} for amount in amounts],
+            "title": title,
+            "answer_prefix": "",
+            "options": [
+                {"label": "少玩一天", "value": "少玩一天"},
+                {"label": "砍掉最贵的一项", "value": "砍掉最贵的一项"},
+            ],
             "allow_custom": True,
         })
 
@@ -1170,6 +1181,17 @@ async def verify_clarify(state: TripGearState, runtime: Runtime[TurnContext]) ->
     items = _gear_items(state)
     _apply_specs_from_text(items, text)
 
+    cut = _apply_budget_cut(text, state, merged)
+    if cut:
+        # 天数变了，清单里那句"玩 N 天"也要跟着改，否则面板和实际对不上。
+        for constraint in constraints:
+            if constraint.key == "days" and merged.days:
+                constraint.text = f"玩 {int(merged.days)} 天"
+        await _notify(
+            state, runtime, "verify",
+            "已按你的选择缩减：" + ("少玩一天" if cut["cut"] == "day" else "砍掉最贵的一项"),
+        )
+
     await _notify(state, runtime, "verify", f"已收到补充，重新校验（第 {rounds + 1} 轮）")
     payload = {
         "facts": merged.model_dump(),
@@ -1179,6 +1201,8 @@ async def verify_clarify(state: TripGearState, runtime: Runtime[TurnContext]) ->
         "status": "budget_changed" if budget_changed else "verify_clarified",
         "budget_split": {} if budget_changed else state.get("budget_split"),
     }
+    if cut:
+        payload["itinerary"] = cut["itinerary"]
     if budget_changed:
         # 预算变了，旧商品/旧修复/旧结论全部作废：不清理的话新额度 700
         # 会沿用旧方案里 1106 的商品，shop 看到 name 已存在就不再校验额度。
@@ -1191,6 +1215,41 @@ async def verify_clarify(state: TripGearState, runtime: Runtime[TurnContext]) ->
             "confirm_options": [],
         })
     return payload
+
+
+def _apply_budget_cut(text: str, state: Dict[str, Any], facts: TripFacts) -> Optional[Dict[str, Any]]:
+    """把"减一天 / 砍掉最贵的一项"真的落到行程上。
+
+    预算按硬约束执行：系统只提议在额度内怎么排，不提议放宽预算。
+    这两刀是用户点一下就能执行的，否则问完还是原样，等于白问。
+    """
+    if not state.get("itinerary"):
+        return None
+    itinerary = Itinerary.model_validate(state["itinerary"])
+    value = str(text or "")
+
+    if any(word in value for word in ("少玩一天", "减一天", "少一天", "去掉一天", "砍掉一天")):
+        if len(itinerary.days) <= 1:
+            return None
+        itinerary.days.pop()
+        facts.days = len(itinerary.days)
+        return {"itinerary": itinerary.model_dump(), "cut": "day"}
+
+    if any(word in value for word in ("砍掉最贵", "最贵的一项", "砍最贵", "去掉最贵")):
+        best: Optional[tuple] = None
+        for day in itinerary.days:
+            for item in day.items:
+                if best is None or float(item.cost or 0) > float(best[1].cost or 0):
+                    best = (day, item)
+        if best is None:
+            return None
+        day, item = best
+        day.items.remove(item)
+        if not day.items:
+            itinerary.days.remove(day)
+        facts.days = len(itinerary.days)
+        return {"itinerary": itinerary.model_dump(), "cut": "item"}
+    return None
 
 
 def after_verify_clarify(state: TripGearState) -> str:

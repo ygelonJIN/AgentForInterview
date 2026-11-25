@@ -154,3 +154,10 @@ class TestTau:
 
     def test_字符串数字可用(self):
         assert parse_tau("0.3") == pytest.approx(0.3)
+
+
+class Test空气质量来源:
+    def test_空气质量工具按外部事实置信度(self):
+        from app.trip_gear.tradeoff import source_confidence
+
+        assert source_confidence("空气质量工具") == 0.9

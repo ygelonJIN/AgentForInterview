@@ -21,19 +21,35 @@ from __future__ import annotations
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from app.trip_gear.models import Constraint, GearItem, Issue, TripFacts, Verdict
-from app.trip_gear.tradeoff import DEFAULT_TAU, parse_tau
-
-# 动作本身的代价档位：功能不丢的改动便宜，丢东西的改动贵。
-ACTION_COST = {
-    "downgrade": 0.10,
-    "skip": 0.20,
-    "change_lodging": 0.50,
-    "soften_activity": 0.40,
-}
-DEFAULT_ACTION_COST = 0.30
+from app.trip_gear import tradeoff
+from app.trip_gear.tradeoff import (
+    DEFAULT_TAU,
+    Delta,
+    budget_delta,
+    constraint_weight,
+    make_term,
+    parse_tau,
+    source_confidence,
+    total as sum_terms,
+)
 
 # 预算类 issue 的识别前缀，与 verify 里构造文案时保持一致。
+# 前缀只是兜底：issue 带上 code 之后优先按 code 认，文案措辞改了也不会
+# 把"超预算"错判成"事实型问题"进而把 needs_input 判成 infeasible。
+# 动作档位的中文说明：为什么这个动作贵/便宜。
+ACTION_KIND_LABEL = {
+    "downgrade": "同品类降档（功能不丢）",
+    "skip": "省略可选件（丢功能）",
+    "change_lodging": "换住宿（改用户条件）",
+    "soften_activity": "砍收费项目（改行程）",
+}
+
 BUDGET_PREFIXES = ("预算", "装备预算")
+BUDGET_CODES = {"budget", "gear_budget"}
+
+# 这些 code 是"说明"不是"违反"：省了哪几件、库里没匹配、可到店自提、
+# 时效未知。把它们算进代价会把面板刷成一堵墙，也抬高了违反代价。
+NON_COST_CODES = {"gear_skipped", "gear_unmatched", "self_pickup", "lead_unknown", "spec_unknown"}
 
 # 表示"这一项压根没核实"的词，决定能不能归到"问一句就清楚"。
 UNKNOWN_MARKERS = ("未知", "未定", "未标注", "不明", "无法判断")
@@ -56,12 +72,18 @@ def _num(raw: Any) -> Optional[float]:
         return None
 
 
+def is_budget_issue(issue: Issue) -> bool:
+    """这条 issue 是不是预算类。优先看 code，其次才看文案前缀。"""
+    if str(issue.code or "") in BUDGET_CODES:
+        return True
+    return str(issue.constraint or "").startswith(BUDGET_PREFIXES)
+
+
 def budget_deficit(issues: Iterable[Issue]) -> float:
     """预算缺口：actual - limit。取最大的一条，不累加（同一笔钱只缺一次）。"""
     worst = 0.0
     for issue in issues:
-        text = str(issue.constraint or "")
-        if not text.startswith(BUDGET_PREFIXES):
+        if not is_budget_issue(issue):
             continue
         actual, limit = _num(issue.actual), _num(issue.limit)
         if actual is None or limit is None:
@@ -71,7 +93,13 @@ def budget_deficit(issues: Iterable[Issue]) -> float:
 
 
 def action_cost(option: Dict[str, Any]) -> float:
-    return ACTION_COST.get(str(option.get("kind") or ""), DEFAULT_ACTION_COST)
+    """动作档位从 ``tradeoff`` 现取，不在这里复制一份表。
+
+    好处是敏感性分析只需改一处常量就能验证"换档位会不会改变选择"，
+    也不会出现"文档写 0.10、代码里是 0.15"这种两处口径。
+    """
+    kind = str(option.get("kind") or "")
+    return tradeoff.ACTION_COST.get(kind, tradeoff.DEFAULT_ACTION_COST)
 
 
 def plan_repair(
@@ -102,33 +130,118 @@ def plan_repair(
     return None
 
 
+def _constraint_for(issue: Issue, by_key: Dict[str, Constraint]) -> Constraint:
+    """找到 issue 对应的约束；没有（结构性问题）就按"硬约束·用户原话"记。"""
+    key = str(issue.code or "")
+    found = by_key.get(key)
+    if found is not None:
+        return found
+    # 结构性 issue（时间重叠、商品未匹配）没有对应约束，按"规则推导的软项"
+    # 记：既不是用户原话，也不该按硬约束满权重计。
+    return Constraint(text=str(issue.constraint or ""), key=key, source="规则推导", hard=False)
+
+
+def violation_terms(
+    constraints: Iterable[Constraint],
+    issues: Iterable[Issue],
+) -> List[Any]:
+    """把"违反了几条、每条多严重"折成带来源的代价项。
+
+    这一层回答"权重从哪来"：``w = 硬度 × 来源置信度``，逐项可展示。
+    它只用于**披露与排序**（先说不更硬的那条），不参与可行性判定——
+    可行性只看"能不能消掉 critical"，这点不能动。
+    """
+    by_key = {item.key: item for item in constraints if item.key}
+    terms = []
+    for issue in issues:
+        if str(issue.code or "") in NON_COST_CODES:
+            continue
+        constraint = _constraint_for(issue, by_key)
+        confidence = source_confidence(constraint.source)
+        weight = constraint_weight(constraint.hard, constraint.source)
+        weight_detail = (
+            f"{'硬' if constraint.hard else '软'}约束 × {constraint.source}"
+            f"（置信度 {confidence:.1f}）= 权重 {weight:.2f}"
+        )
+        if is_budget_issue(issue):
+            actual, limit = _num(issue.actual), _num(issue.limit)
+            if actual is None or limit is None:
+                delta = Delta(1.0, 1.0)
+                delta_detail = "预算数值缺失，幅度按满幅 1.00"
+            else:
+                delta = budget_delta(actual, limit)
+                over = max(0.0, actual - limit)
+                delta_detail = f"超支 {over:.0f} 元 ÷ 预算 {limit:.0f} = {delta.raw:.2f}"
+                if delta.raw > 1.0:
+                    delta_detail += "，封顶 1.00"
+        else:
+            # 事实型冲突（温标不够、无货、天数不符）没有"超了多少"的连续幅度，
+            # 按满幅计；它本来也不是靠代价来权衡的东西。
+            delta = Delta(1.0, 1.0)
+            delta_detail = "事实型冲突，幅度按满幅 1.00"
+        terms.append(
+            make_term(
+                str(issue.constraint or ""),
+                hard=constraint.hard,
+                source=constraint.source,
+                delta=delta,
+                detail=f"{weight_detail}；{delta_detail}",
+            )
+        )
+    return terms
+
+
+def _ordered_blocking(constraints: Iterable[Constraint], critical: Iterable[Issue]) -> List[str]:
+    """按权重从高到低给披露排序：用户说的硬约束排在最前。"""
+    by_key = {item.key: item for item in constraints if item.key}
+    weighted: List[tuple] = []
+    seen = set()
+    for issue in critical:
+        label = str(issue.constraint or "").strip()
+        if not label or label in seen:
+            continue
+        seen.add(label)
+        constraint = _constraint_for(issue, by_key)
+        weighted.append((constraint_weight(constraint.hard, constraint.source), label))
+    weighted.sort(key=lambda pair: -pair[0])
+    return [label for _, label in weighted]
+
+
 def gaps(constraints: Iterable[Constraint], issues: Iterable[Issue]) -> List[Dict[str, Any]]:
     """列出"还没核实"的项，这些是提问能解决的，不是修改能解决的。
 
     每项带 ``risk``：这个答案有没有可能推翻结论。没有风险的缺口照样披露，
     但不该打断用户——问了也改变不了什么，只是浪费一轮对话。
     """
-    found: List[Dict[str, Any]] = []
+    found: List[tuple] = []
+    constraints = list(constraints)
+    by_key = {item.key: item for item in constraints if item.key}
     for constraint in constraints:
         if constraint.key in NON_BLOCKING_KEYS:
             continue
         if constraint.status == "unverified":
             # 约束标了"要校验却没校验"，本身就可能藏着一条违反。
-            found.append({"kind": "constraint", "subject": constraint.text, "risk": True})
+            found.append((
+                constraint_weight(constraint.hard, constraint.source),
+                {"kind": "constraint", "subject": constraint.text, "risk": True},
+            ))
     for issue in issues:
         text = str(issue.constraint or "")
         if issue.severity == "critical":
             continue
         if any(marker in text for marker in UNKNOWN_MARKERS):
-            found.append({
-                "kind": "fact",
-                "subject": text,
-                "risk": bool(issue.blocking_risk),
-            })
+            constraint = _constraint_for(issue, by_key)
+            found.append((
+                constraint_weight(constraint.hard, constraint.source),
+                {"kind": "fact", "subject": text, "risk": bool(issue.blocking_risk)},
+            ))
+    # 权重从高到低：先问"用户明说的硬条件"，再问规则推导、最后问模型推断。
+    # 追问只有一轮、最多问三条，排序本身就是取舍——不能按字段出现顺序碰运气。
+    found.sort(key=lambda pair: -pair[0])
     # 去重但保序：同一项可能既来自约束又来自 issue。
     seen = set()
     unique = []
-    for item in found:
+    for _, item in found:
         key = (item["kind"], item["subject"])
         if key in seen:
             continue
@@ -157,23 +270,28 @@ def judge(
     tau_value = parse_tau(tau)
     critical = [issue for issue in issues if issue.severity == "critical"]
 
-    if not critical:
-        return Verdict(state="feasible", tau=tau_value, best_cost=0.0, auto_applicable=True)
+    # 代价明细覆盖所有违反（软约束违反也计代价，只是权重更低）；
+    # 披露顺序只看 critical——"先说哪条"与"这条有多贵"是两件事。
+    blocking = _ordered_blocking(constraints, critical)
+    weighted_terms = violation_terms(constraints, issues)
+    terms = [term.as_dict() for term in weighted_terms]
+    violation_cost = round(sum_terms(weighted_terms), 6)
 
-    blocking = []
-    for issue in critical:
-        label = str(issue.constraint or "").strip()
-        if label and label not in blocking:
-            blocking.append(label)
+    if not critical:
+        return Verdict(
+            state="feasible",
+            tau=tau_value,
+            best_cost=0.0,
+            auto_applicable=True,
+            violation_terms=terms,
+            violation_cost=violation_cost,
+        )
 
     deficit = budget_deficit(critical)
     # 预算缺口之外的严重问题都是"事实型"：温标不够、无货、天数对不上。
     # 这类问题省钱修不掉，问用户也改变不了事实，所以直接判不可行——
     # 不能被无关的信息缺口冲淡成"待确认"。
-    hard_facts = [
-        issue for issue in critical
-        if not str(issue.constraint or "").startswith(BUDGET_PREFIXES)
-    ]
+    hard_facts = [issue for issue in critical if not is_budget_issue(issue)]
     plan = plan_repair(repair_options or [], deficit) if deficit > 0 else None
 
     if hard_facts:
@@ -183,6 +301,8 @@ def judge(
         return Verdict(
             state="infeasible",
             blocking=blocking,
+            violation_terms=terms,
+            violation_cost=violation_cost,
             tau=tau_value,
             best_cost=plan[0] if plan else 0.0,
             alternatives=options,
@@ -190,39 +310,71 @@ def judge(
 
     if plan is not None:
         cost, chosen = plan
-        terms = [
+        action_terms = [
             {
                 "label": f"{option.get('kind')}:{option.get('name')}",
                 "cost": action_cost(option),
                 "saving": float(option.get("saving") or 0),
+                "detail": (
+                    f"{ACTION_KIND_LABEL.get(str(option.get('kind') or ''), '动作')}"
+                    f"档位 {action_cost(option):.2f}；省 {float(option.get('saving') or 0):.0f} 元"
+                ),
             }
             for option in chosen
         ]
         return Verdict(
             state="repairable",
             blocking=blocking,
-            terms=terms,
+            terms=action_terms,
+            violation_terms=terms,
+            violation_cost=violation_cost,
             best_cost=cost,
             tau=tau_value,
             auto_applicable=cost <= tau_value,
             alternatives=chosen,
         )
 
-    # 只剩预算问题且省不回来：这是"取舍"不是"故障"，问用户放宽预算或减内容。
+    # 只剩预算问题且省不回来：问用户"减哪一块"，不提议放宽预算——
+    # 预算按硬约束执行，放宽是用户自己的决定，不该由系统先开口。
     risky = [item for item in gaps(constraints, issues) if item.get("risk")]
     if not risky and deficit <= 0:
-        return Verdict(state="infeasible", blocking=blocking, tau=tau_value)
+        return Verdict(
+            state="infeasible",
+            blocking=blocking,
+            violation_terms=terms,
+            violation_cost=violation_cost,
+            tau=tau_value,
+        )
     ask = _ask_payload(risky)
     if deficit > 0:
-        shortfall = f"预算还差 {deficit:.0f} 元，是放宽预算还是减掉一部分行程？"
+        # 只说"还差 477 元"用户没法判断差在哪：他可能盯着行程那一栏（1500），
+        # 而超的是"行程 + 装备"的合计。把实际、上限、超多少一起写出来。
+        worst = max(
+            (issue for issue in critical if is_budget_issue(issue)),
+            key=lambda issue: (budget_deficit([issue])),
+            default=None,
+        )
+        actual, limit = (None, None) if worst is None else (_num(worst.actual), _num(worst.limit))
+        if actual is not None and limit is not None:
+            shortfall = (
+                f"预算 {limit:.0f} 元，实际 {actual:.0f} 元（含行程与装备），"
+                f"超 {deficit:.0f} 元：要在预算内排下，得减一天、换更便宜的住宿，"
+                "或者砍掉一项收费安排。你想减哪一块？"
+            )
+        else:
+            shortfall = f"预算还差 {deficit:.0f} 元：减一天、换更便宜住宿，还是砍掉一项收费安排？"
         ask = {
             "question": shortfall + ("；" + ask["question"] if ask["question"] else ""),
             "missing": list(ask.get("missing") or []),
             "gap": deficit,
+            "actual": actual,
+            "limit": limit,
         }
     return Verdict(
         state="needs_input",
         blocking=blocking,
+        violation_terms=terms,
+        violation_cost=violation_cost,
         tau=tau_value,
         best_cost=0.0,
         ask=ask,

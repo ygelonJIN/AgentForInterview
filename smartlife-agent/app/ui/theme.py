@@ -561,6 +561,16 @@ section[data-testid="stSidebar"] .st-key-thread_delete_confirm [data-testid="stH
 .sl-bar-legend {{ display: flex; flex-wrap: wrap; gap: var(--space-4); margin-top: var(--space-2); font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-text-muted); }}
 .sl-budget-foot {{ font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-text-muted); }}
 
+/* ---------- 代价明细（05：为什么选这个改法，而不是别的） ---------- */
+.sl-cost {{ display: flex; flex-direction: column; gap: var(--space-2); margin-top: var(--space-3); padding-top: var(--space-3); border-top: var(--panel-rule-w) dashed var(--c-line); }}
+.sl-cost-title {{ font-size: var(--fs-2xs); letter-spacing: var(--tracking-caps); text-transform: uppercase; color: var(--c-text-faint); }}
+.sl-cost-row {{ display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: baseline; gap: var(--space-3); font-size: var(--fs-xs); }}
+.sl-cost-row span {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+.sl-cost-row b {{ font-family: var(--font-mono); font-variant-numeric: tabular-nums; }}
+.sl-cost-row i {{ font-style: normal; font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-text-muted); }}
+.sl-cost-foot {{ font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-text-muted); }}
+.sl-cost-detail {{ font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-text-faint); padding-left: var(--space-2); }}
+
 .sl-kv {{ display: flex; flex-direction: column; gap: var(--space-2); }}
 .sl-kv-row {{ display: flex; align-items: baseline; gap: var(--space-3); font-size: var(--fs-xs); }}
 .sl-kv-row span {{ color: var(--c-text-muted); }}
@@ -1730,8 +1740,9 @@ def plan_panels_html(payload: Dict[str, Any]) -> str:
         ))
     for phrase in ambiguous[:3]:
         alerts.append(alert_html("warn", "待确认", f"你提到过「{phrase}」，但没说具体物品，暂未算作已有。"))
-    if alerts:
-        parts.append(panel_html("05", "校验结果", "确定性规则 · 不依赖模型自审", "".join(alerts)))
+    cost_html = _violation_html(payload.get("verdict") or {}) + _cost_html(payload.get("verdict") or {})
+    if alerts or cost_html:
+        parts.append(panel_html("05", "校验结果", "确定性规则 · 不依赖模型自审", "".join(alerts) + cost_html))
     # 结论放在最前面：不能等用户自己从 05 的几条 critical 里推断"不可行"。
     banner = _verdict_banner(payload.get("verdict") or {})
     if banner:
@@ -1739,6 +1750,97 @@ def plan_panels_html(payload: Dict[str, Any]) -> str:
     # 默认值不是告警，但必须说出口：人数、出发日期都可能只是"先这么算"。
     parts.append(_defaults_note_html(facts))
     return "".join(parts)
+
+
+def _violation_html(verdict: Dict[str, Any]) -> str:
+    """把"违反的加权代价"摊开：权重从哪来、谁排在最前。
+
+    权重 = 硬度 × 来源置信度；它决定披露顺序，不决定可不可行——
+    所以脚下的文案写"只影响排序"，避免把可解释性说成判定依据。
+    """
+    terms = verdict.get("violation_terms") or []
+    if not terms:
+        return ""
+    rows = []
+    for term in terms[:6]:
+        label = str(term.get("label") or "")
+        try:
+            weight = float(term.get("weight") or 0)
+        except (TypeError, ValueError):
+            weight = 0.0
+        try:
+            cost = float(term.get("cost") or 0)
+        except (TypeError, ValueError):
+            cost = 0.0
+        detail = str(term.get("detail") or "")
+        rows.append(
+            '<div class="sl-cost-row">'
+            f"<span>{_e(label)}</span>"
+            f"<b>权重 {weight:.2f}</b>"
+            f"<i>代价 {cost:.2f}</i>"
+            "</div>"
+            + (f'<div class="sl-cost-detail">{_e(detail)}</div>' if detail else "")
+        )
+    try:
+        total_cost = float(verdict.get("violation_cost") or 0)
+    except (TypeError, ValueError):
+        total_cost = 0.0
+    return (
+        '<div class="sl-cost">'
+        '<div class="sl-cost-title">违反代价（代价 = 权重 × 幅度）</div>'
+        + "".join(rows)
+        + f'<div class="sl-cost-foot">合计 {total_cost:.2f} · 权重只影响排序与披露顺序，不决定可不可行</div>'
+        "</div>"
+    )
+
+
+def _cost_html(verdict: Dict[str, Any]) -> str:
+    """把"按代价排序"摊开：每项改法多贵、省多少、总代价是否过自动执行的门。
+
+    代价不是黑箱分数：``tradeoff`` 里每项都带权重与幅度，这里只负责显示。
+    阈值 τ 只决定"能不能不问用户就动手"，与"可不可行"无关，所以文案
+    写"需要你确认"，不写"不可行"。
+    """
+    terms = verdict.get("terms") or []
+    if not terms:
+        return ""
+    rows = []
+    for term in terms[:6]:
+        label = str(term.get("label") or "")
+        try:
+            cost = float(term.get("cost") or 0)
+        except (TypeError, ValueError):
+            cost = 0.0
+        try:
+            saving = float(term.get("saving") or 0)
+        except (TypeError, ValueError):
+            saving = 0.0
+        saving_text = f"省 ¥{saving:,.0f}" if saving else "不减预算"
+        detail = str(term.get("detail") or "")
+        rows.append(
+            '<div class="sl-cost-row">'
+            f"<span>{_e(label)}</span>"
+            f"<b>代价 {cost:.2f}</b>"
+            f"<i>{saving_text}</i>"
+            "</div>"
+            + (f'<div class="sl-cost-detail">{_e(detail)}</div>' if detail else "")
+        )
+    try:
+        best = float(verdict.get("best_cost") or 0)
+    except (TypeError, ValueError):
+        best = 0.0
+    try:
+        tau = float(verdict.get("tau") or 0)
+    except (TypeError, ValueError):
+        tau = 0.0
+    verdict_text = "可自动执行" if verdict.get("auto_applicable") else "需要你确认"
+    return (
+        '<div class="sl-cost">'
+        '<div class="sl-cost-title">按代价从小到大</div>'
+        + "".join(rows)
+        + f'<div class="sl-cost-foot">总代价 {best:.2f} · 阈值 τ {tau:.2f} · {verdict_text}</div>'
+        "</div>"
+    )
 
 
 def _verdict_banner(verdict: Dict[str, Any]) -> str:

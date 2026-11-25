@@ -12,6 +12,17 @@
 
     cost(λ) = Σ w_i · δ_i
     w_i = 硬度权重（hard 1.0 / soft 0.6）× 来源置信度
+
+量纲约定
+--------
+- ``δ`` 一律归一到无量纲 ``[0, 1]``（预算按超支比例封顶，缺失按"缺了会怎样"
+  分档，事实型冲突取满幅）。所以代价分数**只能排序、只能比阈值**，
+  不能解释成金额，也不能跨任务比大小；
+- 金额只出现在两处：预算缺口的 ``deficit`` 与动作省下的 ``saving``，
+  都在"元"口径内闭合。修复是**先判钱够不够，再在同一缺口下比代价**，
+  不存在把"元"和"代价分"相加的路径；
+- 动作档位 ``ACTION_COST`` 同样是无量纲档位（功能不丢的改动便宜、丢东西的
+  改动贵），它是"修复顺序"的刻度，不是金额。
 """
 from __future__ import annotations
 
@@ -23,6 +34,9 @@ from typing import Any, Collection, Dict, Iterable, List, NamedTuple, Optional, 
 SOURCE_CONFIDENCE_PREFIX: Tuple[Tuple[str, float], ...] = (
     ("用户", 1.0),
     ("天气", 0.9),
+    # 来源写的是"空气质量工具"，前缀匹配认不出"工具"，会落到默认 0.7；
+    # 补一个"空气"前缀，别让 AQI 的置信度比天气低一档。
+    ("空气", 0.9),
     ("工具", 0.9),
     ("外部", 0.9),
     ("规则", 0.8),
@@ -46,6 +60,16 @@ DELTA_UNVERIFIED = 0.3
 # 自动松弛的容忍上限。只在"自动改还是问用户"这一层把关，
 # 不参与可行性判定——可行与否只看硬约束满不满足。
 DEFAULT_TAU = 0.15
+
+# 修复动作的代价档位：功能不丢的改动便宜，丢东西的改动贵。
+# 这是排序刻度，不是金额；改这里会改变"先换哪一件"，不会改变"可不可行"。
+ACTION_COST: Dict[str, float] = {
+    "downgrade": 0.10,
+    "skip": 0.20,
+    "change_lodging": 0.50,
+    "soften_activity": 0.40,
+}
+DEFAULT_ACTION_COST = 0.30
 
 
 def source_confidence(source: str) -> float:

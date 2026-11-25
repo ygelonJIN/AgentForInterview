@@ -104,12 +104,12 @@ class TestJudge:
         assert verdict.auto_applicable is True
 
     def test_省不回来就交还给用户取舍(self):
-        # 预算从 3000 砍到 1500 已不是"修"的问题，而是"放宽还是减内容"的选择；
-        # 直接判不可行会把决定权从用户手里拿走。
+        # 预算按硬约束执行：修不动时问"减哪一块"，不问"放宽到多少"。
         verdict = judge([], [_budget_issue(3000, 1500)], repair_options=[_option("skip", "营地灯", 100)])
         assert verdict.state == "needs_input"
         assert verdict.ask["gap"] == 1500
-        assert "放宽预算" in verdict.ask["question"]
+        assert "减" in verdict.ask["question"]
+        assert "放宽预算" not in verdict.ask["question"]
 
     def test_事实型问题不被信息缺口冲淡(self):
         # 温标不够是确定的，旁边还有"帐篷容量未知"也不能把它降级成"待确认"。
@@ -204,3 +204,72 @@ def test_display_only_constraints_are_not_asked_again():
 
     assert "目的地：广东" in subjects
     assert not any("出发地" in s or "串联城市" in s or "点名购买" in s or "预算分配" in s for s in subjects)
+
+
+class TestCode优先于文案:
+    """预算类判定靠 code，不靠"预算"两个字开头。
+
+    以前 ``budget_deficit`` 用 ``startswith("预算")``：流水线写"预算：3000 元"
+    时恰好成立，但"总预算 3000 元"就不成立，超预算会被当成事实型冲突，
+    直接把 needs_input 判成 infeasible。
+    """
+
+    def test_总预算文案也认得出是预算问题(self):
+        verdict = judge(
+            [],
+            [Issue(constraint="总预算 2000 元", actual=2600, limit=2000, code="budget")],
+            repair_options=[_option("skip", "营地灯", 10)],
+        )
+        assert verdict.state == "needs_input"
+        assert verdict.ask["gap"] == 600
+
+    def test_没有code时仍按前缀兜底(self):
+        verdict = judge([], [_budget_issue(1800, 1500)], repair_options=[_option("skip", "x", 10)])
+        assert verdict.state == "needs_input"
+
+    def test_verify给预算问题打码(self):
+        from app.trip_gear.models import DayPlan, Itinerary, ItineraryItem, TripFacts
+        from app.trip_gear.verify import verify
+
+        facts = TripFacts(destination="杭州", days=1, budget=100)
+        constraints = [Constraint(text="预算：100 元", key="budget", source="用户原话")]
+        itinerary = Itinerary(
+            destination="杭州",
+            days=[DayPlan(day=1, items=[ItineraryItem(time="10:00", activity="西湖", duration_min=60, cost=500)])],
+        )
+        issues = verify(facts, constraints, itinerary, [], {})
+        assert [issue.code for issue in issues if issue.severity == "critical"] == ["budget"]
+
+
+class Test追问顺序:
+    def test_先问用户明说的硬条件(self):
+        constraints = [
+            Constraint(text="尽量住得舒服", source="模型推断", hard=True, status="unverified", key="lodging_x"),
+            Constraint(text="必须带儿童安全座椅", source="用户原话", hard=True, status="unverified", key="kids_x"),
+        ]
+        subjects = [item["subject"] for item in gaps(constraints, [])]
+        assert subjects[0] == "必须带儿童安全座椅"
+
+
+class Test预算追问要说清差在哪:
+    def test_写出实际与上限(self):
+        verdict = judge(
+            [],
+            [Issue(constraint="预算：2000 元", actual=2477, limit=2000, code="budget")],
+            repair_options=[],
+        )
+        assert verdict.state == "needs_input"
+        assert "实际 2477 元" in verdict.ask["question"]
+        assert "超 477 元" in verdict.ask["question"]
+        assert verdict.ask["actual"] == 2477
+        assert verdict.ask["limit"] == 2000
+
+    def test_没有数字就不编具体差额(self):
+        # 数值缺失时 budget_deficit 记 0，不会进"超了 X 元"这条路；
+        # 这条只是钉住"别把字符串当数字算"。
+        verdict = judge(
+            [],
+            [Issue(constraint="预算：2000 元", actual="超了", limit=2000, code="budget")],
+            repair_options=[],
+        )
+        assert verdict.ask is None or "实际" not in str(verdict.ask.get("question"))

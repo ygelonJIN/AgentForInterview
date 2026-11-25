@@ -119,7 +119,12 @@ class Verdict(BaseModel):
 
     state: str = "feasible"
     blocking: List[str] = Field(default_factory=list)
+    # 修复动作的代价明细（label / cost / saving），决定"先改哪一件"
     terms: List[Dict[str, Any]] = Field(default_factory=list)
+    # 被违反约束的加权代价明细（label / weight / delta / cost），
+    # 用来解释"这条违反有多硬、从哪来"，并决定披露顺序
+    violation_terms: List[Dict[str, Any]] = Field(default_factory=list)
+    violation_cost: float = 0.0
     best_cost: float = 0.0
     tau: float = 0.15
     # 代价是否低到可以不经用户确认就动手；与"可不可行"是两个问题。
@@ -140,6 +145,11 @@ class Issue(BaseModel):
     limit: Any = None
     hint: str = ""
     severity: str = "critical"
+    # 机器可读的违反类别，与约束的 key 同一套词表（预算=budget、天数=days、
+    # 温标=sleeping_bag_temp……），结构性问题用固定词表（out_of_stock 等）。
+    # 有了它才能回答"这条方案违反了几条硬约束、披露了几条"——靠 constraint
+    # 文案对账会被措辞改动打穿。
+    code: str = ""
     alternatives: List[Dict[str, Any]] = Field(default_factory=list)
     # 这条"还不知道"是否有可能推翻结论。True 才值得打断用户去问，
     # 否则问了也只是满足好奇心，还把一轮对话浪费掉。
